@@ -139,3 +139,70 @@ def test_prose_segment_after_pipe_does_not_break_legit_running(tmp_path: Path) -
 """
     write_tasks(tmp_path, "tasks.md", body)
     assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"
+
+
+def test_dash_bullet_imitation_is_not_status(tmp_path: Path) -> None:
+    """Пунктуация-имитация буллета перед словом статуса — не статус.
+
+    Регресс на fix round 3: TASK-001 честно TODO, у TASK-002 единственная
+    строка-кандидат — `- Заметка: детали | - REVIEW`, где сегмент после
+    `|` — `- REVIEW` (дефис вместо разрешённого emoji). Whitelist-токен
+    (`_STATUS_TOKEN_RE`) допускает в префиксе только пятёрку emoji
+    spec-runner, поэтому это не статус. Обе задачи без running →
+    `GateError` («нет задачи»), а не тихий возврат TASK-002.
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | ⬜ TODO
+### TASK-002: Вторая
+- Заметка: детали | - REVIEW
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    with pytest.raises(tdd_gate.GateError):
+        tdd_gate.resolve_current_task(tmp_path)
+
+
+def test_markdown_table_row_is_not_meta_line(tmp_path: Path) -> None:
+    """Строка markdown-таблицы в описании — не meta-строка, даже с `|` и статусом.
+
+    Регресс на fix round 3: обе задачи TODO по своей честной meta-строке;
+    у TASK-002 ниже — таблица-описание, одна из строк которой
+    (`| Модуль A | REVIEW |`) начинается с `|`, а не с буллета `-`/`*`, и
+    поэтому не попадает в кандидаты meta-строки (`_META_CANDIDATE_RE`).
+    Обе задачи без running → `GateError` («нет задачи»).
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | ⬜ TODO
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+- Таблица модулей:
+| Модуль | Статус |
+|---|---|
+| Модуль A | REVIEW |
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    with pytest.raises(tdd_gate.GateError):
+        tdd_gate.resolve_current_task(tmp_path)
+
+
+def test_first_candidate_wins_over_noise_below(tmp_path: Path) -> None:
+    """Позитивный контроль: реальная meta-строка первая, шум — ниже.
+
+    У TASK-001 честная meta-строка `| 🔄 IN_PROGRESS` идёт сразу после
+    заголовка, а ниже — зашумлённый буллет с `|` и таблица со словом
+    `REVIEW` в ячейке. Резолвер обязан прочитать статус только из ПЕРВОЙ
+    строки-кандидата и вернуть TASK-001, полностью игнорируя шум ниже.
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | 🔄 IN_PROGRESS
+- Заметка: пример | review нужен от ревьюера
+| Модуль | Статус |
+|---|---|
+| Модуль A | REVIEW |
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"
