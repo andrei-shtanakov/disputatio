@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/contracts/test_proposal.py::test_spec_4_2_example_parses",
+  "expected_behavior": "parse_proposal разбирает §4.2: валидированный фронтматтер + тело без изменений",
+  "baseline_sha": "e0529bc20652e3a9a076d4c8b00febc521a68177",
+  "red_sha": "029f815a86764924e00ad6469976ed7483023396",
+  "created_at": "2026-08-08T19:06:54.727850+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_proposal.py"
+}
