@@ -5,7 +5,8 @@
 > каноном являются ЭТИ инварианты, а не любой из двух YAML-файлов.
 > Рукописный `project.yaml` — baseline-кандидат, не абсолютная истина.
 > Ступень: `_cowork_output/plans/2026-08-08-disputatio-battle-stage.md` (зонтик).
-> Редакция: 1 (2026-08-08).
+> Редакция: 2 (2026-08-08) — evidence-неймспейс по итогам финального ревью
+> tdd-gate; обнаружена коллизия идентичности TASK-NNN между workstreams.
 
 ## Структура волн
 
@@ -36,17 +37,21 @@ w-contracts                      ← волна 0 (единственный ко
 ### Скоупы
 
 - **INV-05 (дизъюнктность).** Скоупы попарно дизъюнктны — ни один путь не
-  матчится глобами двух WS:
+  матчится глобами двух WS. Редакция 2 добавляет evidence-глоб каждого WS
+  (namespaced под `ws-<id>` — см. INV-16/17) — без него `spec/.tdd-evidence/**`
+  одним общим глобом на все WS давал реальный (не informational) scope-overlap
+  между пятью параллельными workstream-ами волны 1, т.к. `maestro validate`
+  подтвердил:
 
-| WS | scope |
-|---|---|
-| w-contracts | `src/disputatio/contracts/**`, `tests/contracts/**` |
-| w-fsm | `src/disputatio/core/**`, `tests/core/**` |
-| w-verifier | `src/disputatio/verifier/**`, `tests/verifier/**` |
-| w-adapters | `src/disputatio/adapters/**`, `tests/adapters/**` |
-| w-context | `src/disputatio/context/**`, `tests/context/**` |
-| w-events | `src/disputatio/events/**`, `tests/events/**` |
-| w-runtime | `src/disputatio/runtime/**`, `src/disputatio/cli.py`, `tests/runtime/**`, `tests/cli/**`, `pyproject.toml`, `src/disputatio/__init__.py`, `tests/conftest.py` |
+| WS | scope | evidence |
+|---|---|---|
+| w-contracts | `src/disputatio/contracts/**`, `tests/contracts/**` | `spec/.tdd-evidence/*/ws-w-contracts/**` |
+| w-fsm | `src/disputatio/core/**`, `tests/core/**` | `spec/.tdd-evidence/*/ws-w-fsm/**` |
+| w-verifier | `src/disputatio/verifier/**`, `tests/verifier/**` | `spec/.tdd-evidence/*/ws-w-verifier/**` |
+| w-adapters | `src/disputatio/adapters/**`, `tests/adapters/**` | `spec/.tdd-evidence/*/ws-w-adapters/**` |
+| w-context | `src/disputatio/context/**`, `tests/context/**` | `spec/.tdd-evidence/*/ws-w-context/**` |
+| w-events | `src/disputatio/events/**`, `tests/events/**` | `spec/.tdd-evidence/*/ws-w-events/**` |
+| w-runtime | `src/disputatio/runtime/**`, `src/disputatio/cli.py`, `tests/runtime/**`, `tests/cli/**`, `pyproject.toml`, `src/disputatio/__init__.py`, `tests/conftest.py` | `spec/.tdd-evidence/*/ws-w-runtime/**` |
 
 - **INV-06 (integration-owned files).** Ни один scope волн 0–1 не включает
   файлы, которыми владеет интеграция: `src/disputatio/__init__.py`,
@@ -100,6 +105,28 @@ w-contracts                      ← волна 0 (единственный ко
   `.gitignore`, Maestro регенерирует его в worktree.
 - **INV-15 (кандидатность).** «Единственный корень w-contracts» — свойство
   ЭТОЙ decomposition, не вечный инвариант продукта.
+
+### Evidence-неймспейс (редакция 2)
+
+Финальное ревью tdd-gate вскрыло коллизию: `spec/.tdd-evidence/{claims,
+verdicts,waivers}/TASK-NNN.json` был плоским — одинаковый ID задачи в двух
+параллельных WS волны 1 (обычное дело, каждый WS решает декомпозицию
+независимо) делил бы один и тот же evidence-файл. Решение владельца —
+вариант A: namespace-резолвер, единый на claims/verdicts/waivers/history/
+audit, вычисляемый один раз за вызов команды из ветки Maestro workstream'а.
+
+- **INV-16 (стабильность неймспейса).** `spec_runner.create_git_branch ==
+  false`; namespace вычисляется один раз из Maestro workstream branch
+  `ws/<id>`, неизменен для всех leaf-задач WS и точно соответствует
+  текущему WS.
+- **INV-17 (владение evidence).** Каждый WS владеет только
+  `spec/.tdd-evidence/*/<its-ns>/**`; evidence других WS доступен read-only
+  через историю ветки, но не читается как evidence текущего запуска;
+  claims/verdicts/waivers/history/audit используют один namespace resolver.
+- **INV-18 (fail-closed вне ws/*).** Вне ветки `ws/*` применяется `default`,
+  но Maestro-run не имеет права незаметно свалиться в `default`:
+  maestro-mode + неожиданная форма ветки/detached HEAD → ERROR, не
+  fallback.
 
 ## Секвенирование до D3 (порядок веток)
 
