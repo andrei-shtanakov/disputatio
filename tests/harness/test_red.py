@@ -269,6 +269,28 @@ def test_red_after_pass_verdict_is_supersession_error_without_new_commit(
     assert commit_count_after == commit_count_before
 
 
+def test_red_ignores_untracked_gitignore_and_maestro_spec_files(repo: Path) -> None:
+    """C3: untracked `spec/.gitignore` и `spec/maestro-*.md` не блокируют red.
+
+    Реальный worktree: `spec/.gitignore` пишет spec-runner сам (harness-owned,
+    остаётся untracked — git_ops.py:ensure_runtime_gitignore), а
+    `spec/maestro-requirements.md` генерирует maestro/spec-runner до и во
+    время задачи. Ни то, ни другое не должно попадать в forbidden-правки.
+    """
+    write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
+    _write_expected_fail_test(repo)
+    (repo / "spec" / ".gitignore").write_text(
+        "# spec-runner runtime state — never commit (managed by spec-runner)\n"
+        ".executor-*\n.*task-history.log\n.*spec.lock\n"
+    )
+    (repo / "spec" / "maestro-requirements.md").write_text("# требования\n")
+
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+
+    assert code == 0
+    assert tdd_gate.load_claim(repo, "TASK-001") is not None
+
+
 def test_red_recovers_claim_from_commit_trailer_when_claim_missing(
     repo: Path,
 ) -> None:

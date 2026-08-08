@@ -61,6 +61,9 @@ _DONE_STATUS_TOKEN_RE = re.compile(r"^(?:(?:🔄|🔍|⬜|✅|⏸️)\s*)?DONE$"
 # claim'а. Не файлы реализации — но и не `tests/`.
 _TASKS_MD_RE = re.compile(r"^spec/[^/]*tasks\.md$")
 _TASK_HISTORY_RE = re.compile(r"^spec/\.[^/]*task-history\.log$")
+# maestro/spec-runner генерирует requirements/design/tasks под этим префиксом
+# до и во время задачи (spec_prefix="maestro-") — не продуктовые правки.
+_MAESTRO_SPEC_RE = re.compile(r"^spec/maestro-[^/]*$")
 
 CAT_PASS = "PASS"
 CAT_EXPECTED_FAIL = "EXPECTED_FAIL"
@@ -432,15 +435,22 @@ def changed_paths(root: Path) -> list[str]:
 def _is_allowed_path(path: str, task_id: str) -> bool:
     """Решает, разрешён ли путь `path` в рамках задачи `task_id`.
 
-    Разрешены: всё под `tests/`, claims-файл текущей задачи, и правки
+    Разрешены: всё под `tests/`, claims-файл текущей задачи, правки
     spec-runner'а (`spec/*tasks.md`, `spec/.task-history.log` и вариации
-    с иным префиксом после точки).
+    с иным префиксом после точки), harness-owned `spec/.gitignore`
+    (untracked, пишет spec-runner сам — git_ops.py:ensure_runtime_gitignore)
+    и `spec/maestro-*` (requirements/design/tasks — генерирует maestro/
+    spec-runner до и во время задачи).
     """
     if path.startswith("tests/"):
         return True
     if path == f"spec/.tdd-evidence/claims/{task_id}.json":
         return True
+    if path == "spec/.gitignore":
+        return True
     if _TASKS_MD_RE.match(path) is not None:
+        return True
+    if _MAESTRO_SPEC_RE.match(path) is not None:
         return True
     return _TASK_HISTORY_RE.match(path) is not None
 
@@ -795,6 +805,33 @@ def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _verify_trailers_match(root: Path, claim: Claim, task_id: str) -> None:
+    """Проверяет трейлеры red-коммита против claim'а — граница доверия (C4).
+
+    `claim.red_sha` обязан быть red-коммитом ИМЕННО этой задачи: трейлер
+    `TDD-Red-Task` должен совпадать с `task_id`, а `TDD-Selector`/
+    `TDD-Baseline` коммита — с соответствующими полями claim'а. Без этой
+    проверки claim одной задачи мог бы подделываться под честный red-коммит
+    чужой (сценарий A финального ревью) — replay реиграл бы чужой red и
+    выносил бы вердикт по задаче, к которой этот код отношения не имеет.
+    """
+    if _trailer_value(root, claim.red_sha, "TDD-Red-Task") != task_id:
+        raise GateError(
+            f"{task_id}: red_sha {claim.red_sha} не принадлежит этой задаче "
+            "(трейлер TDD-Red-Task не совпадает) — подделка claim'а"
+        )
+    if _trailer_value(root, claim.red_sha, "TDD-Selector") != claim.selector:
+        raise GateError(
+            f"{task_id}: трейлер TDD-Selector коммита {claim.red_sha} не "
+            "совпадает с claim.selector — рассинхрон/подделка"
+        )
+    if _trailer_value(root, claim.red_sha, "TDD-Baseline") != claim.baseline_sha:
+        raise GateError(
+            f"{task_id}: трейлер TDD-Baseline коммита {claim.red_sha} не "
+            "совпадает с claim.baseline_sha — рассинхрон/подделка"
+        )
+
+
 def _is_valid_waiver(root: Path, waiver: Waiver, task_id: str, head: str) -> bool:
     """Waiver валиден: свой `task_id`, одобрен человеком, baseline — предок HEAD."""
     if waiver.task_id != task_id:
@@ -861,6 +898,25 @@ def _cmd_verify(root: Path) -> int:
     if claim is None:
         return _verify_without_claim(root, task_id, head)  # шаг 2
 
+    # Проверка baseline_sha симметрична проверке red_sha ниже — битый/
+    # несуществующий SHA обязан давать чистый exit 3 через GateError, а не
+    # CalledProcessError из `_diff_paths`/`_trailer_value`. Идёт ДО проверки
+    # существующего verdict'а: граница доверия (C4, следующая строка) обязана
+    # покрывать и идемпотентную ветку PASS ниже, а не только первичную
+    # верификацию — иначе подделанный/рассинхронный claim мог бы проскочить
+    # идемпотентным коротким путём.
+    if not _commit_exists(root, claim.baseline_sha):
+        raise GateError(
+            f"{task_id}: baseline_sha {claim.baseline_sha} отсутствует в истории"
+        )
+    if not _commit_exists(root, claim.red_sha):
+        raise GateError(f"{task_id}: red_sha {claim.red_sha} отсутствует в истории")
+
+    # C4: граница доверия — red_sha обязан быть red-коммитом ИМЕННО этой
+    # задачи (трейлеры), иначе claim одной задачи мог бы подделываться под
+    # честный red-коммит чужой.
+    _verify_trailers_match(root, claim, task_id)
+
     # Шаги 3-4: совместимость и идемпотентность существующего verdict'а.
     existing = load_verdict(root, task_id)
     if existing is not None:
@@ -882,16 +938,7 @@ def _cmd_verify(root: Path) -> int:
                     return 0  # идемпотентный PASS — второй verdict не пишется
                 _append_verdict_history(root, task_id, existing)
 
-    # Шаг 5: baseline_sha/red_sha существуют, red_sha предок HEAD, диапазон
-    # трогает только tests/. Проверка baseline_sha симметрична проверке
-    # red_sha ниже — битый/несуществующий SHA обязан давать чистый exit 3
-    # через GateError, а не CalledProcessError из `_diff_paths`.
-    if not _commit_exists(root, claim.baseline_sha):
-        raise GateError(
-            f"{task_id}: baseline_sha {claim.baseline_sha} отсутствует в истории"
-        )
-    if not _commit_exists(root, claim.red_sha):
-        raise GateError(f"{task_id}: red_sha {claim.red_sha} отсутствует в истории")
+    # Шаг 5: red_sha предок HEAD, диапазон трогает только tests/.
     if not _is_ancestor(root, claim.red_sha, head):
         raise GateError(f"{task_id}: red_sha {claim.red_sha} не предок HEAD ({head})")
     changed = _diff_paths(root, claim.baseline_sha, claim.red_sha)

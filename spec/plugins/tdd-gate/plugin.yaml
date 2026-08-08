@@ -2,6 +2,6 @@ name: tdd-gate
 description: "Audit-фоллбэк TDD-гейта: каждая DONE-задача с claim имеет verdict"
 hooks:
   post_done:
-    command: "uv run python scripts/tdd_gate.py audit"
+    command: 'cd "$SR_PROJECT_ROOT" && uv run python scripts/tdd_gate.py audit'
     blocking: true
     run_on: on_success

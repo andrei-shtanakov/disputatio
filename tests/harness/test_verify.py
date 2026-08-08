@@ -312,6 +312,35 @@ def test_verify_waived_then_claimed_transitions_to_pass_with_history(
 # --- forged / incompatible verdict, chain violations -------------------------
 
 
+def test_verify_forged_claim_foreign_task_red_sha_is_error(repo: Path) -> None:
+    """C4: trust boundary — сценарий A финального ревью.
+
+    Claim TASK-002 подделан так, что его `red_sha` указывает на честный
+    red-коммит ЧУЖОЙ задачи (TASK-001). Без проверки трейлера
+    `TDD-Red-Task` verify реиграл бы чужой честный red и мог бы приписать
+    его результат TASK-002. Обязан упасть ДО replay: exit 3.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_gate_test(repo)
+    tdd_gate.git(repo, "add", "tests/test_new.py")
+    baseline = tdd_gate.head_sha(repo)
+    honest_red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+
+    write_tasks(
+        repo,
+        "tasks.md",
+        "## Milestone\n"
+        "### TASK-001: Первая\n- Приоритет: P1 | ✅ DONE\n"
+        "### TASK-002: Вторая\n- Приоритет: P1 | 🔄 IN_PROGRESS\n",
+    )
+    _write_claim(repo, "TASK-002", baseline_sha=baseline, red_sha=honest_red_sha)
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+    assert tdd_gate.load_verdict(repo, "TASK-002") is None
+
+
 def test_verify_forged_verdict_foreign_red_sha_is_error(repo: Path) -> None:
     _red_and_implement(repo)
     claim = tdd_gate.load_claim(repo, "TASK-001")
