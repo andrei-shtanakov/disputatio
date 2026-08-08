@@ -11,7 +11,7 @@ contracts; здесь только имена состояний (`SessionPhase`
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from disputatio.contracts.base import ArtifactBase, ArtifactChild, Role
 
@@ -84,3 +84,14 @@ class SessionState(ArtifactBase):
     agents: dict[Role, AgentRef]
     limits: Limits
     budget_used: BudgetUsed
+
+    @model_validator(mode="after")
+    def _require_both_agents(self) -> "SessionState":
+        # Тип dict[Role, AgentRef] допускает неполный набор; debate loop
+        # требует обоих агентов ([DESIGN-017], [REQ-019]).
+        missing = [role.value for role in Role if role not in self.agents]
+        if missing:
+            raise ValueError(
+                f"agents обязан содержать ключи author и reviewer; нет: {missing}"
+            )
+        return self
