@@ -2,4 +2,4 @@ project-includes = [
     "**/*.py*",
     "**/*.ipynb",
 ]
-search-path = ["scripts"]
+search-path = ["scripts", "tests"]

@@ -26,10 +26,17 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 EVIDENCE = Path("spec/.tdd-evidence")
+
+# Команда запуска селектора в шаге 5 `cmd_red`. Вынесена в константу модуля,
+# чтобы тесты могли подменить её через monkeypatch (tmp-репо фикстуры — не
+# uv-проект, `uv run pytest` внутри него не работает).
+PYTEST_CMD: tuple[str, ...] = ("uv", "run", "pytest", "-q")
 
 _TASK_HEADING_RE = re.compile(r"^#{2,6}\s+([A-Z][A-Z0-9]*-\d+)\b")
 # Кандидат в meta-строку: list-item (буллет `-`/`*` после отступа),
@@ -85,9 +92,7 @@ def _check_schema(data: dict[str, object], expected: str, kind: str) -> None:
     """Проверяет поле `schema` в evidence-словаре; несовпадение → GateError."""
     schema = data.get("schema")
     if schema != expected:
-        raise GateError(
-            f"{kind}: неверная схема {schema!r}, ожидается {expected!r}"
-        )
+        raise GateError(f"{kind}: неверная схема {schema!r}, ожидается {expected!r}")
 
 
 @dataclass(frozen=True)
@@ -327,9 +332,7 @@ def resolve_current_task(root: Path) -> str:
     if not running:
         raise GateError("нет задачи со статусом IN_PROGRESS/REVIEW в spec/*tasks.md")
     if len(running) > 1:
-        raise GateError(
-            f"больше одной текущей задачи: {', '.join(running)}"
-        )
+        raise GateError(f"больше одной текущей задачи: {', '.join(running)}")
     return running[0]
 
 
@@ -365,9 +368,13 @@ def changed_paths(root: Path) -> list[str]:
 
     Парсит `git status --porcelain -z`: каждая запись — `XY PATH\\0`, а для
     rename/copy (`X` или `Y` равен `R`/`C`) добавляется вторая NUL-секция с
-    исходным путём — в результат попадают обе стороны.
+    исходным путём — в результат попадают обе стороны. `--untracked-files=all`
+    обязателен: без него `git status` схлопывает полностью неотслеживаемую
+    директорию (например, ранее пустой `spec/`) в одну запись `spec/` вместо
+    перечисления файлов внутри — такую запись `classify_changes` не может
+    сопоставить ни с одним правилом.
     """
-    raw = _git_stdout(root, "status", "--porcelain", "-z")
+    raw = _git_stdout(root, "status", "--porcelain", "-z", "--untracked-files=all")
     tokens = [t for t in raw.split("\x00") if t]
     paths: list[str] = []
     i = 0
@@ -398,9 +405,7 @@ def _is_allowed_path(path: str, task_id: str) -> bool:
     return _TASK_HISTORY_RE.match(path) is not None
 
 
-def classify_changes(
-    paths: list[str], task_id: str
-) -> tuple[list[str], list[str]]:
+def classify_changes(paths: list[str], task_id: str) -> tuple[list[str], list[str]]:
     """Делит `paths` на (allowed, forbidden) относительно задачи `task_id`."""
     allowed: list[str] = []
     forbidden: list[str] = []
@@ -433,9 +438,7 @@ def find_red_commit_by_trailer(root: Path, task_id: str) -> str | None:
     `None`, если такого коммита нет. `git log` по умолчанию отдаёт коммиты
     от новых к старым, поэтому первое совпадение — самое свежее.
     """
-    output = git(
-        root, "log", "--format=%H%x00%(trailers:key=TDD-Red-Task,valueonly)"
-    )
+    output = git(root, "log", "--format=%H%x00%(trailers:key=TDD-Red-Task,valueonly)")
     if not output:
         return None
     for line in output.split("\n"):
@@ -443,3 +446,191 @@ def find_red_commit_by_trailer(root: Path, task_id: str) -> str | None:
         if value.strip() == task_id:
             return sha
     return None
+
+
+def _claim_path(root: Path, task_id: str) -> Path:
+    """Путь к claim-файлу задачи `task_id`."""
+    return root / EVIDENCE / "claims" / f"{task_id}.json"
+
+
+def _commit_exists(root: Path, sha: str) -> bool:
+    """Проверяет, что `sha` — коммит, присутствующий в истории `root`."""
+    try:
+        git(root, "cat-file", "-e", f"{sha}^{{commit}}")
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def _trailer_value(root: Path, sha: str, key: str) -> str:
+    """Возвращает значение трейлера `key` коммита `sha` (пусто, если нет)."""
+    return git(root, "show", "-s", f"--format=%(trailers:key={key},valueonly)", sha)
+
+
+def _is_claim_resolved(root: Path, task_id: str) -> bool:
+    """`True`, если claim задачи закрыт PASS/WAIVED-вердиктом.
+
+    Закрытый claim не «pending» — supersession новым red поверх него
+    запрещена в v1 (см. `_cmd_red`, шаг 7).
+    """
+    verdict = load_verdict(root, task_id)
+    return verdict is not None and verdict.verdict in (CAT_PASS, CAT_WAIVED)
+
+
+def _foreign_pending_claim(root: Path, task_id: str) -> str | None:
+    """ID чужой задачи с pending claim'ом (без PASS/WAIVED), если есть."""
+    claims_dir = root / EVIDENCE / "claims"
+    if not claims_dir.exists():
+        return None
+    for path in sorted(claims_dir.glob("*.json")):
+        other_id = path.stem
+        if other_id == task_id:
+            continue
+        if load_claim(root, other_id) is not None and not _is_claim_resolved(
+            root, other_id
+        ):
+            return other_id
+    return None
+
+
+def _recover_claim_from_commit(
+    root: Path, task_id: str, red_sha: str, expected_behavior: str
+) -> Claim:
+    """Восстанавливает и записывает claim из трейлеров red-коммита `red_sha`.
+
+    Шаг 8 (recovery-ветка): предыдущий запуск `red` создал коммит, но упал
+    до записи claim'а. Baseline и selector берутся из трейлеров самого
+    коммита (источник истины), а не из аргументов текущего вызова.
+    """
+    baseline = _trailer_value(root, red_sha, "TDD-Baseline")
+    selector = _trailer_value(root, red_sha, "TDD-Selector")
+    created_at = git(root, "show", "-s", "--format=%cI", red_sha)
+    claim = Claim(
+        task_id=task_id,
+        selector=selector,
+        expected_behavior=expected_behavior,
+        baseline_sha=baseline,
+        red_sha=red_sha,
+        created_at=created_at,
+        revision=1,
+    )
+    write_json_atomic(_claim_path(root, task_id), claim.to_json())
+    return claim
+
+
+def _run_selector(root: Path, selector: str) -> tuple[str, str]:
+    """Запускает `PYTEST_CMD selector` в `root`, классифицирует результат.
+
+    `"expected_fail"` — exit 1, `AssertionError` в выводе, падает именно
+    селектор; `"green"` — exit 0, тест ничего не доказывает; `"error"` —
+    всё прочее (collection/import/окружение). Возвращает пару
+    (категория, объединённый stdout+stderr).
+    """
+    result = subprocess.run(
+        [*PYTEST_CMD, selector],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if result.returncode == 0:
+        return "green", output
+    if result.returncode == 1 and "AssertionError" in output and selector in output:
+        return "expected_fail", output
+    return "error", output
+
+
+def cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
+    """Команда `red`: фиксирует red-чекпоинт для текущей задачи.
+
+    Реализует 8-шаговую логику из плана: резолвит текущую задачу,
+    учитывает свой и чужие pending claim'ы (идемпотентность и recovery),
+    запрещает продуктовые правки до red, запускает селектор и коммитит
+    только `tests/` с claim'ом. Возвращает код по контракту скрипта: `0` —
+    OK (в т.ч. идемпотентный повтор), `1` — FAIL, `3` — ERROR. `GateError`
+    из внутренней логики перехватывается здесь же и превращается в код
+    возврата, чтобы вызывающий код (включая будущий CLI) работал с чистым
+    `int`, не заботясь об исключениях.
+    """
+    try:
+        return _cmd_red(root, selector, expected_behavior)
+    except GateError as exc:
+        print(f"red: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+
+def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
+    """Логика `cmd_red`; `GateError` пробрасывается наружу (перехват — выше)."""
+    task_id = resolve_current_task(root)  # шаг 1
+
+    own_claim = load_claim(root, task_id)
+    if own_claim is None:
+        # Шаг 8 (recovery): claim не записан, но red-коммит уже есть —
+        # предыдущий запуск упал между commit_red и записью claim'а.
+        recovered_sha = find_red_commit_by_trailer(root, task_id)
+        if recovered_sha is not None:
+            _recover_claim_from_commit(root, task_id, recovered_sha, expected_behavior)
+            return 0
+    elif not _is_claim_resolved(root, task_id):
+        # Шаг 2: существующий pending claim этой задачи.
+        if _commit_exists(root, own_claim.red_sha):
+            return 0  # идемпотентный повтор — второй red-коммит не создаётся
+        recovered_sha = find_red_commit_by_trailer(root, task_id)
+        if recovered_sha is not None:
+            return 0  # sha в claim устарел, но коммит найден по трейлеру
+        raise GateError(
+            f"{task_id}: claim ссылается на red-коммит {own_claim.red_sha}, "
+            "которого нет в истории, и по трейлеру ничего не найдено — "
+            "recovery невозможен"
+        )
+    # else: own_claim закрыт PASS/WAIVED — падаем на шаг 7 (supersession).
+
+    # Шаг 3: чужой pending claim блокирует запуск.
+    foreign = _foreign_pending_claim(root, task_id)
+    if foreign is not None:
+        raise GateError(f"чужой pending claim блокирует red: {foreign}")
+
+    # Шаг 4: продуктовый код менять до red нельзя.
+    _, forbidden = classify_changes(changed_paths(root), task_id)
+    if forbidden:
+        print(
+            "red: запрещённые правки до red-чекпоинта: " + ", ".join(forbidden),
+            file=sys.stderr,
+        )
+        return 1
+
+    # Шаг 5: запуск селектора.
+    baseline = head_sha(root)
+    category, output = _run_selector(root, selector)
+    if category == "green":
+        print(
+            f"red: {selector} не падает — он ничего не доказывает",
+            file=sys.stderr,
+        )
+        return 1
+    if category == "error":
+        raise GateError(
+            f"{selector}: селектор упал не так, как ожидалось "
+            f"(ни зелёный, ни AssertionError)\n{output}"
+        )
+
+    # Шаг 6: red-коммит.
+    red_sha = commit_red(root, task_id, baseline, selector)
+
+    # Шаг 7: запись claim. Supersession (уже есть PASS/WAIVED) запрещена в v1.
+    if own_claim is not None:
+        raise GateError(
+            f"{task_id}: supersession запрещена — claim уже закрыт вердиктом"
+        )
+    claim = Claim(
+        task_id=task_id,
+        selector=selector,
+        expected_behavior=expected_behavior,
+        baseline_sha=baseline,
+        red_sha=red_sha,
+        created_at=datetime.now(UTC).isoformat(),
+        revision=1,
+    )
+    write_json_atomic(_claim_path(root, task_id), claim.to_json())
+    return 0

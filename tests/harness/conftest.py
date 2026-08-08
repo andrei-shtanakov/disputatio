@@ -18,8 +18,17 @@ def repo(tmp_path: Path) -> Path:
     (tmp_path / "tests").mkdir()
     (tmp_path / "src").mkdir()
     (tmp_path / "spec").mkdir()
-    (tmp_path / "tests" / "test_seed.py").write_text("def test_seed():\n    assert True\n")
+    (tmp_path / "tests" / "test_seed.py").write_text(
+        "def test_seed():\n    assert True\n"
+    )
     (tmp_path / "src" / "mod.py").write_text("X = 1\n")
     run("git", "add", "-A")
     run("git", "commit", "-qm", "seed")
     return tmp_path
+
+
+def write_tasks(root: Path, name: str, body: str) -> None:
+    """Пишет `root/spec/name` с содержимым `body`, создавая `spec/` при нужде."""
+    spec = root / "spec"
+    spec.mkdir(exist_ok=True)
+    (spec / name).write_text(body)
