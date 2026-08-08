@@ -1,4 +1,4 @@
-"""Тесты validation.py: TASK-008 (degrade, [REQ-009]) и TASK-009 (check_*).
+"""Тесты validation.py: TASK-008 (degrade), TASK-009 (check_*), TASK-010 (конвейер).
 
 Импорты `disputatio.contracts.validation` выполняются внутри тестов: на
 момент red-чекпоинта модуля ещё нет, и импорт на уровне модуля сломал бы
@@ -340,3 +340,65 @@ def test_reason_codes_distinct_nonempty_strings() -> None:
     }
     assert len(codes) == 3
     assert all(isinstance(code, str) and code for code in codes)
+
+
+# --- TASK-010: конвейер validate_review ([DESIGN-008], ADR-003) ---
+
+
+def test_degradation_removing_last_blocker_rejects_review() -> None:
+    """REQ-009→REQ-008: деградация сняла единственный blocker → accepted=False.
+
+    request_changes с одним голословным blocker: после деградации в ревью
+    нет blocker|major, конвейер отклоняет его с REASON_NO_SUBSTANTIVE_ISSUES,
+    id issue попадает в degraded_issue_ids, а в `acceptance.review` issue
+    уже minor.
+    """
+    try:
+        from disputatio.contracts.validation import (
+            REASON_NO_SUBSTANTIVE_ISSUES,
+            validate_review,
+        )
+    except ImportError as exc:  # red-фаза: validate_review ещё не реализована
+        raise AssertionError("validate_review ещё не реализована") from exc
+
+    review = make_review([make_issue("R3-1", "blocker", evidence="")])
+    acceptance = validate_review(review, make_verification("pass"))
+    assert acceptance.accepted is False
+    assert acceptance.rejection_reasons == [REASON_NO_SUBSTANTIVE_ISSUES]
+    assert acceptance.degraded_issue_ids == ["R3-1"]
+    assert acceptance.review.issues[0].severity == "minor"
+
+
+def test_all_violated_rules_accumulated() -> None:
+    """Накопление причин: approve при fail + пустой checked → ВСЕ коды сразу."""
+    from disputatio.contracts.validation import (
+        REASON_APPROVE_ON_FAILED_GATES,
+        REASON_EMPTY_CHECKED,
+        validate_review,
+    )
+
+    review = make_review([], verdict="approve", checked=[])
+    acceptance = validate_review(review, make_verification("fail"))
+    assert acceptance.accepted is False
+    assert len(acceptance.rejection_reasons) == 2
+    assert set(acceptance.rejection_reasons) == {
+        REASON_APPROVE_ON_FAILED_GATES,
+        REASON_EMPTY_CHECKED,
+    }
+
+
+def test_valid_review_accepted_and_inputs_not_mutated() -> None:
+    """Валидное ревью → accepted=True, пустые списки; входы не мутированы."""
+    from disputatio.contracts.validation import validate_review
+
+    review = make_review([make_issue("R3-1", "blocker")])
+    verification = make_verification("pass")
+    review_snapshot = copy.deepcopy(review)
+    verification_snapshot = copy.deepcopy(verification)
+    acceptance = validate_review(review, verification)
+    assert acceptance.accepted is True
+    assert acceptance.degraded_issue_ids == []
+    assert acceptance.rejection_reasons == []
+    assert acceptance.review == review
+    assert review == review_snapshot
+    assert verification == verification_snapshot
