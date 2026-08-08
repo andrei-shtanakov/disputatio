@@ -47,9 +47,17 @@ spec_runner:
   auto_commit: true
   create_git_branch: true
   run_tests_on_done: true
-  test_command: "uv run pytest -q"
+  test_command: "uv run python scripts/tdd_gate.py verify && uv run pytest -q"
   run_lint_on_done: true
   lint_command: "uv run ruff check ."
+  extra_executor_config:
+    executor:
+      harness_guard: strict
+      harness_files:
+        - scripts/tdd_gate.py
+        - spec/plugins/tdd-gate
+        - spec/.tdd-evidence/verdicts
+        - spec/.tdd-evidence/waivers
 
 workstreams:
   # ---- волна 0: contract layer (единственный корень, INV-03) ----
