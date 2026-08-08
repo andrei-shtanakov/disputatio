@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Headless author↔reviewer debate-loop orchestrator"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+]
 
 [dependency-groups]
 dev = [
