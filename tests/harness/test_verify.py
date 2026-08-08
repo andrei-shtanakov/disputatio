@@ -1,5 +1,6 @@
 """Команда `verify` (+ waiver) и `audit` (см. task-5-brief.md)."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -180,8 +181,6 @@ def test_verify_head_moved_triggers_reverification_and_history(repo: Path) -> No
 
     history_lines = _history_path(repo).read_text().splitlines()
     assert len(history_lines) == 1
-    import json
-
     archived = json.loads(history_lines[0])
     assert archived["verified_head"] == first_verdict.verified_head
 
@@ -259,6 +258,57 @@ def test_verify_waiver_baseline_not_ancestor_is_fail(repo: Path) -> None:
     assert tdd_gate.load_verdict(repo, "TASK-001") is None
 
 
+def test_verify_waived_then_claimed_transitions_to_pass_with_history(
+    repo: Path,
+) -> None:
+    """Fix round 1 (MEDIUM): waived -> claimed — легитимный переход, не forgery.
+
+    WAIVED-verdict имеет `red_sha == ""`; сравнение с `claim.red_sha` при
+    более позднем `red` не должно трактоваться как подделка (регресс:
+    раньше это давало exit 3). Старый WAIVED обязан уйти в history ДО
+    перезаписи verdict'а новым PASS.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    baseline = tdd_gate.head_sha(repo)
+    tdd_gate.write_json_atomic(
+        _waiver_path(repo),
+        tdd_gate.Waiver(
+            task_id="TASK-001",
+            reason="временный waiver",
+            approved_by="human",
+            baseline_sha=baseline,
+        ).to_json(),
+    )
+    waived_code = tdd_gate.cmd_verify(repo)
+    assert waived_code == 0
+    waived_verdict = tdd_gate.load_verdict(repo, "TASK-001")
+    assert waived_verdict is not None
+    assert waived_verdict.verdict == tdd_gate.CAT_WAIVED
+    # Эвиденс WAIVED-цикла коммитится (реалистичный флоу — иначе `red`
+    # споткнётся о них как о запрещённых правках до red-чекпоинта, шаг 4
+    # `cmd_red`; это независимо от бага из finding'а, который тут
+    # проверяется — совместимости verdict'а с claim'ом).
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "evidence: waived TASK-001")
+
+    _write_gate_test(repo)
+    red_code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert red_code == 0
+    _implement(repo)
+
+    verify_code = tdd_gate.cmd_verify(repo)
+
+    assert verify_code == 0
+    verdict = tdd_gate.load_verdict(repo, "TASK-001")
+    assert verdict is not None
+    assert verdict.verdict == tdd_gate.CAT_PASS
+
+    history_lines = _history_path(repo).read_text().splitlines()
+    assert len(history_lines) == 1
+    archived = json.loads(history_lines[0])
+    assert archived["verdict"] == tdd_gate.CAT_WAIVED
+
+
 # --- forged / incompatible verdict, chain violations -------------------------
 
 
@@ -276,6 +326,56 @@ def test_verify_forged_verdict_foreign_red_sha_is_error(repo: Path) -> None:
     code = tdd_gate.cmd_verify(repo)
 
     assert code == 3
+
+
+def test_verify_bad_baseline_sha_is_error_not_traceback(repo: Path) -> None:
+    """Fix round 1 (HIGH): битый baseline_sha → чистый exit 3, не traceback.
+
+    Claim с несуществующим `baseline_sha` при валидном `red_sha` раньше
+    падал сырым `CalledProcessError` из `_diff_paths` (`git diff` не может
+    резолвить baseline). Симметричная проверка `_commit_exists` для
+    `baseline_sha` (рядом с уже существовавшей для `red_sha`) ловит это
+    раньше, вместе с `_diff_paths`, обёрнутым в `GateError` на случай
+    прочих сбоев `git diff`.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_gate_test(repo)
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert code == 0
+    claim = tdd_gate.load_claim(repo, "TASK-001")
+    assert claim is not None
+    _write_claim(repo, baseline_sha="a" * 40, red_sha=claim.red_sha)
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+
+
+def test_verify_worktree_add_failure_is_error_and_cleans_up(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fix round 1 (HIGH): сбой `git worktree add` → exit 3, worktree list чист.
+
+    Форсируем коллизию: подменяем `tempfile.mkdtemp` на директорию,
+    заранее занятую посторонним файлом — `git worktree add` с непустой
+    целевой директорией фейлится `CalledProcessError`. Раньше это
+    всплывало сырым traceback'ом вместо контрактного exit 3; cleanup
+    (`remove --force` -> `prune` при неудаче) обязан не оставить
+    репозиторий с висящей worktree-регистрацией.
+    """
+    _red_and_implement(repo)
+    collision_dir = tmp_path / "collision"
+    collision_dir.mkdir()
+    (collision_dir / "stray.txt").write_text("занято до git worktree add\n")
+    monkeypatch.setattr(
+        tdd_gate.tempfile, "mkdtemp", lambda prefix="": str(collision_dir)
+    )
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+    worktree_list = tdd_gate.git(repo, "worktree", "list", "--porcelain")
+    assert str(collision_dir) not in worktree_list
 
 
 def test_verify_red_sha_not_ancestor_is_error(repo: Path) -> None:

@@ -752,8 +752,16 @@ def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
 
 
 def _diff_paths(root: Path, base: str, head: str) -> list[str]:
-    """Возвращает пути, изменённые в диапазоне `base..head` (`git diff --name-only`)."""
-    output = git(root, "diff", "--name-only", f"{base}..{head}")
+    """Возвращает пути, изменённые в диапазоне `base..head` (`git diff --name-only`).
+
+    `CalledProcessError` (например, `base`/`head` — невалидный/недостижимый
+    SHA) превращается в `GateError` — контракт скрипта («любая ошибка →
+    exit 3») не терпит сырых traceback'ов из subprocess.
+    """
+    try:
+        output = git(root, "diff", "--name-only", f"{base}..{head}")
+    except subprocess.CalledProcessError as exc:
+        raise GateError(f"git diff {base}..{head} упал: {exc.stderr}") from exc
     return [line for line in output.split("\n") if line]
 
 
@@ -764,13 +772,20 @@ def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
     запускает `_run_selector` с `cwd=worktree` — категории результата те
     же, что у `_run_selector`: `"green"` (реализация уже была в
     red-коммите — red не был красным), `"expected_fail"` (ожидаемо),
-    `"error"`. Worktree убирается в `finally`: `git worktree remove
-    --force`, а если это не удалось — `git worktree prune`, чтобы не
-    оставить репозиторий с висящей worktree-регистрацией.
+    `"error"`. Сбой самого `git worktree add` (битый `red_sha`, конфликт
+    целевой директории) — `CalledProcessError`, превращается в `GateError`,
+    а не всплывает сырым traceback'ом. Worktree убирается в `finally`:
+    `git worktree remove --force`, а если это не удалось — `git worktree
+    prune`, чтобы не оставить репозиторий с висящей worktree-регистрацией.
     """
     tmp_dir = tempfile.mkdtemp(prefix="tdd-gate-replay-")
     try:
-        git(root, "worktree", "add", "--detach", tmp_dir, red_sha)
+        try:
+            git(root, "worktree", "add", "--detach", tmp_dir, red_sha)
+        except subprocess.CalledProcessError as exc:
+            raise GateError(
+                f"не удалось создать replay-worktree на {red_sha}: {exc.stderr}"
+            ) from exc
         return _run_selector(Path(tmp_dir), selector)
     finally:
         try:
@@ -849,17 +864,32 @@ def _cmd_verify(root: Path) -> int:
     # Шаги 3-4: совместимость и идемпотентность существующего verdict'а.
     existing = load_verdict(root, task_id)
     if existing is not None:
-        if existing.red_sha != claim.red_sha:
-            raise GateError(
-                f"{task_id}: verdict.red_sha={existing.red_sha!r} не совпадает "
-                f"с claim.red_sha={claim.red_sha!r} — рассинхрон/подделка"
-            )
-        if existing.verdict == CAT_PASS:
-            if existing.verified_head == head:
-                return 0  # идемпотентный PASS — второй verdict не пишется
+        if existing.verdict == CAT_WAIVED:
+            # waived -> claimed: легитимный переход (решение контроллера,
+            # fix round 1). У WAIVED-verdict'а red_sha всегда "" (см.
+            # `_verify_without_claim`) — сравнивать его с claim.red_sha как
+            # forgery бессмысленно. Архивируем и идём в полную
+            # верификацию ниже вместо возврата/раннего exit 3.
             _append_verdict_history(root, task_id, existing)
+        else:
+            if existing.red_sha != claim.red_sha:
+                raise GateError(
+                    f"{task_id}: verdict.red_sha={existing.red_sha!r} не совпадает "
+                    f"с claim.red_sha={claim.red_sha!r} — рассинхрон/подделка"
+                )
+            if existing.verdict == CAT_PASS:
+                if existing.verified_head == head:
+                    return 0  # идемпотентный PASS — второй verdict не пишется
+                _append_verdict_history(root, task_id, existing)
 
-    # Шаг 5: red_sha существует, предок HEAD, диапазон трогает только tests/.
+    # Шаг 5: baseline_sha/red_sha существуют, red_sha предок HEAD, диапазон
+    # трогает только tests/. Проверка baseline_sha симметрична проверке
+    # red_sha ниже — битый/несуществующий SHA обязан давать чистый exit 3
+    # через GateError, а не CalledProcessError из `_diff_paths`.
+    if not _commit_exists(root, claim.baseline_sha):
+        raise GateError(
+            f"{task_id}: baseline_sha {claim.baseline_sha} отсутствует в истории"
+        )
     if not _commit_exists(root, claim.red_sha):
         raise GateError(f"{task_id}: red_sha {claim.red_sha} отсутствует в истории")
     if not _is_ancestor(root, claim.red_sha, head):
