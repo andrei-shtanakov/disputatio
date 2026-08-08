@@ -25,6 +25,7 @@ collection error.
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,12 @@ _META_CANDIDATE_RE = re.compile(r"^\s*[-*]\s.*\|")
 _STATUS_TOKEN_RE = re.compile(
     r"^(?:(?:🔄|🔍|⬜|✅|⏸️)\s*)?(IN_PROGRESS|REVIEW)$", re.IGNORECASE
 )
+
+# Runner-owned пути: правки, которые spec-runner делает сам ДО старта агента
+# (пометка задачи in_progress) или которые агент обязан вносить как часть
+# claim'а. Не файлы реализации — но и не `tests/`.
+_TASKS_MD_RE = re.compile(r"^spec/[^/]*tasks\.md$")
+_TASK_HISTORY_RE = re.compile(r"^spec/\.[^/]*task-history\.log$")
 
 CAT_PASS = "PASS"
 CAT_EXPECTED_FAIL = "EXPECTED_FAIL"
@@ -324,3 +331,115 @@ def resolve_current_task(root: Path) -> str:
             f"больше одной текущей задачи: {', '.join(running)}"
         )
     return running[0]
+
+
+def _git_stdout(root: Path, *args: str) -> str:
+    """Запускает `git *args` в `root`, возвращает stdout как есть (без strip).
+
+    Нужен отдельно от `git()`: в `--porcelain -z`-выводе `git status`
+    ведущий пробел первой записи значим (разделяет index/worktree статус) —
+    его нельзя терять к общему `.strip()`.
+    """
+    result = subprocess.run(
+        ["git", *args],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def git(root: Path, *args: str) -> str:
+    """Запускает `git *args` в `root`, возвращает stdout без хвостовых пробелов."""
+    return _git_stdout(root, *args).strip()
+
+
+def head_sha(root: Path) -> str:
+    """Возвращает SHA текущего HEAD репозитория `root`."""
+    return git(root, "rev-parse", "HEAD")
+
+
+def changed_paths(root: Path) -> list[str]:
+    """Возвращает объединение staged/unstaged/untracked путей репозитория.
+
+    Парсит `git status --porcelain -z`: каждая запись — `XY PATH\\0`, а для
+    rename/copy (`X` или `Y` равен `R`/`C`) добавляется вторая NUL-секция с
+    исходным путём — в результат попадают обе стороны.
+    """
+    raw = _git_stdout(root, "status", "--porcelain", "-z")
+    tokens = [t for t in raw.split("\x00") if t]
+    paths: list[str] = []
+    i = 0
+    while i < len(tokens):
+        entry = tokens[i]
+        xy, path = entry[:2], entry[3:]
+        paths.append(path)
+        if "R" in xy or "C" in xy:
+            i += 1
+            paths.append(tokens[i])
+        i += 1
+    return paths
+
+
+def _is_allowed_path(path: str, task_id: str) -> bool:
+    """Решает, разрешён ли путь `path` в рамках задачи `task_id`.
+
+    Разрешены: всё под `tests/`, claims-файл текущей задачи, и правки
+    spec-runner'а (`spec/*tasks.md`, `spec/.task-history.log` и вариации
+    с иным префиксом после точки).
+    """
+    if path.startswith("tests/"):
+        return True
+    if path == f"spec/.tdd-evidence/claims/{task_id}.json":
+        return True
+    if _TASKS_MD_RE.match(path) is not None:
+        return True
+    return _TASK_HISTORY_RE.match(path) is not None
+
+
+def classify_changes(
+    paths: list[str], task_id: str
+) -> tuple[list[str], list[str]]:
+    """Делит `paths` на (allowed, forbidden) относительно задачи `task_id`."""
+    allowed: list[str] = []
+    forbidden: list[str] = []
+    for path in paths:
+        (allowed if _is_allowed_path(path, task_id) else forbidden).append(path)
+    return allowed, forbidden
+
+
+def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
+    """Коммитит red-чекпоинт: ТОЛЬКО `tests/`, с трейлерами claim'а.
+
+    Пишет исключительно через pathspec `tests/` (`add` + `commit` с явным
+    `-- tests/`) — никакого `-A`, посторонние staged-изменения (например,
+    `spec/tasks.md`) в коммит не попадают. Возвращает SHA нового коммита.
+    """
+    git(root, "add", "--", "tests/")
+    message = (
+        f"tdd-gate: red checkpoint {task_id}\n\n"
+        f"TDD-Red-Task: {task_id}\n"
+        f"TDD-Baseline: {baseline}\n"
+        f"TDD-Selector: {selector}\n"
+    )
+    git(root, "commit", "-m", message, "--", "tests/")
+    return head_sha(root)
+
+
+def find_red_commit_by_trailer(root: Path, task_id: str) -> str | None:
+    """Recovery: ищет последний коммит с трейлером `TDD-Red-Task: task_id`.
+
+    `None`, если такого коммита нет. `git log` по умолчанию отдаёт коммиты
+    от новых к старым, поэтому первое совпадение — самое свежее.
+    """
+    output = git(
+        root, "log", "--format=%H%x00%(trailers:key=TDD-Red-Task,valueonly)"
+    )
+    if not output:
+        return None
+    for line in output.split("\n"):
+        sha, _, value = line.partition("\x00")
+        if value.strip() == task_id:
+            return sha
+    return None
