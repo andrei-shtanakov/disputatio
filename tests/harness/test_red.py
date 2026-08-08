@@ -296,6 +296,76 @@ def test_red_ignores_untracked_gitignore_and_maestro_spec_files(repo: Path) -> N
     assert tdd_gate.load_claim(repo, "TASK-001") is not None
 
 
+def test_red_waived_then_claimed_repeat_red_is_idempotent_not_supersession(
+    repo: Path,
+) -> None:
+    """M4: `_is_claim_resolved`-асимметрия — waived (без claim) -> claimed.
+
+    Waiver закрывает задачу verdict'ом WAIVED, когда claim'а ещё не было
+    (`red_sha` в таком verdict'е всегда `""`, см. `_verify_without_claim`).
+    Если агент затем всё же честно проходит `red`, создаётся НОВЫЙ claim —
+    а старый WAIVED-verdict на диске всё ещё «резолвит» задачу по имени, но
+    НЕ по факту (он не про этот claim). Повторный вызов `red` над только
+    что созданным pending claim'ом обязан идти идемпотентной веткой (тот же
+    red-коммит уже есть), а не падать supersession-ошибкой из-за того, что
+    verdict формально WAIVED.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    baseline = tdd_gate.head_sha(repo)
+    tdd_gate.write_json_atomic(
+        repo / "spec" / ".tdd-evidence" / "waivers" / "TASK-001.json",
+        tdd_gate.Waiver(
+            task_id="TASK-001",
+            reason="временно одобрено",
+            approved_by="human",
+            baseline_sha=baseline,
+        ).to_json(),
+    )
+    waived_code = tdd_gate.cmd_verify(repo)
+    assert waived_code == 0
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "evidence: waived TASK-001")
+
+    _write_expected_fail_test(repo)
+    first_red = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert first_red == 0
+    commits_after_first = tdd_gate.git(repo, "rev-list", "--count", "HEAD")
+
+    second_red = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+
+    assert second_red == 0, "повтор обязан быть идемпотентным, а не supersession"
+    commits_after_second = tdd_gate.git(repo, "rev-list", "--count", "HEAD")
+    assert commits_after_second == commits_after_first
+
+
+def test_red_test_already_committed_before_red_is_clean_error(repo: Path) -> None:
+    """I3: тест закоммичен агентом ДО red → `commit_red` нечего коммитить.
+
+    `tests/` — разрешённый путь (`_is_allowed_path`), поэтому шаг 4
+    (запрещённые правки) это не ловит: working tree чист. Селектор красный
+    как и ожидалось, доходим до `commit_red` — `git add -- tests/` не
+    находит незакоммиченных изменений, `git commit` падает с "nothing to
+    commit". Раньше это всплывало сырым `CalledProcessError`; обязан быть
+    чистый exit 3 без traceback'а.
+    """
+    # __pycache__/, порождаемый прогоном селектора, обязан быть игнорируемым
+    # (как в реальном репо — см. корневой .gitignore) — иначе `git add --
+    # tests/` находит эти артефакты и "nothing to commit" не воспроизвести.
+    (repo / ".gitignore").write_text("__pycache__/\n")
+    tdd_gate.git(repo, "add", ".gitignore")
+    tdd_gate.git(repo, "commit", "-q", "-m", "chore: игнорировать pycache")
+
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_expected_fail_test(repo)
+    tdd_gate.git(repo, "add", "tests/test_new.py")
+    tdd_gate.git(repo, "commit", "-q", "-m", "тест уже в истории (нарушение потока)")
+
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+
+    assert code == 3
+    assert tdd_gate.load_claim(repo, "TASK-001") is None
+
+
 def test_red_recovers_claim_from_commit_trailer_when_claim_missing(
     repo: Path,
 ) -> None:

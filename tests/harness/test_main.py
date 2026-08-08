@@ -49,6 +49,26 @@ def test_main_red_happy_path_prints_ok_summary(
     assert tdd_gate.load_claim(repo, "TASK-001") is not None
 
 
+def test_main_red_node_id_flag_is_equivalent_to_k(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M1: `--node-id` — основное имя флага (`-k` остаётся алиасом)."""
+    monkeypatch.chdir(repo)
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    (repo / "tests" / "test_new.py").write_text(
+        "def test_x():\n    assert False, 'not implemented'\n"
+    )
+
+    code = tdd_gate.main(["red", "--node-id", SELECTOR, "-m", "новая фича"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "tdd-gate red: OK" in out
+    claim = tdd_gate.load_claim(repo, "TASK-001")
+    assert claim is not None
+    assert claim.selector == SELECTOR
+
+
 def test_main_verify_no_claim_prints_fail_summary(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

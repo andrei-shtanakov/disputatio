@@ -479,6 +479,11 @@ def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
     Пишет исключительно через pathspec `tests/` (`add` + `commit` с явным
     `-- tests/`) — никакого `-A`, посторонние staged-изменения (например,
     `spec/tasks.md`) в коммит не попадают. Возвращает SHA нового коммита.
+
+    `CalledProcessError` (I3) — обычно `git commit` не находит изменений
+    под `tests/`: агент коммитит тест-файл сам ДО `red`, в обход потока
+    (шаг 4 `_cmd_red` это не ловит — `tests/` разрешённый путь, working
+    tree чист). Превращается в понятный `GateError`, а не сырой traceback.
     """
     git(root, "add", "--", "tests/")
     message = (
@@ -487,7 +492,15 @@ def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
         f"TDD-Baseline: {baseline}\n"
         f"TDD-Selector: {selector}\n"
     )
-    git(root, "commit", "-m", message, "--", "tests/")
+    try:
+        git(root, "commit", "-m", message, "--", "tests/")
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stdout or "") + (exc.stderr or "")
+        if "nothing to commit" in output or "nothing added to commit" in output:
+            raise GateError(
+                f"{task_id}: нечего коммитить в tests/ — тест уже в истории?"
+            ) from exc
+        raise GateError(f"{task_id}: red-коммит упал: {output}") from exc
     return head_sha(root)
 
 
@@ -526,14 +539,24 @@ def _trailer_value(root: Path, sha: str, key: str) -> str:
     return git(root, "show", "-s", f"--format=%(trailers:key={key},valueonly)", sha)
 
 
-def _is_claim_resolved(root: Path, task_id: str) -> bool:
-    """`True`, если claim задачи закрыт PASS/WAIVED-вердиктом.
+def _is_claim_resolved(root: Path, task_id: str, claim: Claim) -> bool:
+    """`True`, если ИМЕННО этот `claim` закрыт PASS/WAIVED-вердиктом.
 
     Закрытый claim не «pending» — supersession новым red поверх него
-    запрещена в v1 (см. `_cmd_red`, шаг 7).
+    запрещена в v1 (см. `_cmd_red`, шаг 7). Сверяет `verdict.red_sha` с
+    `claim.red_sha` (M4): WAIVED-verdict, записанный ДО появления claim'а
+    (`_verify_without_claim`, `red_sha` всегда `""`), не резолвит claim,
+    созданный позже честным `red` — иначе повторный `red` над только что
+    созданным pending claim'ом ошибочно трактовался бы как supersession
+    (verdict формально WAIVED, но не про этот claim) вместо идемпотентного
+    повтора.
     """
     verdict = load_verdict(root, task_id)
-    return verdict is not None and verdict.verdict in (CAT_PASS, CAT_WAIVED)
+    return (
+        verdict is not None
+        and verdict.verdict in (CAT_PASS, CAT_WAIVED)
+        and verdict.red_sha == claim.red_sha
+    )
 
 
 def _foreign_pending_claim(root: Path, task_id: str) -> str | None:
@@ -545,8 +568,9 @@ def _foreign_pending_claim(root: Path, task_id: str) -> str | None:
         other_id = path.stem
         if other_id == task_id:
             continue
-        if load_claim(root, other_id) is not None and not _is_claim_resolved(
-            root, other_id
+        other_claim = load_claim(root, other_id)
+        if other_claim is not None and not _is_claim_resolved(
+            root, other_id, other_claim
         ):
             return other_id
     return None
@@ -611,13 +635,18 @@ def cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     OK (в т.ч. идемпотентный повтор), `1` — FAIL, `3` — ERROR. `GateError`
     из внутренней логики перехватывается здесь же и превращается в код
     возврата, чтобы вызывающий код (включая будущий CLI) работал с чистым
-    `int`, не заботясь об исключениях.
+    `int`, не заботясь об исключениях. `CalledProcessError` (I3) — сеть
+    безопасности на случай git-сбоя, не обёрнутого явно ниже по стеку
+    (аналогично `cmd_audit`): контракт скрипта не терпит сырых traceback'ов.
     """
     try:
         return _cmd_red(root, selector, expected_behavior)
     except GateError as exc:
         print(f"red: {exc}", file=sys.stderr)
         return exc.exit_code
+    except subprocess.CalledProcessError as exc:
+        print(f"red: git-команда упала: {exc.stderr}", file=sys.stderr)
+        return 3
 
 
 def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
@@ -632,7 +661,7 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
         if recovered_sha is not None:
             _recover_claim_from_commit(root, task_id, recovered_sha, expected_behavior)
             return 0
-    elif not _is_claim_resolved(root, task_id):
+    elif not _is_claim_resolved(root, task_id, own_claim):
         # Шаг 2: существующий pending claim этой задачи.
         if _commit_exists(root, own_claim.red_sha):
             return 0  # идемпотентный повтор — второй red-коммит не создаётся
@@ -1118,13 +1147,17 @@ def cmd_audit(root: Path) -> int:
     Ничего не переигрывает — только читает evidence с диска (дёшево,
     идемпотентно). Предназначена для post_done-плагина spec-runner.
     `GateError` из внутренней логики (битый evidence) перехватывается
-    здесь же, как и в `cmd_red`/`cmd_verify`.
+    здесь же, как и в `cmd_red`/`cmd_verify`. `CalledProcessError` (I3) —
+    та же сеть безопасности, что и в `cmd_red`.
     """
     try:
         return _cmd_audit(root)
     except GateError as exc:
         print(f"audit: {exc}", file=sys.stderr)
         return exc.exit_code
+    except subprocess.CalledProcessError as exc:
+        print(f"audit: git-команда упала: {exc.stderr}", file=sys.stderr)
+        return 3
 
 
 def _cmd_audit(root: Path) -> int:
@@ -1153,7 +1186,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     red_parser = subparsers.add_parser("red", help="зафиксировать red-чекпоинт")
-    red_parser.add_argument("-k", "--selector", required=True, help="pytest-селектор")
+    # M1: --node-id — основное имя флага (полный pytest node-id,
+    # tests/file.py::test_name); -k оставлен алиасом для совместимости.
+    red_parser.add_argument(
+        "-k",
+        "--node-id",
+        dest="selector",
+        required=True,
+        help="полный pytest node-id, например tests/file.py::test_name",
+    )
     red_parser.add_argument("-m", "--message", default="", help="ожидаемое поведение")
 
     subparsers.add_parser("verify", help="реиграть red-чекпоинт текущей задачи")

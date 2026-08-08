@@ -28,8 +28,6 @@ extend-exclude = [".claude/skills/spec-generator-skill/templates"]
 extend-select = ["I"]
 
 [tool.pyrefly]
-# ВНИМАНИЕ: при наличии pyrefly.toml этот блок игнорируется целиком (pyrefly
-# не мёржит конфиги); реальный конфиг — pyrefly.toml
 project-includes = [
     "**/*.py*",
     "**/*.ipynb",
