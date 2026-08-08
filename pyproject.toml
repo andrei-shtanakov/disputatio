@@ -22,7 +22,7 @@ packages = ["src/disputatio"]
 
 [tool.ruff]
 line-length = 88
-extend-exclude = [".claude"]
+extend-exclude = [".claude/skills/spec-generator-skill/templates"]
 
 [tool.ruff.lint]
 extend-select = ["I"]

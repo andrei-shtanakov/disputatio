@@ -45,13 +45,13 @@ pyrefly, hatchling (build backend).
   `D0-LINT-01`, `D0-TYPE-01`, `D0-SPEC-01`, `D0-MUT-01` — Task 3 исполняет их
   дословно; D5 переиспользует с `phase=integration`.
 
-- [ ] **Step 1: Создать ветку**
+- [x] **Step 1: Создать ветку**
 
 ```bash
 git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 ```
 
-- [ ] **Step 2: Записать протокол**
+- [x] **Step 2: Записать протокол**
 
 Создать `docs/plans/D0-certification-protocol.md` со следующим содержимым
 (дословно; это - контракт, Task 3 исполняет его построчно):
@@ -63,6 +63,10 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 > `D0-transcript-<phase>-<date>.md`. Параметр `phase = baseline | integration`.
 > Будущий `spec-runner bootstrap` (D7-B) обязан воспроизводить наблюдаемое
 > поведение транскрипта.
+>
+> Редакция: 2 (2026-08-08) — исправления по финальному ревью ветки
+> d0-baseline; исходная редакция (1) закоммичена в d551952 и исполнена
+> baseline-прогоном.
 
 ## Категории выхода
 
@@ -74,38 +78,50 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 | `UNEXPECTED_FAIL` | упало не то или не так (чужие тесты, другой участок) |
 | `ERROR` | команда не смогла отработать (import/collection error, окружение) |
 
-Вердикт фазы: все blocking-проверки = `OK` (или предписанный `EXPECTED_FAIL`
-внутри D0-MUT-01), любые `WARN` перечислены в транскрипте явно.
+Вердикт фазы: все проверки с `blocking = yes` (колонка «Проверки») дают `OK`
+(или предписанный `EXPECTED_FAIL` внутри D0-MUT-01); проверки с
+`blocking = no` (сейчас только D0-GIT-04) могут быть `WARN` без срыва
+вердикта. Любые `WARN` перечисляются в транскрипте явно. Определение вердикта
+фазы опирается на колонку `blocking`, а не на прозу.
 
 ## Проверки
 
-Формат: `check_id | precondition | command | expected | remediation`.
+Формат: `check_id | precondition | command | expected | blocking | categories | remediation`.
 Все команды исполняются из корня репо.
 
-| check_id | precondition | command | expected | remediation |
-|---|---|---|---|---|
-| D0-GIT-01 | — | `git rev-parse --is-inside-work-tree` | exit 0, `true` → OK | `git init` |
-| D0-GIT-02 | D0-GIT-01 | `git rev-list --count HEAD` | exit 0, число ≥ 1 → OK | сделать initial commit |
-| D0-GIT-03 | D0-GIT-01 | `git branch --show-current` | exit 0, непустое имя → OK | `git checkout -b <branch>` (detached HEAD не сертифицируется) |
-| D0-GIT-04 | D0-GIT-01 | `git remote get-url origin` | exit 0 → OK; exit ≠ 0 → **WARN** (не blocker для локального контура) | `git remote add origin <url>` |
-| D0-GIT-05 | D0-GIT-01 | `git status --porcelain` — пустой вывод | exit 0, пусто → OK | закоммитить/стэшнуть; грязное дерево делает D0-MUT-01 недоказуемым |
-| D0-ENV-01 | pyproject.toml существует | `uv sync --dev` | exit 0 → OK | править pyproject / `uv add` |
-| D0-TEST-01 | D0-ENV-01 | `uv run pytest -q --collect-only` | exit 0 → OK; exit 2 → ERROR | чинить collection (импорты, синтаксис) |
-| D0-TEST-02 | D0-TEST-01 | `uv run pytest -q --collect-only -q \| tail -1` | «N tests collected», N ≥ 1 → OK; «no tests ran» / exit 5 → ERROR | добавить ≥1 тест |
-| D0-TEST-03 | D0-TEST-02 | `uv run pytest -q` | exit 0 → OK; exit 1 → UNEXPECTED_FAIL; exit ≥2 → ERROR | чинить тесты/код до зелёного baseline |
-| D0-LINT-01 | D0-ENV-01 | `uv run ruff check .` | exit 0 → OK | `uv run ruff check . --fix`, остаток руками |
-| D0-TYPE-01 | D0-ENV-01 | `uv run pyrefly check` | exit 0 → OK | чинить типы |
-| D0-SPEC-01 | — | `test -s disputatio-SPEC-001-round-protocol.md` | exit 0 → OK | восстановить спеку из git |
+Принцип: exit code фиксируется у проверяемой команды, не у последнего
+элемента пайпа; пайпы в поле `command` запрещены (или только с явным
+`pipefail`).
+
+| check_id | precondition | command | expected | blocking | categories | remediation |
+|---|---|---|---|---|---|---|
+| D0-GIT-01 | — | `git rev-parse --is-inside-work-tree` | exit 0, `true` → OK | yes | OK\|ERROR | `git init` |
+| D0-GIT-02 | D0-GIT-01 | `git rev-list --count HEAD` | exit 0, число ≥ 1 → OK | yes | OK\|ERROR | сделать initial commit |
+| D0-GIT-03 | D0-GIT-01 | `git branch --show-current` | exit 0, непустое имя → OK | yes | OK\|ERROR | `git checkout -b <branch>` (detached HEAD не сертифицируется) |
+| D0-GIT-04 | D0-GIT-01 | `git remote get-url origin` | exit 0 → OK; exit ≠ 0 → **WARN** (не blocker для локального контура) | no | OK\|WARN | `git remote add origin <url>` |
+| D0-GIT-05 | D0-GIT-01 | `git status --porcelain` — пустой вывод | exit 0, пусто → OK | yes | OK\|ERROR | закоммитить/стэшнуть; грязное дерево делает D0-MUT-01 недоказуемым |
+| D0-ENV-01 | pyproject.toml существует | `uv sync --dev` | exit 0 → OK | yes | OK\|ERROR | править pyproject / `uv add` |
+| D0-TEST-01 | D0-ENV-01 | `uv run pytest -q --collect-only` | exit 0 → OK; exit 2 → ERROR | yes | OK\|ERROR | чинить collection (импорты, синтаксис) |
+| D0-TEST-02 | D0-TEST-01 | `uv run pytest -q --collect-only` | в выводе строка `N test(s) collected`, N ≥ 1 → OK; exit 5 / `no tests ran` → ERROR | yes | OK\|ERROR | добавить ≥1 тест |
+| D0-TEST-03 | D0-TEST-02 | `uv run pytest -q` | exit 0 → OK; exit 1 → UNEXPECTED_FAIL; exit ≥2 → ERROR | yes | OK\|UNEXPECTED_FAIL\|ERROR | чинить тесты/код до зелёного baseline |
+| D0-LINT-01 | D0-ENV-01 | `uv run ruff check .` | exit 0 → OK | yes | OK\|ERROR | `uv run ruff check . --fix`, остаток руками |
+| D0-TYPE-01 | D0-ENV-01 | `uv run pyrefly check` | exit 0 → OK | yes | OK\|ERROR | чинить типы |
+| D0-SPEC-01 | — | `test -s disputatio-SPEC-001-round-protocol.md` | exit 0 → OK | yes | OK\|ERROR | восстановить спеку из git |
 
 ## D0-MUT-01 — mutation_probe (оракул обязан уметь падать)
 
 Precondition: D0-GIT-05 = OK, D0-TEST-03 = OK. Селектор пробы:
 `tests/test_smoke.py::test_package_importable`.
 
+Связанность: текст `tests/test_smoke.py` и шаг 2 D0-MUT-01 связаны литералом
+`0.1.0`: рефакторинг теста обязан обновить шаг 2, иначе проба тихо
+расстыкуется. Следствие: в докстринге теста литерала `0.1.0` быть не должно
+— мутация `replace` не должна задевать докстринг.
+
 | шаг | command | expected |
 |---|---|---|
 | 1. зафиксировать базу | `git rev-parse HEAD` → записать SHA; `git status --porcelain` → пусто | OK |
-| 2. сломать assertion | `sed -i '' 's/== "0.1.0"/== "9.9.9"/' tests/test_smoke.py` | exit 0 |
+| 2. сломать assertion | `python3 -c "import pathlib; p = pathlib.Path('tests/test_smoke.py'); p.write_text(p.read_text().replace('0.1.0', '9.9.9'))"` | exit 0; доказательство мутации — `git diff --quiet tests/test_smoke.py` завершается exit 1 (файл изменён); «exit 0 самой мутации» больше не является доказательством |
 | 3. подтвердить красный | `uv run pytest -q tests/test_smoke.py::test_package_importable` | exit 1, в выводе `AssertionError` → **EXPECTED_FAIL**; exit ≥2 или падение другого теста → провал пробы (ERROR/UNEXPECTED_FAIL) |
 | 4. восстановить | `git checkout -- tests/test_smoke.py` | exit 0 |
 | 5. проверить восстановление | `git rev-parse HEAD` == SHA из шага 1 **и** `git status --porcelain` пуст | OK; иначе — провал пробы |
@@ -121,9 +137,19 @@ blocking) и прогон на интеграционной ветке, а не 
 строка таблицы: `check_id | команда как выполнена | exit code | категория |
 заметка`, плюс fenced-блок с сырым выводом для D0-TEST-03, D0-TYPE-01 и всех
 шагов D0-MUT-01. В конце — вердикт фазы и список WARN.
+
+## Follow-up (не входит в редакцию 2)
+
+MUT-02 (ruff) / MUT-03 (pyrefly) — mutation_probe по 6-шаговой схеме
+D0-MUT-01, применённой к области линта/типов вместо теста. Статус: не
+блокирует merge текущего D0 PR; блокирует окончательную спецификацию D7-B;
+должен быть закрыт до повторной интеграционной сертификации D5.
 ````
 
-- [ ] **Step 3: Commit**
+Amendment note: обновлено 2026-08-08 до редакции 2 по итогам финального
+ревью; исходная редакция 1 — в d551952.
+
+- [x] **Step 3: Commit**
 
 ```bash
 git -C /Users/Andrei_Shtanakov/labs/disputatio add docs/plans/D0-certification-protocol.md
@@ -147,7 +173,7 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio commit -m "docs(d0): проток
   D0-MUT-01); зелёные `uv run pytest -q`, `uv run ruff check .`,
   `uv run pyrefly check`.
 
-- [ ] **Step 1: Добавить dev-зависимости**
+- [x] **Step 1: Добавить dev-зависимости**
 
 ```bash
 cd /Users/Andrei_Shtanakov/labs/disputatio
@@ -156,7 +182,7 @@ uv add --dev pytest ruff pyrefly
 
 Ожидаемо: exit 0, появились `[dependency-groups] dev`, `uv.lock`, `.venv`.
 
-- [ ] **Step 2: Написать падающий смоук-тест**
+- [x] **Step 2: Написать падающий смоук-тест**
 
 Создать `tests/test_smoke.py`:
 
@@ -170,14 +196,14 @@ def test_package_importable() -> None:
     assert __version__ == "0.1.0"
 ```
 
-- [ ] **Step 3: Убедиться, что тест падает категорией ERROR**
+- [x] **Step 3: Убедиться, что тест падает категорией ERROR**
 
 Run: `uv run pytest -q tests/test_smoke.py`
 Expected: exit 2, `ModuleNotFoundError: No module named 'disputatio'` —
 collection error. Это категория **ERROR** словаря протокола (не
 EXPECTED_FAIL!) — зафиксировать различие пригодится в транскрипте.
 
-- [ ] **Step 4: Создать пакет и подключить build backend**
+- [x] **Step 4: Создать пакет и подключить build backend**
 
 Создать `src/disputatio/__init__.py`:
 
@@ -207,7 +233,7 @@ line-length = 88
 extend-select = ["I"]
 ```
 
-- [ ] **Step 5: Пересинхронизировать окружение и убедиться, что тест зелёный**
+- [x] **Step 5: Пересинхронизировать окружение и убедиться, что тест зелёный**
 
 ```bash
 uv sync --dev
@@ -217,13 +243,13 @@ uv run pytest -q
 Expected: `uv sync` exit 0 (пакет установлен editable); pytest exit 0,
 `1 passed`.
 
-- [ ] **Step 6: Линт**
+- [x] **Step 6: Линт**
 
 Run: `uv run ruff check .`
 Expected: exit 0, `All checks passed!`. Если нет — `uv run ruff check . --fix`,
 остаток руками; `uv run ruff format .` для формата.
 
-- [ ] **Step 7: Типы**
+- [x] **Step 7: Типы**
 
 ```bash
 uv run pyrefly init
@@ -234,7 +260,7 @@ Expected: `init` добавляет `[tool.pyrefly]` в pyproject (или соз
 принять дефолт); `check` exit 0, 0 errors. Version warnings игнорируются,
 если сам check зелёный.
 
-- [ ] **Step 8: Дополнить .gitignore кэшами инструментов**
+- [x] **Step 8: Дополнить .gitignore кэшами инструментов**
 
 Добавить в конец `.gitignore`:
 
@@ -247,7 +273,7 @@ Expected: `init` добавляет `[tool.pyrefly]` в pyproject (или соз
 (`.venv`, `__pycache__` уже покрыты.) Проверить: `git status --porcelain` не
 показывает `.pytest_cache/`, `.ruff_cache/`, `.venv/`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add pyproject.toml uv.lock tests/test_smoke.py src/disputatio/__init__.py .gitignore
@@ -268,7 +294,7 @@ git commit -m "feat(d0): продуктовый скелет — src/disputatio,
   `tests/test_smoke.py::test_package_importable`).
 - Produces: транскрипт — acceptance-спека для D7-B; вердикт фазы baseline.
 
-- [ ] **Step 1: Исполнить проверки D0-GIT-01..D0-SPEC-01 построчно**
+- [x] **Step 1: Исполнить проверки D0-GIT-01..D0-SPEC-01 построчно**
 
 Выполнить команды из таблицы протокола дословно, из корня репо, фиксируя для
 каждой: команду, exit code (`echo $?` сразу после), категорию по словарю,
@@ -277,20 +303,20 @@ git commit -m "feat(d0): продуктовый скелет — src/disputatio,
 перезапустить проверку, отразить это в заметке (remediation — часть
 транскрипта, не позор).
 
-- [ ] **Step 2: Исполнить D0-MUT-01 по шагам 1–6**
+- [x] **Step 2: Исполнить D0-MUT-01 по шагам 1–6**
 
 Дословно по протоколу. Критичное ожидание: шаг 3 — exit 1 с `AssertionError`
 (EXPECTED_FAIL), шаг 5 — HEAD не изменился и дерево чистое, шаг 6 — exit 0.
 Сырой вывод шагов 3 и 6 — в fenced-блоки.
 
-- [ ] **Step 3: Записать транскрипт**
+- [x] **Step 3: Записать транскрипт**
 
 Создать `docs/plans/D0-transcript-baseline-2026-08-08.md` по формату из
 протокола: таблица всех проверок, fenced-блоки сырого вывода (D0-TEST-03,
 D0-TYPE-01, D0-MUT-01 шаги 3/5/6), итоговый вердикт фазы + явный список WARN
 (ожидаемо пустой).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/plans/D0-transcript-baseline-2026-08-08.md
