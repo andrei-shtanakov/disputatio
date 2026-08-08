@@ -568,12 +568,21 @@ def classify_changes(
     return allowed, forbidden
 
 
-def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
+def commit_red(root: Path, task_id: str, baseline: str, selector: str, ns: str) -> str:
     """Коммитит red-чекпоинт: ТОЛЬКО `tests/`, с трейлерами claim'а.
 
     Пишет исключительно через pathspec `tests/` (`add` + `commit` с явным
     `-- tests/`) — никакого `-A`, посторонние staged-изменения (например,
     `spec/tasks.md`) в коммит не попадают. Возвращает SHA нового коммита.
+
+    `ns` (Round 3) — четвёртый трейлер `TDD-Namespace`. Без него после
+    слияния нескольких `ws/*`-веток в общую (`w-runtime` ветвится от
+    слитой `pilot/wave-1`) `find_red_commit_by_trailer`/C4 могли бы принять
+    честный red-коммит ЧУЖОГО workstream'а с тем же `TASK-NNN` — трейлер
+    `TDD-Red-Task` совпадает по ID, но коммит принадлежит другому
+    namespace'у. `ns` передаётся вызывающим кодом явно, без дефолта —
+    легаси-коммитов без этого трейлера в проде нет (гейт ещё не запускался
+    в бою), фильтрация по отсутствующему значению доверия не заслуживает.
 
     `CalledProcessError` (I3) — обычно `git commit` не находит изменений
     под `tests/`: агент коммитит тест-файл сам ДО `red`, в обход потока
@@ -586,6 +595,7 @@ def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
         f"TDD-Red-Task: {task_id}\n"
         f"TDD-Baseline: {baseline}\n"
         f"TDD-Selector: {selector}\n"
+        f"TDD-Namespace: {ns}\n"
     )
     try:
         git(root, "commit", "-m", message, "--", "tests/")
@@ -599,18 +609,33 @@ def commit_red(root: Path, task_id: str, baseline: str, selector: str) -> str:
     return head_sha(root)
 
 
-def find_red_commit_by_trailer(root: Path, task_id: str) -> str | None:
-    """Recovery: ищет последний коммит с трейлером `TDD-Red-Task: task_id`.
+def find_red_commit_by_trailer(root: Path, task_id: str, ns: str) -> str | None:
+    """Recovery: ищет последний коммит с трейлерами `TDD-Red-Task`+`TDD-Namespace`.
 
     `None`, если такого коммита нет. `git log` по умолчанию отдаёт коммиты
-    от новых к старым, поэтому первое совпадение — самое свежее.
+    от новых к старым, поэтому первое совпадение — самое свежее. Round 3:
+    матч ОБЯЗАН быть по обоим трейлерам — `task_id` И `ns`; коммит с
+    совпадающим `TDD-Red-Task`, но чужим (или отсутствующим) `TDD-Namespace`
+    игнорируется. Иначе после слияния веток нескольких workstream'ов с
+    совпадающим `TASK-NNN` recovery мог бы восстановить claim из честного
+    red-коммита чужого workstream'а.
+
+    Реализация — список SHA (`git log --format=%H`, без трейлеров в самом
+    формате) + `_trailer_value` по кандидату: `%(trailers:key=...,valueonly)`
+    сам добавляет завершающий `\\n` к значению трейлера, из-за чего
+    несколько таких плейсхолдеров в ОДНОЙ строке формата и разбор построчно
+    ломается (значение "утекает" на следующую строку) — `_trailer_value`
+    для одного коммита такой проблемы не имеет (`git()` делает `.strip()`
+    над выводом единственного запроса).
     """
-    output = git(root, "log", "--format=%H%x00%(trailers:key=TDD-Red-Task,valueonly)")
+    output = git(root, "log", "--format=%H")
     if not output:
         return None
-    for line in output.split("\n"):
-        sha, _, value = line.partition("\x00")
-        if value.strip() == task_id:
+    for sha in output.split("\n"):
+        if (
+            _trailer_value(root, sha, "TDD-Red-Task") == task_id
+            and _trailer_value(root, sha, "TDD-Namespace") == ns
+        ):
             return sha
     return None
 
@@ -763,7 +788,7 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     if own_claim is None:
         # Шаг 8 (recovery): claim не записан, но red-коммит уже есть —
         # предыдущий запуск упал между commit_red и записью claim'а.
-        recovered_sha = find_red_commit_by_trailer(root, task_id)
+        recovered_sha = find_red_commit_by_trailer(root, task_id, ns)
         if recovered_sha is not None:
             _recover_claim_from_commit(
                 root, task_id, recovered_sha, expected_behavior, ns
@@ -773,7 +798,7 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
         # Шаг 2: существующий pending claim этой задачи.
         if _commit_exists(root, own_claim.red_sha):
             return 0  # идемпотентный повтор — второй red-коммит не создаётся
-        recovered_sha = find_red_commit_by_trailer(root, task_id)
+        recovered_sha = find_red_commit_by_trailer(root, task_id, ns)
         if recovered_sha is not None:
             # sha в claim устарел (например, история переписана), но коммит
             # с тем же трейлером найден — чиним claim свежими данными из
@@ -826,7 +851,7 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
         )
 
     # Шаг 6: red-коммит.
-    red_sha = commit_red(root, task_id, baseline, selector)
+    red_sha = commit_red(root, task_id, baseline, selector, ns)
 
     # Шаг 7: запись claim. Supersession (existing PASS/WAIVED) отсечена выше
     # (см. шаг 2/else) — сюда доходим только когда own_claim is None.
@@ -1022,7 +1047,7 @@ def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _verify_trailers_match(root: Path, claim: Claim, task_id: str) -> None:
+def _verify_trailers_match(root: Path, claim: Claim, task_id: str, ns: str) -> None:
     """Проверяет трейлеры red-коммита против claim'а — граница доверия (C4).
 
     `claim.red_sha` обязан быть red-коммитом ИМЕННО этой задачи: трейлер
@@ -1031,11 +1056,24 @@ def _verify_trailers_match(root: Path, claim: Claim, task_id: str) -> None:
     проверки claim одной задачи мог бы подделываться под честный red-коммит
     чужой (сценарий A финального ревью) — replay реиграл бы чужой red и
     выносил бы вердикт по задаче, к которой этот код отношения не имеет.
+
+    Round 3: `TDD-Namespace` коммита обязан совпадать с текущим `ns`.
+    `TDD-Red-Task` совпадает по ID, но после слияния веток нескольких
+    workstream'ов с одинаковым `TASK-NNN` (например, `w-runtime` ветвится
+    от слитой `pilot/wave-1`, где в истории red-коммиты всех пяти WS волны 1)
+    честный red-коммит ЧУЖОГО workstream'а прошёл бы прежнюю проверку —
+    namespace-трейлер закрывает эту дыру.
     """
     if _trailer_value(root, claim.red_sha, "TDD-Red-Task") != task_id:
         raise GateError(
             f"{task_id}: red_sha {claim.red_sha} не принадлежит этой задаче "
             "(трейлер TDD-Red-Task не совпадает) — подделка claim'а"
+        )
+    if _trailer_value(root, claim.red_sha, "TDD-Namespace") != ns:
+        raise GateError(
+            f"{task_id}: red_sha {claim.red_sha} принадлежит другому "
+            "namespace (трейлер TDD-Namespace не совпадает с текущим "
+            f"{ns!r}) — red-коммит чужого workstream'а"
         )
     if _trailer_value(root, claim.red_sha, "TDD-Selector") != claim.selector:
         raise GateError(
@@ -1136,7 +1174,7 @@ def _cmd_verify(root: Path) -> int:
     # C4: граница доверия — red_sha обязан быть red-коммитом ИМЕННО этой
     # задачи (трейлеры), иначе claim одной задачи мог бы подделываться под
     # честный red-коммит чужой.
-    _verify_trailers_match(root, claim, task_id)
+    _verify_trailers_match(root, claim, task_id, ns)
 
     # Шаги 3-4: совместимость и идемпотентность существующего verdict'а.
     # `previous_for_archive` — то, что уйдёт в history, но ТОЛЬКО в момент

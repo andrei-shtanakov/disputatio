@@ -457,7 +457,9 @@ def test_verify_forged_claim_foreign_task_red_sha_is_error(repo: Path) -> None:
     _write_gate_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    honest_red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    honest_red_sha = tdd_gate.commit_red(
+        repo, "TASK-001", baseline, SELECTOR, "default"
+    )
 
     write_tasks(
         repo,
@@ -573,7 +575,7 @@ def test_verify_replay_green_is_unexpected_fail(repo: Path) -> None:
     baseline = tdd_gate.head_sha(repo)
     _write_trivially_true_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
-    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     _write_claim(repo, baseline_sha=baseline, red_sha=red_sha)
 
     code = tdd_gate.cmd_verify(repo)

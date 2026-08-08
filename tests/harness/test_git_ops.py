@@ -107,7 +107,7 @@ def test_commit_red_creates_commit_with_tests_file(repo: Path) -> None:
     write_failing_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     files = tdd_gate.git(repo, "show", "--stat", "--format=", sha)
     assert "tests/test_new.py" in files
 
@@ -117,7 +117,7 @@ def test_commit_red_excludes_spec_tasks_md(repo: Path) -> None:
     (repo / "spec" / "tasks.md").write_text("### TASK-001\n")
     tdd_gate.git(repo, "add", "-A")
     baseline = tdd_gate.head_sha(repo)
-    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     files = tdd_gate.git(repo, "show", "--stat", "--format=", sha)
     assert "spec/tasks.md" not in files
 
@@ -126,25 +126,36 @@ def test_commit_red_message_contains_trailers(repo: Path) -> None:
     write_failing_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "ws-w-fsm")
     message = tdd_gate.git(repo, "show", "-s", "--format=%B", sha)
     assert "TDD-Red-Task: TASK-001" in message
     assert f"TDD-Baseline: {baseline}" in message
     assert f"TDD-Selector: {SELECTOR}" in message
+    assert "TDD-Namespace: ws-w-fsm" in message
 
 
 def test_find_red_commit_by_trailer_finds_sha(repo: Path) -> None:
     write_failing_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
-    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001") == sha
+    sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
+    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "default") == sha
 
 
 def test_find_red_commit_by_trailer_returns_none_without_red_commits(
     repo: Path,
 ) -> None:
-    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001") is None
+    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "default") is None
+
+
+def test_find_red_commit_by_trailer_ignores_foreign_namespace(repo: Path) -> None:
+    """Round 3: совпадение по `TASK-001` недостаточно — namespace обязан совпасть."""
+    write_failing_test(repo)
+    tdd_gate.git(repo, "add", "tests/test_new.py")
+    baseline = tdd_gate.head_sha(repo)
+    tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "ws-w-events")
+
+    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "ws-w-fsm") is None
 
 
 def test_commit_red_leaves_staged_tasks_md_still_staged(repo: Path) -> None:
@@ -158,7 +169,7 @@ def test_commit_red_leaves_staged_tasks_md_still_staged(repo: Path) -> None:
     (repo / "spec" / "tasks.md").write_text("### TASK-001\n")
     tdd_gate.git(repo, "add", "-A")
     baseline = tdd_gate.head_sha(repo)
-    tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     status = tdd_gate._git_stdout(repo, "status", "--porcelain")
     line = next(l for l in status.splitlines() if "spec/tasks.md" in l)
     assert line.startswith("A "), f"tasks.md больше не staged: {line!r}"
@@ -173,18 +184,22 @@ def test_find_red_commit_by_trailer_returns_latest_of_several(repo: Path) -> Non
     write_failing_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    first_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    first_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
 
     (repo / "tests" / "test_other.py").write_text("def test_o():\n    assert False\n")
     tdd_gate.git(repo, "add", "tests/test_other.py")
-    tdd_gate.commit_red(repo, "TASK-002", first_sha, "tests/test_other.py::test_o")
+    tdd_gate.commit_red(
+        repo, "TASK-002", first_sha, "tests/test_other.py::test_o", "default"
+    )
 
     (repo / "tests" / "test_new.py").write_text(
         "def test_x():\n    assert False, 'v2'\n"
     )
     tdd_gate.git(repo, "add", "tests/test_new.py")
     second_sha = tdd_gate.commit_red(
-        repo, "TASK-001", tdd_gate.head_sha(repo), SELECTOR
+        repo, "TASK-001", tdd_gate.head_sha(repo), SELECTOR, "default"
     )
 
-    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001") == second_sha
+    assert (
+        tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "default") == second_sha
+    )

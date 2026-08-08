@@ -143,7 +143,7 @@ def test_red_foreign_pending_claim_is_error(repo: Path) -> None:
     tdd_gate.git(repo, "add", "tests/test_other.py")
     other_baseline = tdd_gate.head_sha(repo)
     other_sha = tdd_gate.commit_red(
-        repo, "TASK-002", other_baseline, "tests/test_other.py::test_o"
+        repo, "TASK-002", other_baseline, "tests/test_other.py::test_o", "default"
     )
     tdd_gate.write_json_atomic(
         _claim_path(repo, "TASK-002"),
@@ -194,7 +194,7 @@ def test_red_claim_with_stale_sha_recovers_via_trailer(repo: Path) -> None:
     _write_expected_fail_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    real_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    real_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     tdd_gate.write_json_atomic(
         _claim_path(repo),
         tdd_gate.Claim(
@@ -235,7 +235,7 @@ def test_red_after_pass_verdict_is_supersession_error_without_new_commit(
     _write_expected_fail_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     tdd_gate.write_json_atomic(
         _claim_path(repo),
         tdd_gate.Claim(
@@ -380,7 +380,7 @@ def test_red_recovers_claim_from_commit_trailer_when_claim_missing(
     _write_expected_fail_test(repo)
     tdd_gate.git(repo, "add", "tests/test_new.py")
     baseline = tdd_gate.head_sha(repo)
-    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR, "default")
     assert tdd_gate.load_claim(repo, "TASK-001") is None
 
     code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)

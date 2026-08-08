@@ -22,6 +22,12 @@ ONE_DONE = """## Milestone
 """
 
 
+@pytest.fixture(autouse=True)
+def _use_local_pytest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Подменяет `uv run pytest` на pytest текущего окружения (см. test_red.py)."""
+    monkeypatch.setattr(tdd_gate, "PYTEST_CMD", (sys.executable, "-m", "pytest", "-q"))
+
+
 def _make_claim(task_id: str, selector: str) -> tdd_gate.Claim:
     return tdd_gate.Claim(
         task_id=task_id,
@@ -250,3 +256,96 @@ def test_two_workstreams_same_task_id_merge_without_evidence_conflict(
     merged_events = tdd_gate.load_claim(repo, "TASK-001", "ws-w-events")
     assert merged_fsm == claim_fsm
     assert merged_events == claim_events
+
+
+# --- Round 3: TDD-Namespace трейлер red-коммита ---------------------------
+
+
+def test_red_recovery_ignores_foreign_namespace_after_merge(repo: Path) -> None:
+    """Round 3(а): recovery не подхватывает чужой red-коммит после слияния веток.
+
+    Сценарий владельца: `w-runtime` ветвится от слитой `pilot/wave-1`, в
+    истории которой red-коммиты всех пяти WS волны 1 с потенциально
+    совпадающими `TASK-NNN`. Честный red для TASK-001 создаётся в
+    `ws/w-fsm`, ветка сливается в общую, `ws/w-runtime` ветвится ОТТУДА —
+    в его истории есть чужой red-коммит с трейлером `TDD-Red-Task:
+    TASK-001`, но `TDD-Namespace: ws-w-fsm`. `red` в `ws/w-runtime` для
+    ТОГО ЖЕ TASK-001 (коллизия идентичности — обычное дело) обязан пройти
+    честный цикл (свой селектор, свой коммит), а не «восстановиться» из
+    чужого коммита через recovery (шаг 8 `_cmd_red`, `own_claim is None`).
+    """
+    tdd_gate.git(repo, "checkout", "-b", "ws/w-fsm")
+    write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
+    (repo / "tests" / "a.py").write_text("def test_a():\n    assert False, 'w-fsm'\n")
+    fsm_code = tdd_gate.cmd_red(repo, "tests/a.py::test_a", "w-fsm версия")
+    assert fsm_code == 0
+    fsm_claim = tdd_gate.load_claim(repo, "TASK-001", "ws-w-fsm")
+    assert fsm_claim is not None
+    # Реалистичный флоу — claim коммитится (как WAIVED-эвиденс в Round 1),
+    # иначе untracked-файл пережил бы checkout и был бы forbidden-правкой
+    # в ws/w-runtime (чужой namespace в allowlist не входит).
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "evidence: w-fsm TASK-001 red")
+
+    tdd_gate.git(repo, "checkout", "master")
+    tdd_gate.git(repo, "checkout", "-b", "integration")
+    tdd_gate.git(repo, "merge", "--no-ff", "ws/w-fsm", "-m", "merge: w-fsm")
+
+    tdd_gate.git(repo, "checkout", "-b", "ws/w-runtime")
+    (repo / "tests" / "b.py").write_text(
+        "def test_b():\n    assert False, 'w-runtime'\n"
+    )
+
+    runtime_code = tdd_gate.cmd_red(repo, "tests/b.py::test_b", "w-runtime версия")
+
+    assert runtime_code == 0
+    runtime_claim = tdd_gate.load_claim(repo, "TASK-001", "ws-w-runtime")
+    assert runtime_claim is not None
+    assert runtime_claim.red_sha != fsm_claim.red_sha, (
+        "recovery не должен был подхватить честный red-коммит ws-w-fsm"
+    )
+    assert runtime_claim.selector == "tests/b.py::test_b", (
+        "claim обязан отражать СВОЙ прогон, а не унаследованные из чужого "
+        "коммита baseline/selector"
+    )
+
+
+def test_verify_rejects_claim_with_foreign_namespace_red_commit(repo: Path) -> None:
+    """Round 3(б): verify отвергает claim, чей red-коммит несёт чужой TDD-Namespace.
+
+    Red-коммит честно создан для namespace `ws-w-events` (селектор/baseline
+    совпадают с тем, что claim заявляет) — но claim лежит в namespace
+    `ws-w-fsm` и ссылается на этот же `red_sha`. `TDD-Red-Task` совпадает
+    (`TASK-001`), `TDD-Selector`/`TDD-Baseline` тоже — единственное
+    расхождение изолирует именно namespace-трейлер (C4, Round 3).
+    """
+    selector = "tests/a.py::test_a"
+    tdd_gate.git(repo, "checkout", "-b", "ws/w-events")
+    (repo / "tests" / "a.py").write_text("def test_a():\n    assert False\n")
+    tdd_gate.git(repo, "add", "tests/a.py")
+    baseline = tdd_gate.head_sha(repo)
+    foreign_red_sha = tdd_gate.commit_red(
+        repo, "TASK-001", baseline, selector, "ws-w-events"
+    )
+
+    tdd_gate.git(repo, "checkout", "master")
+    tdd_gate.git(repo, "checkout", "-b", "ws/w-fsm")
+    write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
+    claim = tdd_gate.Claim(
+        task_id="TASK-001",
+        selector=selector,
+        expected_behavior="дано",
+        baseline_sha=baseline,
+        red_sha=foreign_red_sha,
+        created_at="2026-08-08T00:00:00+00:00",
+        revision=1,
+        test_path="tests/a.py",
+    )
+    tdd_gate.write_json_atomic(
+        tdd_gate._claim_path(repo, "TASK-001", "ws-w-fsm"), claim.to_json()
+    )
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+    assert tdd_gate.load_verdict(repo, "TASK-001", "ws-w-fsm") is None
