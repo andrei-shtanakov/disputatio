@@ -1,4 +1,6 @@
-"""Модель строки `events.jsonl` — Event, EventSource, EventType ([DESIGN-007], [REQ-007]).
+"""Модель строки `events.jsonl` — Event, EventSource, EventType.
+
+[DESIGN-007], [REQ-007].
 
 Схема §8 SPEC-001: UI — чистый подписчик events.jsonl, ядро про UI не знает.
 `payload` — свободный dict: типизация payload по типам событий — расширение
