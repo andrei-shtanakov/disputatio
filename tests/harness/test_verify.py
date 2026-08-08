@@ -426,6 +426,99 @@ def test_verify_test_rewritten_between_red_and_first_verify_is_error(
     assert code == 3
 
 
+# --- Round 4: тампер БЕЗ коммита (repro финального ревью) ---------------------
+#
+# `verify` стоит в `test_command` ДО `auto_commit` (spec-runner коммитит
+# ПОСЛЕ прогона тестов) — правка теста, которую агент не успел закоммитить,
+# двухкоммитной формой diff'а (`red_sha..HEAD`) была не видна: HEAD не
+# сдвинулся, diff пуст. Репро ревьюера: `assert True` без коммита → verify
+# PASS. N1.1 меняет `_test_path_unchanged` на однокоммитную форму (сравнение
+# с рабочим деревом), тесты ниже проверяют именно некоммиченный тампер —
+# тесты выше (с явным `git commit`) остаются как регресс на committed-случай
+# (диапазон "red_sha — рабочее дерево" включает и его).
+
+
+def test_verify_test_file_deleted_without_commit_after_pass_is_rejected(
+    repo: Path,
+) -> None:
+    """Round 4(а): тест-файл удалён БЕЗ коммита после PASS → verify != 0."""
+    _red_and_implement(repo)
+    assert tdd_gate.cmd_verify(repo) == 0
+
+    (repo / "tests" / "test_new.py").unlink()
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code != 0
+
+
+def test_verify_test_weakened_to_vacuous_without_commit_after_pass_is_rejected(
+    repo: Path,
+) -> None:
+    """Round 4(б): тело теста выхолощено БЕЗ коммита после PASS → verify != 0.
+
+    Именно этот сценарий — точное репро финального ревью для идемпотентной
+    ветки: раньше `_test_path_unchanged` (двухкоммитная форма, `red_sha`
+    против `HEAD`, который не сдвинулся) не видела некоммиченную правку, а
+    повторный прогон селектора на РЕАЛЬНОМ диске видел вырожденный
+    `assert True` и молча подтверждал зелёный — verify возвращал `0`.
+    """
+    _red_and_implement(repo)
+    assert tdd_gate.cmd_verify(repo) == 0
+
+    _write_trivially_true_test(repo)
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code != 0
+
+
+def test_verify_test_rewritten_without_commit_between_red_and_first_verify_is_error(
+    repo: Path,
+) -> None:
+    """Round 4(в): выхолащивание МЕЖДУ red и первым verify, БЕЗ коммита.
+
+    Точное репро финального ревью для первичной цепочки (никакого PASS ещё
+    не было): red честный (закоммичен), тест переписан в рабочем дереве —
+    как реально работает test_command (verify ДО auto_commit, ничего ещё
+    не закоммичено). Раньше HEAD не сдвинулся (ничего не закоммичено) —
+    двухкоммитный diff `red_sha..HEAD` пуст, verify ошибочно писал PASS.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_gate_test(repo)
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert code == 0
+
+    _write_trivially_true_test(repo)  # НЕ коммитим — как в реальном test_command
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code != 0
+    assert tdd_gate.load_verdict(repo, "TASK-001") is None
+
+
+def test_verify_claim_test_path_forged_to_foreign_file_is_error(repo: Path) -> None:
+    """Round 4(г) — сценарий E финального ревью: claim.test_path подделан.
+
+    `claim.test_path` подменён на посторонний файл, не связанный с
+    `claim.selector` — diff-проверка, доверься она `claim.test_path`
+    напрямую, смотрела бы не туда (посторонний файл, который никто не
+    трогал, всегда "unchanged"). `verify` обязан вывести путь ЗАНОВО из
+    `claim.selector` и отвергнуть claim при расхождении — ДО diff-проверки,
+    ДО replay. Exit 3 (подделка claim'а, не обычный fail).
+    """
+    _red_and_implement(repo)
+    claim_path = _claim_path(repo)
+    data = json.loads(claim_path.read_text())
+    (repo / "tests" / "__unrelated__.py").write_text("def test_z():\n    pass\n")
+    data["test_path"] = "tests/__unrelated__.py"
+    claim_path.write_text(json.dumps(data))
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+
+
 # --- A5: from_json нормализация -----------------------------------------------
 
 

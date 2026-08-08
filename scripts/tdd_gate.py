@@ -620,15 +620,20 @@ def find_red_commit_by_trailer(root: Path, task_id: str, ns: str) -> str | None:
     совпадающим `TASK-NNN` recovery мог бы восстановить claim из честного
     red-коммита чужого workstream'а.
 
-    Реализация — список SHA (`git log --format=%H`, без трейлеров в самом
-    формате) + `_trailer_value` по кандидату: `%(trailers:key=...,valueonly)`
-    сам добавляет завершающий `\\n` к значению трейлера, из-за чего
-    несколько таких плейсхолдеров в ОДНОЙ строке формата и разбор построчно
-    ломается (значение "утекает" на следующую строку) — `_trailer_value`
-    для одного коммита такой проблемы не имеет (`git()` делает `.strip()`
-    над выводом единственного запроса).
+    N3 (Round 4, производительность): наивный проход по ВСЕЙ истории с
+    двумя `_trailer_value`-вызовами (по одному `git show` каждый) на
+    КАЖДЫЙ коммит замерен ревьюером в 1.33s на 151 коммите — неприемлемо
+    для гейта, который может запускаться на каждой задаче. Сначала
+    предфильтр `git log -F --grep=...` — ОДИН subprocess, сужает
+    кандидатов до шортлиста по литеральному тексту трейлера в сообщении
+    коммита (обычно 1-2 коммита, а не вся история); `-F` — fixed-string
+    (не regex), совпадение по подстроке (`TASK-001` matches и
+    `TASK-0011` тоже) — поэтому шортлист всё ещё проверяется поштучно
+    через `_trailer_value` (канонический парсер git'а, точное совпадение
+    значения трейлера, не подстроки) — grep только сужает круг кандидатов,
+    не заменяет точную проверку.
     """
-    output = git(root, "log", "--format=%H")
+    output = git(root, "log", "-F", f"--grep=TDD-Red-Task: {task_id}", "--format=%H")
     if not output:
         return None
     for sha in output.split("\n"):
@@ -993,18 +998,25 @@ def _diff_paths(root: Path, base: str, head: str) -> list[str]:
     return [line for line in output.split("\n") if line]
 
 
-def _test_path_unchanged(root: Path, red_sha: str, head: str, test_path: str) -> bool:
-    """`True`, если `test_path` байт-в-байт тот же на `red_sha` и на `head`.
+def _test_path_unchanged(root: Path, red_sha: str, test_path: str) -> bool:
+    """`True`, если `test_path` байт-в-байт тот же на `red_sha` и в рабочем дереве.
 
-    `git diff --quiet base head -- path` сравнивает ДВА коммита (в отличие
-    от однокоммитной формы, working tree не участвует) — здесь это то, что
-    нужно: тест обязан не меняться в диапазоне red_sha..HEAD, независимо от
-    того, первичная это верификация, реверификация после сдвига HEAD или
-    идемпотентный повтор PASS (I2). Возврат `0` — diff пуст, `1` — есть
-    отличия; любой другой код — `CalledProcessError` не терпим, `GateError`.
+    Round 4 (N1.1): ОДНОКОММИТНАЯ форма `git diff --quiet <red_sha> --
+    <path>` — сравнивает коммит с ТЕКУЩИМ РАБОЧИМ ДЕРЕВОМ (staged +
+    unstaged), а не с HEAD. `verify` стоит в `test_command` ДО
+    `auto_commit` (spec-runner коммитит ПОСЛЕ прогона тестов) — правка
+    теста, которую агент не успел закоммитить, двухкоммитной форме
+    (`red_sha..HEAD`, HEAD не сдвинулся) была не видна и проходила
+    незамеченной (репро финального ревью: `assert True` без коммита →
+    verify PASS). Однокоммитная форма ловит staged, unstaged И удаление
+    файла — и при этом не теряет обнаружение уже ЗАКОММИЧЕННЫХ изменений:
+    диапазон «red_sha — рабочее дерево» включает все промежуточные
+    коммиты, как раньше `red_sha..HEAD`. Возврат `0` — diff пуст, `1` —
+    есть отличия; любой другой код — `CalledProcessError` не терпим,
+    `GateError`.
     """
     result = subprocess.run(
-        ["git", "diff", "--quiet", red_sha, head, "--", test_path],
+        ["git", "diff", "--quiet", red_sha, "--", test_path],
         cwd=root,
         capture_output=True,
         text=True,
@@ -1012,9 +1024,30 @@ def _test_path_unchanged(root: Path, red_sha: str, head: str, test_path: str) ->
     )
     if result.returncode not in (0, 1):
         raise GateError(
-            f"git diff --quiet {red_sha} {head} -- {test_path} упал: {result.stderr}"
+            f"git diff --quiet {red_sha} -- {test_path} упал: {result.stderr}"
         )
     return result.returncode == 0
+
+
+def _resolve_test_path(claim: Claim, task_id: str) -> str:
+    """Выводит путь тест-файла из `claim.selector` (Round 4, N1.2).
+
+    `claim.test_path` — агентское поле, записанное в момент `red`
+    (`selector.split("::")[0]`), но НИЧЕМ криптографически не привязанное
+    к selector'у на момент `verify` — просто ещё одно поле JSON на диске.
+    `verify` не доверяет ему напрямую: путь выводится ЗАНОВО из
+    `claim.selector` (тот же вывод, что и на red, но пересчитанный, а не
+    прочитанный) и обязан совпасть с `claim.test_path` — иначе claim
+    подделан (сценарий E финального ревью: `test_path` подменён на
+    посторонний файл, diff-проверка смотрела бы не туда).
+    """
+    path_from_selector = claim.selector.split("::")[0]
+    if claim.test_path != path_from_selector:
+        raise GateError(
+            f"{task_id}: claim.test_path={claim.test_path!r} не соответствует "
+            f"селектору (ожидается {path_from_selector!r}) — подделка claim'а"
+        )
+    return path_from_selector
 
 
 def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
@@ -1202,7 +1235,7 @@ def _cmd_verify(root: Path) -> int:
                     # проверен выше; replay НЕ переигрывается (экономия
                     # шортката), но test_path и текущий селектор
                     # перепроверяются заново, а не читаются из кэша.
-                    return _verify_idempotent_pass(root, task_id, claim, head)
+                    return _verify_idempotent_pass(root, task_id, claim)
                 previous_for_archive = existing
 
     # Шаг 5: red_sha предок HEAD, диапазон трогает только tests/.
@@ -1216,13 +1249,19 @@ def _cmd_verify(root: Path) -> int:
             f"трогает не только tests/: {', '.join(non_tests)}"
         )
 
-    # I2.2: тест не менялся после red — ни в первичной верификации, ни в
-    # реверификации. Проверяется ДО replay: если тест уже выхолощен/удалён,
-    # переигрывать честный red и гонять селектор на HEAD незачем — green
-    # обязан достигаться только продуктовым кодом, без исключений (v1).
-    if not _test_path_unchanged(root, claim.red_sha, head, claim.test_path):
+    # I2.2 (Round 4, N1.2): test_path выводится из claim.selector заново, а
+    # не читается доверчиво из claim.test_path (мог быть подделан — "test
+    # path не связан с селектором" в claim'е ничем криптографически не
+    # закреплено). Тест не менялся после red — ни в первичной верификации,
+    # ни в реверификации, ни в правках, ещё не закоммиченных агентом
+    # (N1.1 — _test_path_unchanged сравнивает с рабочим деревом, не с
+    # HEAD). Проверяется ДО replay: если тест уже выхолощен/удалён,
+    # переигрывать честный red и гонять селектор незачем — green обязан
+    # достигаться только продуктовым кодом, без исключений (v1).
+    test_path = _resolve_test_path(claim, task_id)
+    if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(
-            f"{task_id}: {claim.test_path} изменён после red-чекпоинта — "
+            f"{task_id}: {test_path} изменён после red-чекпоинта — "
             "green обязан достигаться только продуктовым кодом"
         )
 
@@ -1272,21 +1311,23 @@ def _cmd_verify(root: Path) -> int:
     return 0
 
 
-def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim, head: str) -> int:
+def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim) -> int:
     """Идемпотентная ветка PASS (I2.3): тот же red_sha и тот же verified_head.
 
     Trust-boundary трейлеры (C4) уже проверены вызывающим кодом. Экономия
     шортката — replay красного чекпоинта НЕ переигрывается; но test_path
-    обязан оставаться неизменным (та же проверка, что и в первичной
-    цепочке), а селектор реально прогоняется на HEAD (не читается из кэша
-    verdict'а) и обязан быть зелёным. Любое расхождение — fail-closed, без
-    записи нового verdict'а: подтвердить нечего, а перезаписывать
-    последний известный PASS чем-то произвольным не более честно, чем
-    промолчать.
+    (выведенный из claim.selector заново, Round 4 N1.2 — не доверенный
+    claim.test_path напрямую) обязан оставаться неизменным относительно
+    РАБОЧЕГО ДЕРЕВА (N1.1 — не только HEAD), а селектор реально
+    прогоняется (не читается из кэша verdict'а) и обязан быть зелёным.
+    Любое расхождение — fail-closed, без записи нового verdict'а:
+    подтвердить нечего, а перезаписывать последний известный PASS
+    чем-то произвольным не более честно, чем промолчать.
     """
-    if not _test_path_unchanged(root, claim.red_sha, head, claim.test_path):
+    test_path = _resolve_test_path(claim, task_id)
+    if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(
-            f"{task_id}: {claim.test_path} изменён после red-чекпоинта — "
+            f"{task_id}: {test_path} изменён после red-чекпоинта — "
             "green обязан достигаться только продуктовым кодом"
         )
     category, _output = _run_selector(root, claim.selector)

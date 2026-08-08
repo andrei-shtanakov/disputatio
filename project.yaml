@@ -62,6 +62,10 @@ spec_runner:
         - spec/plugins/tdd-gate
         - spec/.tdd-evidence/verdicts
         - spec/.tdd-evidence/waivers
+        # N2 (Round 4): волна оставила конституцию свободно правимой —
+        # regression против «автор не правит свой оракул» (агент, которому
+        # неудобна TDD-дисциплина, мог бы просто отредактировать п.1-5).
+        - spec/maestro-constitution.md
 
 workstreams:
   # ---- волна 0: contract layer (единственный корень, INV-03) ----

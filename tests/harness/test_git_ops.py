@@ -158,6 +158,23 @@ def test_find_red_commit_by_trailer_ignores_foreign_namespace(repo: Path) -> Non
     assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "ws-w-fsm") is None
 
 
+def test_find_red_commit_by_trailer_grep_prefilter_rejects_substring_match(
+    repo: Path,
+) -> None:
+    """Round 4 (N3): grep-предфильтр по подстроке не должен давать ложный матч.
+
+    `git log -F --grep="TDD-Red-Task: TASK-1"` матчит по подстроке и
+    коммит с `TDD-Red-Task: TASK-10` — точная сверка через
+    `_trailer_value` после предфильтра обязана отсеять такого кандидата.
+    """
+    write_failing_test(repo)
+    tdd_gate.git(repo, "add", "tests/test_new.py")
+    baseline = tdd_gate.head_sha(repo)
+    tdd_gate.commit_red(repo, "TASK-10", baseline, SELECTOR, "default")
+
+    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-1", "default") is None
+
+
 def test_commit_red_leaves_staged_tasks_md_still_staged(repo: Path) -> None:
     """Регресс (Task 3 долг): staged `spec/tasks.md` не расстейджится commit_red'ом.
 
