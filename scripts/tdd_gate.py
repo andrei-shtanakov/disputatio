@@ -759,8 +759,9 @@ def _run_selector(root: Path, selector: str) -> tuple[str, str]:
     """Запускает `PYTEST_CMD selector` в `root`, классифицирует результат.
 
     `"expected_fail"` — exit 1, `AssertionError` в выводе, падает именно
-    селектор; `"green"` — exit 0, тест ничего не доказывает; `"error"` —
-    всё прочее (collection/import/окружение). Возвращает пару
+    селектор; `"green"` — exit 0 И фактический «N passed» без skip (скип
+    даёт exit 0, но ничего не доказывает — категория `"skipped"`);
+    `"error"` — всё прочее (collection/import/окружение). Возвращает пару
     (категория, объединённый stdout+stderr).
     """
     result = subprocess.run(
@@ -772,7 +773,14 @@ def _run_selector(root: Path, selector: str) -> tuple[str, str]:
     )
     output = result.stdout + result.stderr
     if result.returncode == 0:
-        return "green", output
+        # Скип даёт exit 0, но ничего не доказывает: green требует
+        # фактического «N passed» без skip (finding критика ревизии 2 —
+        # механизмы принудительного скипа делают дыру достижимой).
+        if re.search(r"\b\d+ passed\b", output) and not re.search(
+            r"\b\d+ skipped\b", output
+        ):
+            return "green", output
+        return "skipped", output
     if result.returncode == 1 and "AssertionError" in output and selector in output:
         return "expected_fail", output
     return "error", output
