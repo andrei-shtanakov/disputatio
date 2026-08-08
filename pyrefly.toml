@@ -8,11 +8,21 @@ search-path = ["scripts", "tests"]
 
 # Контрактные тесты намеренно присваивают в поля frozen-моделей и проверяют
 # ValidationError; тест-файлы после red-чекпоинта байт-неизменяемы, поэтому
-# inline-suppression недоступен — отключаем read-only только для tests/contracts.
+# inline-suppression недоступен — отключаем read-only точечно, только для
+# фактически нуждающихся файлов (test_base.py, test_validation.py).
 # unexpected-keyword — той же природы: негативные тесты extra="forbid" передают
-# заведомо лишний kwarg и ждут ValidationError.
+# заведомо лишний kwarg и ждут ValidationError. Новые тест-файлы ревизии 2
+# пишутся под строгий pyrefly (негативные сценарии — model_validate с
+# dict-payload) и послаблений не получают (DESIGN-015).
 [[sub-config]]
-matches = "tests/contracts/**"
+matches = "tests/contracts/test_base.py"
+
+[sub-config.errors]
+read-only = false
+unexpected-keyword = false
+
+[[sub-config]]
+matches = "tests/contracts/test_validation.py"
 
 [sub-config.errors]
 read-only = false
