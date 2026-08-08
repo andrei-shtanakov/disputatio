@@ -64,9 +64,9 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 > Будущий `spec-runner bootstrap` (D7-B) обязан воспроизводить наблюдаемое
 > поведение транскрипта.
 >
-> Редакция: 2 (2026-08-08) — исправления по финальному ревью ветки
-> d0-baseline; исходная редакция (1) закоммичена в d551952 и исполнена
-> baseline-прогоном.
+> Редакция: 3 (2026-08-08) — правки по Copilot-ревью PR #1 (D0-TEST-01/02/03);
+> редакция 2 — 6ed66c5 (исправления по финальному ревью ветки d0-baseline);
+> редакция 1 закоммичена в d551952 и исполнена baseline-прогоном.
 
 ## Категории выхода
 
@@ -80,7 +80,7 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 
 Вердикт фазы: все проверки с `blocking = yes` (колонка «Проверки») дают `OK`
 (или предписанный `EXPECTED_FAIL` внутри D0-MUT-01); проверки с
-`blocking = no` (сейчас только D0-GIT-04) могут быть `WARN` без срыва
+`blocking = no` (сейчас D0-GIT-04 и D0-TEST-02) могут быть `WARN` без срыва
 вердикта. Любые `WARN` перечисляются в транскрипте явно. Определение вердикта
 фазы опирается на колонку `blocking`, а не на прозу.
 
@@ -101,9 +101,9 @@ git -C /Users/Andrei_Shtanakov/labs/disputatio checkout -b d0-baseline master
 | D0-GIT-04 | D0-GIT-01 | `git remote get-url origin` | exit 0 → OK; exit ≠ 0 → **WARN** (не blocker для локального контура) | no | OK\|WARN | `git remote add origin <url>` |
 | D0-GIT-05 | D0-GIT-01 | `git status --porcelain` — пустой вывод | exit 0, пусто → OK | yes | OK\|ERROR | закоммитить/стэшнуть; грязное дерево делает D0-MUT-01 недоказуемым |
 | D0-ENV-01 | pyproject.toml существует | `uv sync --dev` | exit 0 → OK | yes | OK\|ERROR | править pyproject / `uv add` |
-| D0-TEST-01 | D0-ENV-01 | `uv run pytest -q --collect-only` | exit 0 → OK; exit 2 → ERROR | yes | OK\|ERROR | чинить collection (импорты, синтаксис) |
-| D0-TEST-02 | D0-TEST-01 | `uv run pytest -q --collect-only` | в выводе строка `N test(s) collected`, N ≥ 1 → OK; exit 5 / `no tests ran` → ERROR | yes | OK\|ERROR | добавить ≥1 тест |
-| D0-TEST-03 | D0-TEST-02 | `uv run pytest -q` | exit 0 → OK; exit 1 → UNEXPECTED_FAIL; exit ≥2 → ERROR | yes | OK\|UNEXPECTED_FAIL\|ERROR | чинить тесты/код до зелёного baseline |
+| D0-TEST-01 | D0-ENV-01 | `uv run pytest -q --collect-only` | exit 0 → OK; exit 2 → ERROR; exit 5 / `no tests ran` → ERROR | yes | OK\|ERROR | чинить collection (импорты, синтаксис); добавить ≥1 тест |
+| D0-TEST-02 | D0-TEST-01 | `uv run pytest -q --collect-only` | в выводе строка `N test(s) collected`, N ≥ 1 → OK; exit 0 без ожидаемой строки → WARN (строковый парсинг хрупок); exit 5 / `no tests ran` → ERROR | no | OK\|WARN\|ERROR | добавить ≥1 тест |
+| D0-TEST-03 | D0-TEST-01 | `uv run pytest -q` | exit 0 → OK; exit 1 → UNEXPECTED_FAIL; exit ≥2 → ERROR | yes | OK\|UNEXPECTED_FAIL\|ERROR | чинить тесты/код до зелёного baseline |
 | D0-LINT-01 | D0-ENV-01 | `uv run ruff check .` | exit 0 → OK | yes | OK\|ERROR | `uv run ruff check . --fix`, остаток руками |
 | D0-TYPE-01 | D0-ENV-01 | `uv run pyrefly check` | exit 0 → OK | yes | OK\|ERROR | чинить типы |
 | D0-SPEC-01 | — | `test -s disputatio-SPEC-001-round-protocol.md` | exit 0 → OK | yes | OK\|ERROR | восстановить спеку из git |
@@ -138,7 +138,7 @@ blocking) и прогон на интеграционной ветке, а не 
 заметка`, плюс fenced-блок с сырым выводом для D0-TEST-03, D0-TYPE-01 и всех
 шагов D0-MUT-01. В конце — вердикт фазы и список WARN.
 
-## Follow-up (не входит в редакцию 2)
+## Follow-up (не входит в редакцию 3)
 
 MUT-02 (ruff) / MUT-03 (pyrefly) — mutation_probe по 6-шаговой схеме
 D0-MUT-01, применённой к области линта/типов вместо теста. Статус: не
@@ -146,8 +146,8 @@ D0-MUT-01, применённой к области линта/типов вме
 должен быть закрыт до повторной интеграционной сертификации D5.
 ````
 
-Amendment note: обновлено 2026-08-08 до редакции 2 по итогам финального
-ревью; исходная редакция 1 — в d551952.
+Amendment note: обновлено 2026-08-08 до редакции 3 (Copilot-ревью PR #1,
+D0-TEST-01/02/03); редакция 2 — 6ed66c5; исходная редакция 1 — в d551952.
 
 - [x] **Step 3: Commit**
 
