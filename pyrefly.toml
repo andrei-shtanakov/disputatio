@@ -9,8 +9,11 @@ search-path = ["scripts", "tests"]
 # Контрактные тесты намеренно присваивают в поля frozen-моделей и проверяют
 # ValidationError; тест-файлы после red-чекпоинта байт-неизменяемы, поэтому
 # inline-suppression недоступен — отключаем read-only только для tests/contracts.
+# unexpected-keyword — той же природы: негативные тесты extra="forbid" передают
+# заведомо лишний kwarg и ждут ValidationError.
 [[sub-config]]
 matches = "tests/contracts/**"
 
 [sub-config.errors]
 read-only = false
+unexpected-keyword = false
