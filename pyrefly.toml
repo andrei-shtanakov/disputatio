@@ -5,3 +5,12 @@ project-includes = [
     "**/*.ipynb",
 ]
 search-path = ["scripts", "tests"]
+
+# Контрактные тесты намеренно присваивают в поля frozen-моделей и проверяют
+# ValidationError; тест-файлы после red-чекпоинта байт-неизменяемы, поэтому
+# inline-suppression недоступен — отключаем read-only только для tests/contracts.
+[[sub-config]]
+matches = "tests/contracts/**"
+
+[sub-config.errors]
+read-only = false
