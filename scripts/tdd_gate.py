@@ -22,11 +22,14 @@ claim / red не подтверждён), `3` — ERROR (неоднозначн�
 collection error.
 """
 
+import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +53,8 @@ _META_CANDIDATE_RE = re.compile(r"^\s*[-*]\s.*\|")
 _STATUS_TOKEN_RE = re.compile(
     r"^(?:(?:🔄|🔍|⬜|✅|⏸️)\s*)?(IN_PROGRESS|REVIEW)$", re.IGNORECASE
 )
+# Тот же whitelist эмодзи, но для статуса DONE (используется `cmd_audit`).
+_DONE_STATUS_TOKEN_RE = re.compile(r"^(?:(?:🔄|🔍|⬜|✅|⏸️)\s*)?DONE$", re.IGNORECASE)
 
 # Runner-owned пути: правки, которые spec-runner делает сам ДО старта агента
 # (пометка задачи in_progress) или которые агент обязан вносить как часть
@@ -74,6 +79,10 @@ CATEGORIES = {
 _CLAIM_SCHEMA = "tdd-claim/v1"
 _VERDICT_SCHEMA = "tdd-verdict/v1"
 _WAIVER_SCHEMA = "tdd-waiver/v1"
+
+# Максимальная длина `notes` в verdict-файле — хвост вывода pytest, а не
+# весь лог; ограничение защищает evidence от разрастания.
+_NOTES_MAX_LEN = 4000
 
 
 class GateError(Exception):
@@ -288,19 +297,21 @@ def _meta_line_status(line: str) -> str | None:
     return None
 
 
-def _running_task_ids(text: str) -> list[str]:
-    """Возвращает ID задач со статусом IN_PROGRESS/REVIEW в тексте `text`.
+def _first_meta_line_per_task(text: str) -> dict[str, str]:
+    """Возвращает {task_id: первая meta-строка секции} по всем задачам текста.
 
-    Заголовок задачи (`### TASK-NNN: ...`, уровень #### тоже допустим)
-    начинает секцию задачи. Внутри секции статус читается ТОЛЬКО из ПЕРВОЙ
-    строки-кандидата — list-item'а (буллет `-`/`*`) с `|` внутри
+    Общий позиционный проход для `_running_task_ids` и `_done_task_ids`:
+    заголовок задачи (`### TASK-NNN: ...`, уровень #### тоже допустим)
+    начинает секцию задачи. Внутри секции meta-строка — ПЕРВАЯ
+    строка-кандидат: list-item'а (буллет `-`/`*`) с `|` внутри
     (`_META_CANDIDATE_RE`), это и есть позиция реальной meta-строки
     spec-runner. Все прочие строки секции (проза, markdown-таблицы, вторые
-    и далее буллеты с `|`) полностью игнорируются как источник статуса —
-    иначе таблица-описание вида `| Модуль A | REVIEW |` или посторонний
-    буллет ниже meta-строки могли бы ложно засчитаться.
+    и далее буллеты с `|`) полностью игнорируются — иначе таблица-описание
+    вида `| Модуль A | REVIEW |` или посторонний буллет ниже meta-строки
+    могли бы ложно засчитаться. Интерпретация статуса (running/done) —
+    забота вызывающих функций, здесь только структура.
     """
-    running: list[str] = []
+    result: dict[str, str] = {}
     current_task_id: str | None = None
     meta_line_seen = False
     for line in text.splitlines():
@@ -314,9 +325,38 @@ def _running_task_ids(text: str) -> list[str]:
         if _META_CANDIDATE_RE.match(line) is None:
             continue
         meta_line_seen = True
-        if _meta_line_status(line) is not None:
-            running.append(current_task_id)
-    return running
+        result[current_task_id] = line
+    return result
+
+
+def _running_task_ids(text: str) -> list[str]:
+    """Возвращает ID задач со статусом IN_PROGRESS/REVIEW в тексте `text`."""
+    return [
+        task_id
+        for task_id, line in _first_meta_line_per_task(text).items()
+        if _meta_line_status(line) is not None
+    ]
+
+
+def _meta_line_done(line: str) -> bool:
+    """`True`, если meta-строка `line` несёт чистый статус-токен DONE.
+
+    Аналог `_meta_line_status` (см. его докстринг про сегменты), но для
+    whitelist'а `_DONE_STATUS_TOKEN_RE` (для `cmd_audit`).
+    """
+    segments = line.split("|")[1:]
+    return any(
+        _DONE_STATUS_TOKEN_RE.match(segment.strip()) is not None for segment in segments
+    )
+
+
+def _done_task_ids(text: str) -> list[str]:
+    """Возвращает ID задач со статусом DONE в тексте `text` (для `cmd_audit`)."""
+    return [
+        task_id
+        for task_id, line in _first_meta_line_per_task(text).items()
+        if _meta_line_done(line)
+    ]
 
 
 def resolve_current_task(root: Path) -> str:
@@ -642,3 +682,317 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     )
     write_json_atomic(_claim_path(root, task_id), claim.to_json())
     return 0
+
+
+def _verdict_path(root: Path, task_id: str) -> Path:
+    """Путь к verdict-файлу задачи `task_id`."""
+    return root / EVIDENCE / "verdicts" / f"{task_id}.json"
+
+
+def _history_path(root: Path, task_id: str) -> Path:
+    """Путь к append-only history-файлу verdict'ов задачи `task_id`."""
+    return root / EVIDENCE / "verdicts" / f"{task_id}.history.jsonl"
+
+
+def _append_verdict_history(root: Path, task_id: str, verdict: Verdict) -> None:
+    """Дописывает `verdict` строкой JSON в history ДО перезаписи основного файла.
+
+    Реверификация (HEAD сдвинулся после PASS) перезаписывает
+    `verdicts/<TASK>.json` новым результатом — старый вердикт иначе был бы
+    потерян. History — append-only: старые записи никогда не переписываются
+    и не читаются обратно самим гейтом.
+    """
+    path = _history_path(root, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as history_file:
+        history_file.write(json.dumps(verdict.to_json(), ensure_ascii=False) + "\n")
+
+
+def _write_verdict(
+    root: Path,
+    *,
+    task_id: str,
+    claim: Claim,
+    verified_head: str,
+    red_replay: str,
+    selector_at_head: str,
+    verdict: str,
+    notes: str,
+) -> None:
+    """Собирает `Verdict` из `claim` и пишет его атомарно в evidence."""
+    record = Verdict(
+        task_id=task_id,
+        claim_revision=claim.revision,
+        red_sha=claim.red_sha,
+        verified_head=verified_head,
+        red_replay=red_replay,
+        selector_at_head=selector_at_head,
+        verdict=verdict,
+        checked_at=datetime.now(UTC).isoformat(),
+        notes=notes,
+    )
+    write_json_atomic(_verdict_path(root, task_id), record.to_json())
+
+
+def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    """`True`, если `ancestor` — предок `descendant` (или совпадает с ним).
+
+    Обёртка над `git merge-base --is-ancestor`; невалидный/недостижимый
+    `ancestor` даёт ненулевой exit code — трактуется как `False`, а не
+    исключение (вызывающий код сам решает, ошибка это или просто «нет»).
+    """
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _diff_paths(root: Path, base: str, head: str) -> list[str]:
+    """Возвращает пути, изменённые в диапазоне `base..head` (`git diff --name-only`)."""
+    output = git(root, "diff", "--name-only", f"{base}..{head}")
+    return [line for line in output.split("\n") if line]
+
+
+def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
+    """Реиграет `selector` на `red_sha` в отдельном git worktree вне репо.
+
+    Создаёт временный worktree через `tempfile.mkdtemp` (вне `root`),
+    запускает `_run_selector` с `cwd=worktree` — категории результата те
+    же, что у `_run_selector`: `"green"` (реализация уже была в
+    red-коммите — red не был красным), `"expected_fail"` (ожидаемо),
+    `"error"`. Worktree убирается в `finally`: `git worktree remove
+    --force`, а если это не удалось — `git worktree prune`, чтобы не
+    оставить репозиторий с висящей worktree-регистрацией.
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="tdd-gate-replay-")
+    try:
+        git(root, "worktree", "add", "--detach", tmp_dir, red_sha)
+        return _run_selector(Path(tmp_dir), selector)
+    finally:
+        try:
+            git(root, "worktree", "remove", "--force", tmp_dir)
+        except subprocess.CalledProcessError:
+            git(root, "worktree", "prune")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _is_valid_waiver(root: Path, waiver: Waiver, task_id: str, head: str) -> bool:
+    """Waiver валиден: свой `task_id`, одобрен человеком, baseline — предок HEAD."""
+    if waiver.task_id != task_id:
+        return False
+    if waiver.approved_by != "human":
+        return False
+    return _is_ancestor(root, waiver.baseline_sha, head)
+
+
+def _verify_without_claim(root: Path, task_id: str, head: str) -> int:
+    """Шаг 2 `cmd_verify`: без claim'а единственный путь дальше — валидный waiver.
+
+    Невалидный или отсутствующий waiver — fail-closed, `1`. Валидный —
+    пишет verdict `WAIVED` (WAIVED != PASS, ось H3 им не закрывается — см.
+    докстринг модуля) и возвращает `0`.
+    """
+    waiver = load_waiver(root, task_id)
+    if waiver is None or not _is_valid_waiver(root, waiver, task_id, head):
+        print(
+            f"verify: {task_id}: нет claim'а и нет валидного waiver — fail-closed",
+            file=sys.stderr,
+        )
+        return 1
+    verdict = Verdict(
+        task_id=task_id,
+        claim_revision=0,
+        red_sha="",
+        verified_head=head,
+        red_replay="",
+        selector_at_head="",
+        verdict=CAT_WAIVED,
+        checked_at=datetime.now(UTC).isoformat(),
+        notes=f"waiver: {waiver.reason}",
+    )
+    write_json_atomic(_verdict_path(root, task_id), verdict.to_json())
+    return 0
+
+
+def cmd_verify(root: Path) -> int:
+    """Команда `verify`: реиграет red-чекпоинт текущей задачи, пишет verdict.
+
+    Реализует 8-шаговую логику из плана: резолвит текущую задачу, при
+    отсутствии claim'а падает на waiver (иначе fail-closed), проверяет
+    совместимость/идемпотентность существующего verdict'а, валидирует
+    red-диапазон (только `tests/`, red_sha — предок HEAD), реиграет red SHA
+    в отдельном worktree и требует зелёный селектор на текущем HEAD.
+    Возвращает код по контракту скрипта: `0` — PASS/WAIVED (в т.ч.
+    идемпотентный повтор), `1` — FAIL, `3` — ERROR. `GateError` из
+    внутренней логики перехватывается здесь же, как и в `cmd_red`.
+    """
+    try:
+        return _cmd_verify(root)
+    except GateError as exc:
+        print(f"verify: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+
+def _cmd_verify(root: Path) -> int:
+    """Логика `cmd_verify`; `GateError` пробрасывается наружу (перехват — выше)."""
+    task_id = resolve_current_task(root)  # шаг 1
+    head = head_sha(root)
+
+    claim = load_claim(root, task_id)
+    if claim is None:
+        return _verify_without_claim(root, task_id, head)  # шаг 2
+
+    # Шаги 3-4: совместимость и идемпотентность существующего verdict'а.
+    existing = load_verdict(root, task_id)
+    if existing is not None:
+        if existing.red_sha != claim.red_sha:
+            raise GateError(
+                f"{task_id}: verdict.red_sha={existing.red_sha!r} не совпадает "
+                f"с claim.red_sha={claim.red_sha!r} — рассинхрон/подделка"
+            )
+        if existing.verdict == CAT_PASS:
+            if existing.verified_head == head:
+                return 0  # идемпотентный PASS — второй verdict не пишется
+            _append_verdict_history(root, task_id, existing)
+
+    # Шаг 5: red_sha существует, предок HEAD, диапазон трогает только tests/.
+    if not _commit_exists(root, claim.red_sha):
+        raise GateError(f"{task_id}: red_sha {claim.red_sha} отсутствует в истории")
+    if not _is_ancestor(root, claim.red_sha, head):
+        raise GateError(f"{task_id}: red_sha {claim.red_sha} не предок HEAD ({head})")
+    changed = _diff_paths(root, claim.baseline_sha, claim.red_sha)
+    non_tests = [path for path in changed if not path.startswith("tests/")]
+    if non_tests:
+        raise GateError(
+            f"{task_id}: red-диапазон {claim.baseline_sha}..{claim.red_sha} "
+            f"трогает не только tests/: {', '.join(non_tests)}"
+        )
+
+    # Шаг 6: replay red_sha в отдельном worktree.
+    replay_category, replay_output = _replay_red(root, claim.red_sha, claim.selector)
+    if replay_category != "expected_fail":
+        verdict_category = (
+            CAT_UNEXPECTED_FAIL if replay_category == "green" else CAT_ERROR
+        )
+        _write_verdict(
+            root,
+            task_id=task_id,
+            claim=claim,
+            verified_head=head,
+            red_replay=verdict_category,
+            selector_at_head="",
+            verdict=verdict_category,
+            notes=replay_output[-_NOTES_MAX_LEN:],
+        )
+        return 1 if verdict_category == CAT_UNEXPECTED_FAIL else 3
+
+    # Шаг 7: селектор обязан быть зелёным на текущем HEAD.
+    head_category, _head_output = _run_selector(root, claim.selector)
+    if head_category != "green":
+        print(
+            f"verify: {claim.selector} красный на HEAD — "
+            "реализация не закрывает свой тест",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Шаг 8: verdict PASS.
+    _write_verdict(
+        root,
+        task_id=task_id,
+        claim=claim,
+        verified_head=head,
+        red_replay=CAT_EXPECTED_FAIL,
+        selector_at_head=CAT_PASS,
+        verdict=CAT_PASS,
+        notes="",
+    )
+    return 0
+
+
+def cmd_audit(root: Path) -> int:
+    """Команда `audit`: у каждой DONE-задачи с claim обязан быть PASS/WAIVED verdict.
+
+    Ничего не переигрывает — только читает evidence с диска (дёшево,
+    идемпотентно). Предназначена для post_done-плагина spec-runner.
+    `GateError` из внутренней логики (битый evidence) перехватывается
+    здесь же, как и в `cmd_red`/`cmd_verify`.
+    """
+    try:
+        return _cmd_audit(root)
+    except GateError as exc:
+        print(f"audit: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+
+def _cmd_audit(root: Path) -> int:
+    """Логика `cmd_audit`; `GateError` пробрасывается наружу (перехват — выше)."""
+    violations: list[str] = []
+    for path in sorted((root / "spec").glob("*tasks.md")):
+        for task_id in _done_task_ids(path.read_text()):
+            if load_claim(root, task_id) is None:
+                continue  # DONE без claim — гейт для этой задачи не применялся
+            verdict = load_verdict(root, task_id)
+            if verdict is None or verdict.verdict not in (CAT_PASS, CAT_WAIVED):
+                violations.append(task_id)
+    if violations:
+        print(
+            "audit: DONE-задачи с claim без PASS/WAIVED verdict: "
+            + ", ".join(violations),
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Строит argparse-парсер для подкоманд `red`/`verify`/`audit`."""
+    parser = argparse.ArgumentParser(prog="tdd_gate")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    red_parser = subparsers.add_parser("red", help="зафиксировать red-чекпоинт")
+    red_parser.add_argument("-k", "--selector", required=True, help="pytest-селектор")
+    red_parser.add_argument("-m", "--message", default="", help="ожидаемое поведение")
+
+    subparsers.add_parser("verify", help="реиграть red-чекпоинт текущей задачи")
+    subparsers.add_parser("audit", help="проверить verdict для DONE-задач")
+
+    return parser
+
+
+_EXIT_CODE_LABEL = {0: "OK", 1: "FAIL", 3: "ERROR"}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI-точка входа гейта: подкоманды `red`/`verify`/`audit`.
+
+    Каждая команда уже перехватывает свой `GateError` внутри (см.
+    `cmd_red`/`cmd_verify`/`cmd_audit`) — обёртка здесь на случай, если
+    исключение всё же прорвётся наружу из будущего кода. По завершении,
+    независимо от кода возврата, печатает одну человекочитаемую итоговую
+    строку в stdout.
+    """
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    root = Path.cwd()
+    try:
+        if args.command == "red":
+            code = cmd_red(root, args.selector, args.message)
+        elif args.command == "verify":
+            code = cmd_verify(root)
+        else:
+            code = cmd_audit(root)
+    except GateError as exc:
+        print(f"{args.command}: {exc}", file=sys.stderr)
+        code = exc.exit_code
+    label = _EXIT_CODE_LABEL.get(code, f"UNKNOWN({code})")
+    print(f"tdd-gate {args.command}: {label}")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
