@@ -19,6 +19,13 @@ description: |
   (run-loop, resume, CLI) — w-runtime после схождения волны.
 
 repo_url: https://github.com/andrei-shtanakov/disputatio
+
+# Пути ниже — операторские (user-relative через `~`, конвенция maestro:
+# «absolute path or start with ~»). Это runtime-конфиг запуска оркестрации,
+# не переносимый билд-артефакт; CI-проверка конфига идёт без файловой
+# системы: `maestro validate project.yaml --strict --no-fs`.
+# Env-параметризация (${VAR}) сознательно НЕ используется: подстановка
+# maestro fail-closed без синтаксиса дефолта — голый запуск ломался бы.
 repo_path: ~/labs/disputatio
 
 # Сиблинг без точки и вне ignore-путей (INV-13; ловушка pyrefly в dot-каталогах)
