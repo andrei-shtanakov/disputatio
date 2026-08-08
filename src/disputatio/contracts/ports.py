@@ -11,6 +11,13 @@ check фейков через `isinstance` (проверка наличия ме
 агента — обязанность оркестратора поверх `AgentTurn.text`, не адаптера;
 права ревьюера (read-only, §7) — конфигурация реализации адаптера, в порт
 не входят.
+
+Стриминг §8 (`agent_text_delta`, `agent_tool_use`, …) живёт в реализациях
+адаптеров: EventSink инжектится в конструктор конкретного адаптера
+composition root'ом (w-runtime) и транслирует нативный поток CLI в события
+§8. В порт `AgentAdapter` он не входит: порт описывает только запрос-ответ
+(`prompt → AgentTurn`), чтобы фейки в тестах и адаптеры без стриминга
+оставались тривиальными ([REQ-016]).
 """
 
 from typing import Protocol, runtime_checkable
@@ -26,7 +33,13 @@ class StateStore(Protocol):
     """Порт хранилища `session.json`: load/save состояния сессии."""
 
     def load(self, session_id: str) -> SessionState:
-        """Читает состояние сессии `session_id` с диска."""
+        """Читает состояние сессии `session_id`.
+
+        Отсутствующая сессия — `KeyError(session_id)`: стандартный тип,
+        не привязанный к носителю (файловая система, БД — деталь
+        реализации). Повреждённый/схемно-невалидный payload —
+        `ValidationError` pydantic.
+        """
         ...
 
     def save(self, state: SessionState) -> None:
@@ -44,11 +57,17 @@ class EventSink(Protocol):
 
 
 class AgentTurn(ArtifactChild):
-    """Сырой результат одного вызова агента до схемной валидации."""
+    """Сырой результат одного вызова агента до схемной валидации.
+
+    `tokens_used is None` означает «адаптер не сообщил расход» — оркестратор
+    обязан отличать неизвестность от нуля, иначе учёт бюджета BUDGET_HIT
+    (§5.2) слепнет на адаптерах без token-метрик. `0` — валидное явное
+    значение («сообщил: ноль»).
+    """
 
     text: str
     session_ref: str | None = None
-    tokens_used: int = 0
+    tokens_used: int | None = None
 
 
 @runtime_checkable

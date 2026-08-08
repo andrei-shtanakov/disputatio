@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-016",
+  "selector": "tests/contracts/test_ports_contracts.py::test_agent_turn_tokens_used_defaults_to_none",
+  "expected_behavior": "",
+  "baseline_sha": "cd355ae9c285702937e8e76480206c3695c7faf6",
+  "red_sha": "e37da6e363c473d125a49abcdaf0060d0429bd88",
+  "created_at": "2026-08-08T21:20:47.007588+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_ports_contracts.py"
+}
