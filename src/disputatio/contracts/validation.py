@@ -1,14 +1,26 @@
-"""Кросс-артефактная валидация review.json ([DESIGN-008], [REQ-009]).
+"""Кросс-артефактная валидация review.json ([DESIGN-008], [REQ-008…011]).
 
 Чистые функции без I/O и мутаций — анти-галлюцинационное ядро §4.4
 SPEC-001. Схемная валидация (pydantic, review.py) и протокольная
 (этот модуль) не смешиваются: здесь Review уже схемно валиден.
+
+Каждая `check_*` возвращает machine-readable код причины (константа
+`REASON_*`) или `None`, если правило пройдено — оркестратор и тесты
+сравнивают по константам, без строкового дублирования.
 """
 
 from pydantic import Field
 
 from disputatio.contracts.base import ArtifactChild
-from disputatio.contracts.review import Issue, Review, Severity
+from disputatio.contracts.review import Issue, Review, Severity, Verdict
+from disputatio.contracts.verification import OverallStatus, VerificationReport
+
+REASON_NO_SUBSTANTIVE_ISSUES = "no_substantive_issues"
+REASON_APPROVE_ON_FAILED_GATES = "approve_on_failed_gates"
+REASON_EMPTY_CHECKED = "empty_checked"
+
+_NEGATIVE_VERDICTS = (Verdict.REQUEST_CHANGES, Verdict.REJECT)
+_SUBSTANTIVE_SEVERITIES = (Severity.BLOCKER, Severity.MAJOR)
 
 
 class ReviewAcceptance(ArtifactChild):
@@ -44,3 +56,41 @@ def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
         else:
             issues.append(issue)
     return review.model_copy(update={"issues": issues}), degraded_ids
+
+
+def check_substantive_issues(review: Review) -> str | None:
+    """REQ-008: request_changes|reject без ≥1 blocker|major → код причины.
+
+    Негативный вердикт обязан быть обоснован существенным issue; approve
+    это правило не трогает. Вызывается ПОСЛЕ деградации REQ-009 — если
+    деградация сняла последний blocker|major, ревью отклоняется здесь.
+    """
+    if review.verdict not in _NEGATIVE_VERDICTS:
+        return None
+    substantive = any(
+        issue.severity in _SUBSTANTIVE_SEVERITIES for issue in review.issues
+    )
+    return None if substantive else REASON_NO_SUBSTANTIVE_ISSUES
+
+
+def check_verdict_vs_verification(
+    review: Review, verification: VerificationReport
+) -> str | None:
+    """REQ-010: approve при `verification.overall == fail` → код причины.
+
+    Исключает противоречие «одобряю, но gates красные»; остальные
+    вердикты при fail пропускаются — ревьюер взвешивает провал сам (§5.1).
+    """
+    approve_on_fail = (
+        review.verdict is Verdict.APPROVE and verification.overall is OverallStatus.FAIL
+    )
+    return REASON_APPROVE_ON_FAILED_GATES if approve_on_fail else None
+
+
+def check_checked_nonempty(review: Review) -> str | None:
+    """REQ-011: `checked == []` → код причины (кандидат на ретрай).
+
+    Пустой список схемно валиден (review.py), но ревью без единого
+    осмотренного объекта не принимается — дешёвый прокси верифицируемости.
+    """
+    return None if review.checked else REASON_EMPTY_CHECKED
