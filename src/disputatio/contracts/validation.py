@@ -48,7 +48,16 @@ def validate_review(
     не только первый — ревьюеру при ретрае отдаётся полный список.
     Входные модели не мутируются; `ReviewAcceptance.review` — возможно
     деградированная копия.
+
+    Вход ревалидируется (REQ-015): модели, собранные
+    `model_copy(update=...)` со строками вместо enum, нормализуются к
+    членам enum. Схемно-невалидный вход поднимает `ValidationError` —
+    контракт конвейера; обрабатывается слоем schema-retry оркестратора.
     """
+    review = Review.model_validate(review.model_dump(by_alias=True))
+    verification = VerificationReport.model_validate(
+        verification.model_dump(by_alias=True)
+    )
     degraded, degraded_ids = degrade_unevidenced_issues(review)
     checks = (
         check_substantive_issues(degraded),
@@ -111,9 +120,11 @@ def check_verdict_vs_verification(
 
     Исключает противоречие «одобряю, но gates красные»; остальные
     вердикты при fail пропускаются — ревьюер взвешивает провал сам (§5.1).
+    Сравнение через `==`, не `is` (REQ-015): StrEnum равен и члену, и
+    строке — standalone-вызов со строковыми значениями работает идентично.
     """
     approve_on_fail = (
-        review.verdict is Verdict.APPROVE and verification.overall is OverallStatus.FAIL
+        review.verdict == Verdict.APPROVE and verification.overall == OverallStatus.FAIL
     )
     return REASON_APPROVE_ON_FAILED_GATES if approve_on_fail else None
 
