@@ -1262,7 +1262,9 @@ def _cmd_verify(root: Path) -> int:
     if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(
             f"{task_id}: {test_path} изменён после red-чекпоинта — "
-            "green обязан достигаться только продуктовым кодом"
+            "green обязан достигаться только продуктовым кодом. Выход: "
+            "оператор удаляет spec/.tdd-evidence/claims/<ns>/<TASK>.json и "
+            "verdict (или выдаёт waiver), затем агент начинает red заново."
         )
 
     # Шаг 6: replay red_sha в отдельном worktree.
@@ -1328,7 +1330,9 @@ def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim) -> int:
     if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(
             f"{task_id}: {test_path} изменён после red-чекпоинта — "
-            "green обязан достигаться только продуктовым кодом"
+            "green обязан достигаться только продуктовым кодом. Выход: "
+            "оператор удаляет spec/.tdd-evidence/claims/<ns>/<TASK>.json и "
+            "verdict (или выдаёт waiver), затем агент начинает red заново."
         )
     category, _output = _run_selector(root, claim.selector)
     if category != "green":
