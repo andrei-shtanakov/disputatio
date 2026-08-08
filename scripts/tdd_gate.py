@@ -578,13 +578,24 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
             return 0  # идемпотентный повтор — второй red-коммит не создаётся
         recovered_sha = find_red_commit_by_trailer(root, task_id)
         if recovered_sha is not None:
-            return 0  # sha в claim устарел, но коммит найден по трейлеру
+            # sha в claim устарел (например, история переписана), но коммит
+            # с тем же трейлером найден — чиним claim свежими данными из
+            # него, а не молча репортим успех с битым файлом на диске.
+            _recover_claim_from_commit(root, task_id, recovered_sha, expected_behavior)
+            return 0
         raise GateError(
             f"{task_id}: claim ссылается на red-коммит {own_claim.red_sha}, "
             "которого нет в истории, и по трейлеру ничего не найдено — "
             "recovery невозможен"
         )
-    # else: own_claim закрыт PASS/WAIVED — падаем на шаг 7 (supersession).
+    else:
+        # own_claim закрыт PASS/WAIVED — supersession новым red запрещена в
+        # v1. Проверяем ЗДЕСЬ, ДО forbidden-check/селектора/коммита — иначе
+        # каждый повторный вызов `red` после PASS создавал бы новый
+        # осиротевший red-коммит и только потом падал на записи claim'а.
+        raise GateError(
+            f"{task_id}: supersession запрещена — claim уже закрыт вердиктом"
+        )
 
     # Шаг 3: чужой pending claim блокирует запуск.
     foreign = _foreign_pending_claim(root, task_id)
@@ -618,11 +629,8 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     # Шаг 6: red-коммит.
     red_sha = commit_red(root, task_id, baseline, selector)
 
-    # Шаг 7: запись claim. Supersession (уже есть PASS/WAIVED) запрещена в v1.
-    if own_claim is not None:
-        raise GateError(
-            f"{task_id}: supersession запрещена — claim уже закрыт вердиктом"
-        )
+    # Шаг 7: запись claim. Supersession (existing PASS/WAIVED) отсечена выше
+    # (см. шаг 2/else) — сюда доходим только когда own_claim is None.
     claim = Claim(
         task_id=task_id,
         selector=selector,

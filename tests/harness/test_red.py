@@ -209,6 +209,64 @@ def test_red_claim_with_stale_sha_recovers_via_trailer(repo: Path) -> None:
 
     assert code == 0
     assert tdd_gate.head_sha(repo) == real_sha
+    claim = tdd_gate.load_claim(repo, "TASK-001")
+    assert claim is not None
+    assert claim.red_sha == real_sha, "claim должен быть починен, а не оставлен битым"
+    assert claim.baseline_sha == baseline
+    assert claim.selector == SELECTOR
+
+
+def test_red_after_pass_verdict_is_supersession_error_without_new_commit(
+    repo: Path,
+) -> None:
+    """Fix round 1 (HIGH): supersession отсекается ДО commit_red.
+
+    Регресс на осиротевшие коммиты: если бы проверка «claim уже закрыт
+    PASS» шла только на записи claim'а (шаг 7), каждый повторный вызов
+    `red` после PASS создавал бы новый red-коммит и только потом падал —
+    несколько попыток оставляли бы несколько мусорных коммитов. Проверяем
+    двумя вызовами подряд, что число коммитов не меняется вообще.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_expected_fail_test(repo)
+    tdd_gate.git(repo, "add", "tests/test_new.py")
+    baseline = tdd_gate.head_sha(repo)
+    red_sha = tdd_gate.commit_red(repo, "TASK-001", baseline, SELECTOR)
+    tdd_gate.write_json_atomic(
+        _claim_path(repo),
+        tdd_gate.Claim(
+            task_id="TASK-001",
+            selector=SELECTOR,
+            expected_behavior=EXPECTED_BEHAVIOR,
+            baseline_sha=baseline,
+            red_sha=red_sha,
+            created_at="2026-08-08T00:00:00+00:00",
+            revision=1,
+        ).to_json(),
+    )
+    tdd_gate.write_json_atomic(
+        repo / "spec" / ".tdd-evidence" / "verdicts" / "TASK-001.json",
+        tdd_gate.Verdict(
+            task_id="TASK-001",
+            claim_revision=1,
+            red_sha=red_sha,
+            verified_head=red_sha,
+            red_replay="EXPECTED_FAIL",
+            selector_at_head="PASS",
+            verdict=tdd_gate.CAT_PASS,
+            checked_at="2026-08-08T00:00:00+00:00",
+            notes="",
+        ).to_json(),
+    )
+    commit_count_before = tdd_gate.git(repo, "rev-list", "--count", "HEAD")
+
+    first_code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    second_code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+
+    commit_count_after = tdd_gate.git(repo, "rev-list", "--count", "HEAD")
+    assert first_code == 3
+    assert second_code == 3
+    assert commit_count_after == commit_count_before
 
 
 def test_red_recovers_claim_from_commit_trailer_when_claim_missing(
