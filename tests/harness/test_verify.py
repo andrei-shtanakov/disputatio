@@ -494,6 +494,32 @@ def test_verify_test_rewritten_without_commit_between_red_and_first_verify_is_er
     code = tdd_gate.cmd_verify(repo)
 
     assert code != 0
+
+
+def test_verify_test_path_changed_remedy_interpolates_real_ns_and_task_id(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Copilot PR #3: remedy-сообщение несёт РЕАЛЬНЫЕ ns/task_id/пути.
+
+    Раньше плейсхолдеры `<ns>`/`<TASK>` были буквальными — теперь
+    подставлены фактические значения, включая рабочий namespace
+    (`default` вне maestro-mode) и конкретные пути claim/verdict.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_gate_test(repo)
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert code == 0
+
+    _write_trivially_true_test(repo)
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "spec/.tdd-evidence/claims/default/TASK-001.json" in err
+    assert "spec/.tdd-evidence/verdicts/default/TASK-001.json" in err
+    assert "<ns>" not in err
+    assert "<TASK>" not in err
     assert tdd_gate.load_verdict(repo, "TASK-001") is None
 
 

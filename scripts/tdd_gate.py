@@ -118,9 +118,13 @@ class Claim:
     """Заявка агента: тест написан и подтверждённо падает (red-чекпоинт).
 
     `test_path` (I2) — путь тест-файла (`selector.split("::")[0]`),
-    записывается детерминированно в момент red; verify читает его отсюда, а
-    не выводит заново эвристикой из selector'а. Обязательное поле схемы
-    `tdd-claim/v1` — легаси-клеймов без него в проде нет.
+    записывается детерминированно в момент red. `verify` НЕ читает это
+    поле доверчиво: путь для diff-проверки пересчитывается заново из
+    `claim.selector` (`_resolve_test_path`, Round 4 N1.2), и `verify`
+    требует точного равенства с `claim.test_path` — несовпадение
+    (например, поле подделано на посторонний файл) — `GateError`.
+    Обязательное поле схемы `tdd-claim/v1` — легаси-клеймов без него в
+    проде нет.
     """
 
     task_id: str
@@ -273,7 +277,9 @@ def write_json_atomic(path: Path, obj: object) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+    tmp_path.write_text(
+        json.dumps(obj, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     os.replace(tmp_path, path)
 
 
@@ -290,7 +296,7 @@ def _read_evidence_json(
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise GateError(f"{path}: битый JSON evidence ({exc})") from exc
     if not isinstance(data, dict):
@@ -412,7 +418,7 @@ def resolve_current_task(root: Path) -> str:
     """
     running: list[str] = []
     for path in sorted((root / "spec").glob("*tasks.md")):
-        running.extend(_running_task_ids(path.read_text()))
+        running.extend(_running_task_ids(path.read_text(encoding="utf-8")))
     if not running:
         raise GateError("нет задачи со статусом IN_PROGRESS/REVIEW в spec/*tasks.md")
     if len(running) > 1:
@@ -515,6 +521,11 @@ def resolve_namespace(root: Path) -> str:
     ветка не та, что ожидалась. Вне maestro-mode — всегда `default`,
     включая detached HEAD (ручные прогоны, смоук, `test_command` без
     оркестрации Maestro).
+
+    Форма СТРОГО `ws/<id>` — без дополнительных `/` внутри `<id>` (Copilot
+    PR #3): без этой проверки `ws/a/b` и `ws/a-b` схлопнулись бы в один
+    и тот же namespace `ws-a-b` (`branch.replace("/", "-")` не различает
+    исходный разделитель) — два РАЗНЫХ workstream'а делили бы evidence.
     """
     if not _maestro_mode(root):
         return "default"
@@ -530,6 +541,13 @@ def resolve_namespace(root: Path) -> str:
         raise GateError(
             f"maestro-mode: ветка {branch!r} не соответствует "
             f"{_WS_BRANCH_PREFIX}<workstream-id> — namespace неоднозначен"
+        )
+    workstream_id = branch[len(_WS_BRANCH_PREFIX) :]
+    if "/" in workstream_id:
+        raise GateError(
+            f"maestro-mode: ветка {branch!r} содержит лишний '/' после "
+            f"{_WS_BRANCH_PREFIX!r} — namespace неоднозначен (схлопнулся бы "
+            "с другой веткой при замене '/' на '-')"
         )
     return branch.replace("/", "-")
 
@@ -899,7 +917,7 @@ def _append_verdict_history(
     """
     path = _history_path(root, task_id, ns)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as history_file:
+    with path.open("a", encoding="utf-8") as history_file:
         history_file.write(json.dumps(verdict.to_json(), ensure_ascii=False) + "\n")
 
 
@@ -1050,6 +1068,24 @@ def _resolve_test_path(claim: Claim, task_id: str) -> str:
     return path_from_selector
 
 
+def _test_path_changed_remedy(task_id: str, test_path: str, ns: str) -> str:
+    """Собирает сообщение «тест изменён после red» с конкретным remedy (Round 5/Copilot).
+
+    Общая точка для обеих цепочек verify (первичной и идемпотентной) —
+    интерполирует РЕАЛЬНЫЕ `ns`/`task_id`/пути, а не плейсхолдеры: путь к
+    claim/verdict, которые оператору нужно убрать (или заменить waiver'ом),
+    чтобы разрешить агенту новый честный red-цикл.
+    """
+    claim_path = f"spec/.tdd-evidence/claims/{ns}/{task_id}.json"
+    verdict_path = f"spec/.tdd-evidence/verdicts/{ns}/{task_id}.json"
+    return (
+        f"{task_id}: {test_path} изменён после red-чекпоинта — green обязан "
+        "достигаться только продуктовым кодом. Выход: оператор удаляет "
+        f"{claim_path} и {verdict_path} (или выдаёт waiver), затем агент "
+        "начинает red заново."
+    )
+
+
 def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
     """Реиграет `selector` на `red_sha` в отдельном git worktree вне репо.
 
@@ -1062,6 +1098,9 @@ def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
     а не всплывает сырым traceback'ом. Worktree убирается в `finally`:
     `git worktree remove --force`, а если это не удалось — `git worktree
     prune`, чтобы не оставить репозиторий с висящей worktree-регистрацией.
+    Сбой самого `prune` (Copilot PR #3) тоже перехватывается и логируется
+    в stderr, а не пробрасывается — исключение из `finally` иначе
+    затёрло бы исходный результат/исключение из `try`-блока выше.
     """
     tmp_dir = tempfile.mkdtemp(prefix="tdd-gate-replay-")
     try:
@@ -1076,7 +1115,14 @@ def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
         try:
             git(root, "worktree", "remove", "--force", tmp_dir)
         except subprocess.CalledProcessError:
-            git(root, "worktree", "prune")
+            try:
+                git(root, "worktree", "prune")
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"verify: git worktree prune тоже не удался для "
+                    f"{tmp_dir}: {exc.stderr}",
+                    file=sys.stderr,
+                )
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
@@ -1235,7 +1281,7 @@ def _cmd_verify(root: Path) -> int:
                     # проверен выше; replay НЕ переигрывается (экономия
                     # шортката), но test_path и текущий селектор
                     # перепроверяются заново, а не читаются из кэша.
-                    return _verify_idempotent_pass(root, task_id, claim)
+                    return _verify_idempotent_pass(root, task_id, claim, ns)
                 previous_for_archive = existing
 
     # Шаг 5: red_sha предок HEAD, диапазон трогает только tests/.
@@ -1260,12 +1306,7 @@ def _cmd_verify(root: Path) -> int:
     # достигаться только продуктовым кодом, без исключений (v1).
     test_path = _resolve_test_path(claim, task_id)
     if not _test_path_unchanged(root, claim.red_sha, test_path):
-        raise GateError(
-            f"{task_id}: {test_path} изменён после red-чекпоинта — "
-            "green обязан достигаться только продуктовым кодом. Выход: "
-            "оператор удаляет spec/.tdd-evidence/claims/<ns>/<TASK>.json и "
-            "verdict (или выдаёт waiver), затем агент начинает red заново."
-        )
+        raise GateError(_test_path_changed_remedy(task_id, test_path, ns))
 
     # Шаг 6: replay red_sha в отдельном worktree.
     replay_category, replay_output = _replay_red(root, claim.red_sha, claim.selector)
@@ -1313,7 +1354,7 @@ def _cmd_verify(root: Path) -> int:
     return 0
 
 
-def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim) -> int:
+def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim, ns: str) -> int:
     """Идемпотентная ветка PASS (I2.3): тот же red_sha и тот же verified_head.
 
     Trust-boundary трейлеры (C4) уже проверены вызывающим кодом. Экономия
@@ -1324,16 +1365,14 @@ def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim) -> int:
     прогоняется (не читается из кэша verdict'а) и обязан быть зелёным.
     Любое расхождение — fail-closed, без записи нового verdict'а:
     подтвердить нечего, а перезаписывать последний известный PASS
-    чем-то произвольным не более честно, чем промолчать.
+    чем-то произвольным не более честно, чем промолчать. `ns` (Copilot
+    PR #3) нужен только для remedy-сообщения об ошибке (конкретный путь
+    claim/verdict) — сама проверка namespace-агностична, C4 её уже
+    покрыл выше по стеку.
     """
     test_path = _resolve_test_path(claim, task_id)
     if not _test_path_unchanged(root, claim.red_sha, test_path):
-        raise GateError(
-            f"{task_id}: {test_path} изменён после red-чекпоинта — "
-            "green обязан достигаться только продуктовым кодом. Выход: "
-            "оператор удаляет spec/.tdd-evidence/claims/<ns>/<TASK>.json и "
-            "verdict (или выдаёт waiver), затем агент начинает red заново."
-        )
+        raise GateError(_test_path_changed_remedy(task_id, test_path, ns))
     category, _output = _run_selector(root, claim.selector)
     if category != "green":
         print(
@@ -1374,7 +1413,7 @@ def _cmd_audit(root: Path) -> int:
     ns = resolve_namespace(root)
     violations: list[str] = []
     for path in sorted((root / "spec").glob("*tasks.md")):
-        for task_id in _done_task_ids(path.read_text()):
+        for task_id in _done_task_ids(path.read_text(encoding="utf-8")):
             if load_claim(root, task_id, ns) is None:
                 continue  # DONE без claim — гейт для этой задачи не применялся
             verdict = load_verdict(root, task_id, ns)

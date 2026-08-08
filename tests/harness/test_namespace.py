@@ -88,6 +88,22 @@ def test_resolve_namespace_maestro_mode_task_branch_is_gate_error(repo: Path) ->
         tdd_gate.resolve_namespace(repo)
 
 
+def test_resolve_namespace_maestro_mode_multi_slash_branch_is_gate_error(
+    repo: Path,
+) -> None:
+    """Copilot PR #3: `ws/a/b` (лишний `/`) → `GateError`, не тихое схлопывание.
+
+    Без этой проверки `branch.replace("/", "-")` схлопнул бы РАЗНЫЕ ветки
+    `ws/a/b` и `ws/a-b` в один и тот же namespace `ws-a-b` — два разных
+    workstream'а делили бы evidence.
+    """
+    write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
+    tdd_gate.git(repo, "checkout", "-b", "ws/a/b")
+
+    with pytest.raises(tdd_gate.GateError):
+        tdd_gate.resolve_namespace(repo)
+
+
 def test_resolve_namespace_maestro_mode_detached_head_is_gate_error(
     repo: Path,
 ) -> None:
