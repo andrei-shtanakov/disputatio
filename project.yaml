@@ -56,6 +56,7 @@ spec_runner:
   lint_command: "uv run ruff check ."
   extra_executor_config:
     executor:
+      on_task_failure: stop
       harness_guard: strict
       harness_files:
         - scripts/tdd_gate.py
