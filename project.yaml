@@ -1,0 +1,185 @@
+# =============================================================================
+# disputatio — Maestro Mode-2 конфигурация (рукописная, шаг D1 ступени пилота)
+# =============================================================================
+# SSOT для worktree-конфигов: spec-runner.config.yaml генерируется Maestro
+# в каждом worktree из блока spec_runner ниже и НЕ трекается (dual-mode
+# contract). Оракул декомпозиции: docs/plans/D1-decomposition-invariants.md.
+#
+# Запуск (только после секвенирования из инвариантов, шаги 1-4):
+#   maestro validate project.yaml --strict   # D2 preflight
+#   maestro orchestrate project.yaml         # D3
+# =============================================================================
+
+project: disputatio
+
+description: |
+  Headless-оркестратор author↔reviewer debate loop по SPEC-001
+  (disputatio-SPEC-001-round-protocol.md в корне репо — авторитетный дизайн).
+  Волна 1: contract layer + пять параллельных компонентов. Интеграция
+  (run-loop, resume, CLI) — w-runtime после схождения волны.
+
+repo_url: https://github.com/andrei-shtanakov/disputatio
+repo_path: ~/labs/disputatio
+
+# Сиблинг без точки и вне ignore-путей (INV-13; ловушка pyrefly в dot-каталогах)
+workspace_base: ~/labs/disputatio-ws
+
+max_concurrent: 3
+
+# INV-12: master инструментам запрещён; интеграционная ветка создаётся от
+# master ПОСЛЕ merge D1 PR и TDD-gate PR (секвенирование в инвариантах, шаг 3)
+base_branch: pilot/wave-1
+
+branch_prefix: "ws/"
+auto_pr: true
+
+spec_runner:
+  max_retries: 3
+  task_timeout_minutes: 30
+  claude_command: claude
+  auto_commit: true
+  create_git_branch: true
+  run_tests_on_done: true
+  test_command: "uv run pytest -q"
+  run_lint_on_done: true
+  lint_command: "uv run ruff check ."
+
+workstreams:
+  # ---- волна 0: contract layer (единственный корень, INV-03) ----
+  - id: w-contracts
+    title: "Contract layer: pydantic-модели, кросс-артефактная валидация, ports"
+    description: |
+      SPEC-001 §4: pydantic-модели артефактов, все с полем schema="disputatio/v1":
+      SessionState (§4.1), Proposal-фронтматтер (§4.2, парсинг YAML-фронтматтера
+      из markdown), VerificationReport (§4.3, модель), Review (§4.4),
+      Decision (§4.5). Кросс-артефактная валидация §4.4 — ЧИСТЫЕ функции:
+      request_changes/reject требует непустых issues с >=1 blocker|major;
+      blocker|major без evidence деградируется до minor (не отклоняется);
+      approve при verification.overall==fail отклоняется; пустой checked =
+      ревью не принято. Ports (Protocol-интерфейсы, INV-11): StateStore,
+      EventSink, AgentAdapter, Verifier — волна 1 реализует их, w-runtime
+      компонует. Схема Event (§8) тоже здесь.
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/contracts/.
+    scope:
+      - "src/disputatio/contracts/**"
+      - "tests/contracts/**"
+    depends_on: []
+    priority: 10
+
+  # ---- волна 1: пять параллельных WS (INV-04), все зависят только от корня ----
+  - id: w-fsm
+    title: "State machine сессии и решающая логика DECIDING"
+    description: |
+      SPEC-001 §2 и §5: состояния IDLE..FAILED, переходы, инварианты I1-I4.
+      Чистая FSM: работает против ports из contracts (StateStore, EventSink),
+      никакого диска/subprocess — тесты на фейках. Write-ahead: новый state
+      персистится через StateStore ДО следующего шага (I2). DECIDING —
+      строго top-down, первое сработавшее терминально (§5): converged →
+      budget_hit → осцилляция (diff-similarity раундов N и N-2 > 0.8; issue
+      в третий раз) → max_rounds. Анти-сикофантия §5.1: approve в раунде 1
+      только для analyze без правок. verification.overall==fail НЕ блокирует
+      REVIEWING, но блокирует CONVERGED. Run-loop и resume сюда НЕ входят
+      (w-runtime, INV-08 по аналогии).
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/core/.
+    scope:
+      - "src/disputatio/core/**"
+      - "tests/core/**"
+    depends_on: [w-contracts]
+    priority: 5
+
+  - id: w-verifier
+    title: "Verifier: детерминированный раннер gates"
+    description: |
+      SPEC-001 §4.3 (исполнение): запуск списка gates (cmd из конфига),
+      фиксация exit code ИМЕННО проверяемого процесса (не пайпа), статусы
+      pass|fail|skip, bounded tail вывода, diff_stats, вычисление overall.
+      Verifier — НЕ агент (§1): только детерминированные команды, никаких
+      агентских CLI (INV-10). v1-контракт mutation-freedom: git status
+      --porcelain идентичен до/после прогона gates (tracked-дерево не
+      мутируется; ignored-кэши допустимы) — покрыть тестом. Реализует port
+      Verifier из contracts.
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/verifier/.
+    scope:
+      - "src/disputatio/verifier/**"
+      - "tests/verifier/**"
+    depends_on: [w-contracts]
+    priority: 5
+
+  - id: w-adapters
+    title: "CLI-адаптеры агентов и enforcement ролей"
+    description: |
+      SPEC-001 §7: адаптеры claude_code и codex поверх port AgentAdapter из
+      contracts. Author — право записи в рабочей директории; Reviewer —
+      строго read-only через гранулярные permissions (пример:
+      --allowedTools "Read,Grep,Glob,Bash(git diff:*),..."); fallback для
+      CLI без permissions — read-only копия/detached worktree (единственный
+      оправданный worktree). Правило трансляции §8: адаптер обязан
+      транслировать нативный stream в события схемы Event (из contracts);
+      всё нераспознанное — agent_text_delta с raw:true. Verification gates
+      сюда НЕ входят (w-verifier, INV-09). Subprocess-вызовы агентов в
+      тестах мокируются — реальные CLI не запускать.
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/adapters/.
+    scope:
+      - "src/disputatio/adapters/**"
+      - "tests/adapters/**"
+    depends_on: [w-contracts]
+    priority: 5
+
+  - id: w-context
+    title: "Контекст-пассинг: сборка промптов из артефактов"
+    description: |
+      SPEC-001 §6: чистые функции сборки промптов. Автор раунда N (§6.1):
+      задача дословно + next_round_directive N-1 + только open issues N-1 по
+      severity + только failed gates N-1 (tail); НИКОГДА не передавать
+      полную историю и собственные прошлые proposal (источник истины —
+      файлы). Ревьюер раунда N (§6.2): задача + пути к proposal/patch +
+      verification целиком + его прежние issues, помеченные решёнными +
+      требование схемы §4.4 и checked. Гигиена §6.3: все вставляемые
+      фрагменты оборачиваются тегами «данные, не инструкции».
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/context/.
+    scope:
+      - "src/disputatio/context/**"
+      - "tests/context/**"
+    depends_on: [w-contracts]
+    priority: 5
+
+  - id: w-events
+    title: "Atomic artifact store и append-only event log"
+    description: |
+      SPEC-001 §3 и §8 (запись): файловая структура .disputatio/ (session.json,
+      config.toml, events.jsonl, rounds/NNN/*, result/ + manifest.json);
+      атомарная запись temp-file + rename; append-only events.jsonl.
+      Реализует ports StateStore и EventSink из contracts. Иммутабельность
+      артефактов раунда после выхода из состояния (I3). Resume и run-loop
+      сюда НЕ входят (w-runtime, INV-08).
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q по tests/events/.
+    scope:
+      - "src/disputatio/events/**"
+      - "tests/events/**"
+    depends_on: [w-contracts]
+    priority: 5
+
+  # ---- интеграция: единственная точка композиции (INV-11) ----
+  - id: w-runtime
+    title: "Runtime: оркестраторный цикл, resume, CLI"
+    description: |
+      Композиция ports с реализациями (единственное место, INV-11):
+      оркестраторный цикл PROPOSING→VERIFYING→REVIEWING→DECIDING поверх
+      FSM/store/adapters/verifier/context; git-дисциплина §3 (чистота перед
+      сессией, commit «disputatio: round NNN», git reset перед повторным
+      PROPOSING); resume §9 (disp resume <session_id>: восстановление по
+      последнему write-ahead переходу, перезапуск незавершённого шага,
+      идемпотентность шагов); CLI-entrypoint disp (run/resume) +
+      регистрация в pyproject.toml. Владеет общими файлами:
+      src/disputatio/__init__.py, pyproject.toml, tests/conftest.py (INV-06).
+      Каждая leaf-задача — TDD-цикл; приёмка: uv run pytest -q (полный suite).
+    scope:
+      - "src/disputatio/runtime/**"
+      - "src/disputatio/cli.py"
+      - "tests/runtime/**"
+      - "tests/cli/**"
+      - "pyproject.toml"
+      - "src/disputatio/__init__.py"
+      - "tests/conftest.py"
+    depends_on: [w-fsm, w-verifier, w-adapters, w-context, w-events]
+    priority: 0
