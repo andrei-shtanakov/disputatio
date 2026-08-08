@@ -1,0 +1,7 @@
+# ВНИМАНИЕ: при наличии этого файла блок [tool.pyrefly] в pyproject.toml
+# игнорируется целиком (pyrefly не мёржит конфиги) — этот файл в приоритете.
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+search-path = ["scripts", "tests"]
