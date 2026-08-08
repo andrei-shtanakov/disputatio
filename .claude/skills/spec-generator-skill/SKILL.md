@@ -418,9 +418,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Protocol
 
+
 class Component(ABC):
     @abstractmethod
     def process(self, input: Input) -> Output: ...
+
 
 @dataclass
 class Config:

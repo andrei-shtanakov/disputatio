@@ -231,12 +231,16 @@ def test_maestro_prefix_file(tmp_path: Path) -> None:
 
 
 def test_review_status_counts(tmp_path: Path) -> None:
-    write_tasks(tmp_path, "tasks.md", ONE_RUNNING.replace("🔄 IN_PROGRESS", "🔍 REVIEW"))
+    write_tasks(
+        tmp_path, "tasks.md", ONE_RUNNING.replace("🔄 IN_PROGRESS", "🔍 REVIEW")
+    )
     assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"
 
 
 def test_plain_format_without_emoji(tmp_path: Path) -> None:
-    write_tasks(tmp_path, "tasks.md", ONE_RUNNING.replace("🔄 IN_PROGRESS", "IN_PROGRESS"))
+    write_tasks(
+        tmp_path, "tasks.md", ONE_RUNNING.replace("🔄 IN_PROGRESS", "IN_PROGRESS")
+    )
     assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"
 
 
@@ -326,7 +330,9 @@ def repo(tmp_path: Path) -> Path:
     (tmp_path / "tests").mkdir()
     (tmp_path / "src").mkdir()
     (tmp_path / "spec").mkdir()
-    (tmp_path / "tests" / "test_seed.py").write_text("def test_seed():\n    assert True\n")
+    (tmp_path / "tests" / "test_seed.py").write_text(
+        "def test_seed():\n    assert True\n"
+    )
     (tmp_path / "src" / "mod.py").write_text("X = 1\n")
     run("git", "add", "-A")
     run("git", "commit", "-qm", "seed")
