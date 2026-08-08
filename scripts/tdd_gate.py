@@ -247,12 +247,31 @@ def load_waiver(root: Path, task_id: str) -> Waiver | None:
     return Waiver.from_json(data)
 
 
+def _meta_line_status(line: str) -> str | None:
+    """Извлекает статус из meta-строки вида `- Приоритет: P1 | 🔄 IN_PROGRESS`.
+
+    Meta-строка spec-runner всегда несёт статус в сегменте после последнего
+    `|`; строка без `|` — это не meta-строка (например, свободный текст
+    описания задачи), а значит не источник статуса. Возвращает `None`, если
+    в сегменте после `|` статус не найден.
+    """
+    if "|" not in line:
+        return None
+    status_segment = line.rsplit("|", 1)[-1]
+    match = _RUNNING_STATUS_RE.search(status_segment)
+    if match is None:
+        return None
+    return match.group(1).upper()
+
+
 def _running_task_ids(text: str) -> list[str]:
     """Возвращает ID задач со статусом IN_PROGRESS/REVIEW в тексте `text`.
 
     Заголовок задачи (`### TASK-NNN: ...`, уровень #### тоже допустим)
-    привязывает статус к последней встреченной строке ниже него, пока не
-    встретится следующий заголовок.
+    привязывает статус к последней встреченной meta-строке ниже него, пока
+    не встретится следующий заголовок. Свободный текст (описания, заметки)
+    без `|`-разметки статусом не считается — иначе слово `review` в прозе
+    ложно засчитывается за статус.
     """
     running: list[str] = []
     current_task_id: str | None = None
@@ -263,7 +282,7 @@ def _running_task_ids(text: str) -> list[str]:
             continue
         if current_task_id is None:
             continue
-        if _RUNNING_STATUS_RE.search(line):
+        if _meta_line_status(line) is not None:
             running.append(current_task_id)
     return running
 

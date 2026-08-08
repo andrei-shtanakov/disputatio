@@ -62,3 +62,40 @@ def test_two_files_one_running_each_is_error(tmp_path: Path) -> None:
     write_tasks(tmp_path, "maestro-tasks.md", ONE_RUNNING.replace("TASK-00", "KAP-00"))
     with pytest.raises(tdd_gate.GateError):
         tdd_gate.resolve_current_task(tmp_path)
+
+
+def test_status_word_in_free_text_is_ignored(tmp_path: Path) -> None:
+    """Свободный текст описания (без `|`) не должен читаться как статус.
+
+    Регресс на fix round 1: TASK-002 остаётся TODO, но её описание содержит
+    слово «review» вне meta-строки — резолвер обязан вернуть единственную
+    реально running-задачу, а не упасть на «больше одной текущей».
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | 🔄 IN_PROGRESS
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+- Заметка: ждём review этого подхода у ревьюера
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"
+
+
+def test_status_word_in_free_text_without_running_is_zero(tmp_path: Path) -> None:
+    """Слово статуса в прозе без running-задачи не должно выбираться молча.
+
+    Регресс на fix round 1: обе задачи TODO, у TASK-001 в описании фраза
+    «уже прошёл review» — резолвер обязан упасть `GateError` («нет
+    задачи»), а не тихо вернуть TASK-001.
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | ⬜ TODO
+- Заметка: уже прошёл review, ждём мерджа
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    with pytest.raises(tdd_gate.GateError):
+        tdd_gate.resolve_current_task(tmp_path)
