@@ -5,7 +5,7 @@
 """
 
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,17 +23,41 @@ class ArtifactBase(BaseModel):
     """Общий предок корневых артефактов disputatio/v1.
 
     Имя атрибута ``schema_`` + alias ``"schema"``: голое ``schema`` в
-    pydantic ``BaseModel`` — риск конфликта имён, alias гарантирует, что в
-    JSON поле называется ровно ``"schema"``. ``Literal`` с дефолтом даёт обе
-    гарантии без кастомных валидаторов: сериализация всегда содержит поле,
-    десериализация с чужим значением падает ``ValidationError``.
+    pydantic ``BaseModel`` — риск конфликта имён. Три гарантии контракта:
+
+    1. Сериализация (``model_dump``/``model_dump_json`` без аргументов)
+       всегда содержит ключ ``"schema" == "disputatio/v1"``
+       (``serialize_by_alias=True``).
+    2. Десериализация требует ключ ``schema`` (или имя ``schema_`` при
+       ``populate_by_name``): payload без него отклоняется как missing,
+       чужое значение отклоняется ``Literal`` — оба ``ValidationError``.
+    3. Конструктор подставляет версию по умолчанию (ADR-005).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
 
     schema_: Literal["disputatio/v1"] = Field(
-        default=SCHEMA_V1, alias="schema", serialization_alias="schema"
+        alias="schema", serialization_alias="schema"
     )
+
+    def __init__(self, /, **data: Any) -> None:
+        # Конструктор — единственный путь, где версия подставляется по
+        # умолчанию: программный код создаёт артефакты текущей версии, а
+        # парсинг чужих payload'ов обязан видеть ключ "schema" явно (ADR-005).
+        if "schema" not in data and "schema_" not in data:
+            data["schema"] = SCHEMA_V1
+        super().__init__(**data)
+
+    # Без маркера pydantic-core считает __init__ кастомным и гонит через
+    # него и model_validate — подстановка сработала бы и при парсинге.
+    # Маркер (как у BaseModel.__init__) возвращает валидацию на прямой
+    # путь мимо __init__: парсинг строгий, конструктор удобный.
+    __init__.__pydantic_base_init__ = True  # type: ignore[missing-attribute]
 
 
 class ArtifactChild(BaseModel):

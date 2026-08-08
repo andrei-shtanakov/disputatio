@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-014",
+  "selector": "tests/contracts/test_artifact_serialization.py::test_default_dump_contains_schema_key",
+  "expected_behavior": "",
+  "baseline_sha": "e3341b5c075f507177fc591ae1a6dbd33fcf1039",
+  "red_sha": "fce2fed36e4d79bb055c0bd7d15f7413ca202c04",
+  "created_at": "2026-08-08T21:00:00.436889+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_artifact_serialization.py"
+}
