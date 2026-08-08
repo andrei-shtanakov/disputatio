@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/contracts/test_base.py::test_model_dump_json_contains_schema_key",
+  "expected_behavior": "ArtifactModel сериализуется с ключом schema=disputatio/v1; до реализации пакет отсутствует и тест падает assertion'ом",
+  "baseline_sha": "1f496187830023dcdbf15972e4ba2c2c8995b6aa",
+  "red_sha": "26e23ea041ada20863a93a40604d45dd39bc17d4",
+  "created_at": "2026-08-08T14:44:45.785783+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_base.py"
+}
