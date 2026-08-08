@@ -99,3 +99,43 @@ def test_status_word_in_free_text_without_running_is_zero(tmp_path: Path) -> Non
     write_tasks(tmp_path, "tasks.md", body)
     with pytest.raises(tdd_gate.GateError):
         tdd_gate.resolve_current_task(tmp_path)
+
+
+def test_prose_segment_after_pipe_is_not_status(tmp_path: Path) -> None:
+    """Прозаический сегмент после `|` со словом статуса — не статус.
+
+    Регресс на fix round 2: обе задачи TODO, у TASK-002 заметка
+    `- Заметка: пример | review нужен от ревьюера` — сегмент после `|`
+    содержит слово «review», но это не чистый статус-токен (есть хвост
+    «нужен от ревьюера»). Резолвер обязан упасть `GateError` («нет
+    задачи»), а не тихо вернуть TASK-002.
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | ⬜ TODO
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+- Заметка: пример | review нужен от ревьюера
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    with pytest.raises(tdd_gate.GateError):
+        tdd_gate.resolve_current_task(tmp_path)
+
+
+def test_prose_segment_after_pipe_does_not_break_legit_running(tmp_path: Path) -> None:
+    """Та же зашумлённая заметка не мешает найти реально running-задачу.
+
+    Симметричный случай к предыдущему тесту: TASK-001 легитимно
+    IN_PROGRESS, а у TASK-002 та же зашумлённая заметка
+    `- Заметка: пример | review нужен от ревьюера` — резолвер обязан
+    вернуть TASK-001, не спутать зашумлённый сегмент со вторым running.
+    """
+    body = """## Milestone
+### TASK-001: Первая
+- Приоритет: P1 | 🔄 IN_PROGRESS
+### TASK-002: Вторая
+- Приоритет: P1 | ⬜ TODO
+- Заметка: пример | review нужен от ревьюера
+"""
+    write_tasks(tmp_path, "tasks.md", body)
+    assert tdd_gate.resolve_current_task(tmp_path) == "TASK-001"

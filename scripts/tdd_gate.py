@@ -31,7 +31,10 @@ from pathlib import Path
 EVIDENCE = Path("spec/.tdd-evidence")
 
 _TASK_HEADING_RE = re.compile(r"^#{2,6}\s+([A-Z][A-Z0-9]*-\d+)\b")
-_RUNNING_STATUS_RE = re.compile(r"\b(IN_PROGRESS|REVIEW)\b", re.IGNORECASE)
+# Чистый статус-токен: необязательный emoji-префикс (любой не-буквенно-
+# цифровой, не-пробельный кластер) и СРАЗУ ЗА НИМ слово статуса — целиком,
+# без хвоста. Отсекает свободный текст вида «review нужен от ревьюера».
+_STATUS_TOKEN_RE = re.compile(r"^(?:[^\w\s]+\s*)?(IN_PROGRESS|REVIEW)$", re.IGNORECASE)
 
 CAT_PASS = "PASS"
 CAT_EXPECTED_FAIL = "EXPECTED_FAIL"
@@ -250,18 +253,21 @@ def load_waiver(root: Path, task_id: str) -> Waiver | None:
 def _meta_line_status(line: str) -> str | None:
     """Извлекает статус из meta-строки вида `- Приоритет: P1 | 🔄 IN_PROGRESS`.
 
-    Meta-строка spec-runner всегда несёт статус в сегменте после последнего
-    `|`; строка без `|` — это не meta-строка (например, свободный текст
-    описания задачи), а значит не источник статуса. Возвращает `None`, если
-    в сегменте после `|` статус не найден.
+    Строка без `|` — не meta-строка (например, свободный текст описания) и
+    статуса не даёт. Строка с `|` разбивается на сегменты; нулевой сегмент
+    (до первого `|`) не рассматривается, а каждый из оставшихся проверяется
+    на точное совпадение с чистым статус-токеном (`_STATUS_TOKEN_RE`) —
+    сегмент с посторонними словами вокруг («review нужен от ревьюера») не
+    статус, даже если слово `review` в нём встречается. Проверяются ВСЕ
+    сегменты после первого, а не только последний: в реальных meta-строках
+    после статуса могут идти ещё сегменты (например, исполнитель).
     """
-    if "|" not in line:
-        return None
-    status_segment = line.rsplit("|", 1)[-1]
-    match = _RUNNING_STATUS_RE.search(status_segment)
-    if match is None:
-        return None
-    return match.group(1).upper()
+    segments = line.split("|")[1:]
+    for segment in segments:
+        match = _STATUS_TOKEN_RE.match(segment.strip())
+        if match is not None:
+            return match.group(1).upper()
+    return None
 
 
 def _running_task_ids(text: str) -> list[str]:
