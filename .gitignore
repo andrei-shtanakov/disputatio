@@ -14,3 +14,4 @@ wheels/
 .ruff_cache/
 
 .superpowers/
+spec-runner.config.yaml
