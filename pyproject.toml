@@ -14,6 +14,7 @@ dev = [
     "pyrefly>=1.2.0",
     "pytest>=9.1.1",
     "ruff>=0.16.2",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]
