@@ -36,6 +36,34 @@ class ReviewAcceptance(ArtifactChild):
     rejection_reasons: list[str] = Field(default_factory=list)
 
 
+def validate_review(
+    review: Review, verification: VerificationReport
+) -> ReviewAcceptance:
+    """Конвейер §4.4 (ADR-003): деградация REQ-009, затем все проверки.
+
+    Порядок фиксирован — `degrade_unevidenced_issues` выполняется ДО
+    `check_substantive_issues`: если деградация сняла последний
+    blocker|major, негативный вердикт отклоняется уже здесь. Все check_*
+    работают на деградированной модели, коды причин накапливаются ВСЕ,
+    не только первый — ревьюеру при ретрае отдаётся полный список.
+    Входные модели не мутируются; `ReviewAcceptance.review` — возможно
+    деградированная копия.
+    """
+    degraded, degraded_ids = degrade_unevidenced_issues(review)
+    checks = (
+        check_substantive_issues(degraded),
+        check_verdict_vs_verification(degraded, verification),
+        check_checked_nonempty(degraded),
+    )
+    reasons = [reason for reason in checks if reason is not None]
+    return ReviewAcceptance(
+        accepted=not reasons,
+        review=degraded,
+        degraded_issue_ids=degraded_ids,
+        rejection_reasons=reasons,
+    )
+
+
 def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
     """REQ-009: blocker|major с пустым evidence → НОВЫЙ Review с minor.
 
