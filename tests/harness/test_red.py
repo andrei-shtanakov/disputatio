@@ -12,6 +12,7 @@ import tdd_gate
 from .conftest import write_tasks
 
 SELECTOR = "tests/test_new.py::test_x"
+TEST_PATH = SELECTOR.split("::")[0]
 EXPECTED_BEHAVIOR = "новая фича должна вернуть 42"
 
 ONE_RUNNING = """## Milestone
@@ -154,6 +155,7 @@ def test_red_foreign_pending_claim_is_error(repo: Path) -> None:
             red_sha=other_sha,
             created_at="2026-08-08T00:00:00+00:00",
             revision=1,
+            test_path="tests/test_other.py",
         ).to_json(),
     )
     _write_expected_fail_test(repo)
@@ -177,6 +179,7 @@ def test_red_claim_without_commit_and_no_trailer_match_is_error(repo: Path) -> N
             red_sha="0" * 40,
             created_at="2026-08-08T00:00:00+00:00",
             revision=1,
+            test_path=TEST_PATH,
         ).to_json(),
     )
     _write_expected_fail_test(repo)
@@ -202,6 +205,7 @@ def test_red_claim_with_stale_sha_recovers_via_trailer(repo: Path) -> None:
             red_sha="0" * 40,
             created_at="2026-08-08T00:00:00+00:00",
             revision=1,
+            test_path=TEST_PATH,
         ).to_json(),
     )
 
@@ -242,6 +246,7 @@ def test_red_after_pass_verdict_is_supersession_error_without_new_commit(
             red_sha=red_sha,
             created_at="2026-08-08T00:00:00+00:00",
             revision=1,
+            test_path=TEST_PATH,
         ).to_json(),
     )
     tdd_gate.write_json_atomic(

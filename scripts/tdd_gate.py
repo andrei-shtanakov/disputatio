@@ -109,7 +109,13 @@ def _check_schema(data: dict[str, object], expected: str, kind: str) -> None:
 
 @dataclass(frozen=True)
 class Claim:
-    """Заявка агента: тест написан и подтверждённо падает (red-чекпоинт)."""
+    """Заявка агента: тест написан и подтверждённо падает (red-чекпоинт).
+
+    `test_path` (I2) — путь тест-файла (`selector.split("::")[0]`),
+    записывается детерминированно в момент red; verify читает его отсюда, а
+    не выводит заново эвристикой из selector'а. Обязательное поле схемы
+    `tdd-claim/v1` — легаси-клеймов без него в проде нет.
+    """
 
     task_id: str
     selector: str
@@ -118,6 +124,7 @@ class Claim:
     red_sha: str
     created_at: str
     revision: int
+    test_path: str
 
     def to_json(self) -> dict[str, object]:
         """Сериализует claim в JSON-совместимый dict со схемой."""
@@ -130,6 +137,7 @@ class Claim:
             "red_sha": self.red_sha,
             "created_at": self.created_at,
             "revision": self.revision,
+            "test_path": self.test_path,
         }
 
     @classmethod
@@ -144,6 +152,7 @@ class Claim:
             red_sha=str(data["red_sha"]),
             created_at=str(data["created_at"]),
             revision=int(data["revision"]),  # type: ignore[call-overload]
+            test_path=str(data["test_path"]),
         )
 
 
@@ -563,6 +572,7 @@ def _recover_claim_from_commit(
         red_sha=red_sha,
         created_at=created_at,
         revision=1,
+        test_path=selector.split("::")[0],
     )
     write_json_atomic(_claim_path(root, task_id), claim.to_json())
     return claim
@@ -689,6 +699,7 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
         red_sha=red_sha,
         created_at=datetime.now(UTC).isoformat(),
         revision=1,
+        test_path=selector.split("::")[0],
     )
     write_json_atomic(_claim_path(root, task_id), claim.to_json())
     return 0
@@ -705,12 +716,15 @@ def _history_path(root: Path, task_id: str) -> Path:
 
 
 def _append_verdict_history(root: Path, task_id: str, verdict: Verdict) -> None:
-    """Дописывает `verdict` строкой JSON в history ДО перезаписи основного файла.
+    """Дописывает `verdict` строкой JSON в history.
 
-    Реверификация (HEAD сдвинулся после PASS) перезаписывает
-    `verdicts/<TASK>.json` новым результатом — старый вердикт иначе был бы
-    потерян. History — append-only: старые записи никогда не переписываются
-    и не читаются обратно самим гейтом.
+    History — append-only: старые записи никогда не переписываются и не
+    читаются обратно самим гейтом. Вызывается ТОЛЬКО из
+    `_archive_and_write_verdict`, непосредственно перед фактической
+    перезаписью verdict-файла (M3) — не раньше: реверификация, которая в
+    итоге не доходит до перезаписи (падает `GateError`/`return 1` до
+    записи нового verdict'а), не должна архивировать старый результат
+    преждевременно.
     """
     path = _history_path(root, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -744,6 +758,41 @@ def _write_verdict(
     write_json_atomic(_verdict_path(root, task_id), record.to_json())
 
 
+def _archive_and_write_verdict(
+    root: Path,
+    *,
+    task_id: str,
+    previous: Verdict | None,
+    claim: Claim,
+    verified_head: str,
+    red_replay: str,
+    selector_at_head: str,
+    verdict: str,
+    notes: str,
+) -> None:
+    """Точка ФАКТИЧЕСКОЙ перезаписи verdict'а: архивирует `previous`, затем пишет новый.
+
+    M3: единственное место, откуда вызывается `_append_verdict_history` —
+    архивирование происходит непосредственно перед перезаписью, а не
+    заранее «на всякий случай». Любой путь `_cmd_verify`, который решает не
+    перезаписывать verdict (провал реверификации до этой точки), не трогает
+    ни history, ни живой verdict-файл — старый результат остаётся видимым
+    как есть, без потери и без дублей при последующем повторе.
+    """
+    if previous is not None:
+        _append_verdict_history(root, task_id, previous)
+    _write_verdict(
+        root,
+        task_id=task_id,
+        claim=claim,
+        verified_head=verified_head,
+        red_replay=red_replay,
+        selector_at_head=selector_at_head,
+        verdict=verdict,
+        notes=notes,
+    )
+
+
 def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     """`True`, если `ancestor` — предок `descendant` (или совпадает с ним).
 
@@ -773,6 +822,30 @@ def _diff_paths(root: Path, base: str, head: str) -> list[str]:
     except subprocess.CalledProcessError as exc:
         raise GateError(f"git diff {base}..{head} упал: {exc.stderr}") from exc
     return [line for line in output.split("\n") if line]
+
+
+def _test_path_unchanged(root: Path, red_sha: str, head: str, test_path: str) -> bool:
+    """`True`, если `test_path` байт-в-байт тот же на `red_sha` и на `head`.
+
+    `git diff --quiet base head -- path` сравнивает ДВА коммита (в отличие
+    от однокоммитной формы, working tree не участвует) — здесь это то, что
+    нужно: тест обязан не меняться в диапазоне red_sha..HEAD, независимо от
+    того, первичная это верификация, реверификация после сдвига HEAD или
+    идемпотентный повтор PASS (I2). Возврат `0` — diff пуст, `1` — есть
+    отличия; любой другой код — `CalledProcessError` не терпим, `GateError`.
+    """
+    result = subprocess.run(
+        ["git", "diff", "--quiet", red_sha, head, "--", test_path],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise GateError(
+            f"git diff --quiet {red_sha} {head} -- {test_path} упал: {result.stderr}"
+        )
+    return result.returncode == 0
 
 
 def _replay_red(root: Path, red_sha: str, selector: str) -> tuple[str, str]:
@@ -918,15 +991,19 @@ def _cmd_verify(root: Path) -> int:
     _verify_trailers_match(root, claim, task_id)
 
     # Шаги 3-4: совместимость и идемпотентность существующего verdict'а.
+    # `previous_for_archive` — то, что уйдёт в history, но ТОЛЬКО в момент
+    # фактической перезаписи verdict'а (M3, `_archive_and_write_verdict`);
+    # само по себе присутствие здесь ничего не архивирует.
     existing = load_verdict(root, task_id)
+    previous_for_archive: Verdict | None = None
     if existing is not None:
         if existing.verdict == CAT_WAIVED:
             # waived -> claimed: легитимный переход (решение контроллера,
             # fix round 1). У WAIVED-verdict'а red_sha всегда "" (см.
             # `_verify_without_claim`) — сравнивать его с claim.red_sha как
-            # forgery бессмысленно. Архивируем и идём в полную
-            # верификацию ниже вместо возврата/раннего exit 3.
-            _append_verdict_history(root, task_id, existing)
+            # forgery бессмысленно. Идём в полную верификацию ниже вместо
+            # возврата/раннего exit 3.
+            previous_for_archive = existing
         else:
             if existing.red_sha != claim.red_sha:
                 raise GateError(
@@ -935,8 +1012,12 @@ def _cmd_verify(root: Path) -> int:
                 )
             if existing.verdict == CAT_PASS:
                 if existing.verified_head == head:
-                    return 0  # идемпотентный PASS — второй verdict не пишется
-                _append_verdict_history(root, task_id, existing)
+                    # I2.3: идемпотентная ветка — trust boundary уже
+                    # проверен выше; replay НЕ переигрывается (экономия
+                    # шортката), но test_path и текущий селектор
+                    # перепроверяются заново, а не читаются из кэша.
+                    return _verify_idempotent_pass(root, task_id, claim, head)
+                previous_for_archive = existing
 
     # Шаг 5: red_sha предок HEAD, диапазон трогает только tests/.
     if not _is_ancestor(root, claim.red_sha, head):
@@ -949,15 +1030,26 @@ def _cmd_verify(root: Path) -> int:
             f"трогает не только tests/: {', '.join(non_tests)}"
         )
 
+    # I2.2: тест не менялся после red — ни в первичной верификации, ни в
+    # реверификации. Проверяется ДО replay: если тест уже выхолощен/удалён,
+    # переигрывать честный red и гонять селектор на HEAD незачем — green
+    # обязан достигаться только продуктовым кодом, без исключений (v1).
+    if not _test_path_unchanged(root, claim.red_sha, head, claim.test_path):
+        raise GateError(
+            f"{task_id}: {claim.test_path} изменён после red-чекпоинта — "
+            "green обязан достигаться только продуктовым кодом"
+        )
+
     # Шаг 6: replay red_sha в отдельном worktree.
     replay_category, replay_output = _replay_red(root, claim.red_sha, claim.selector)
     if replay_category != "expected_fail":
         verdict_category = (
             CAT_UNEXPECTED_FAIL if replay_category == "green" else CAT_ERROR
         )
-        _write_verdict(
+        _archive_and_write_verdict(
             root,
             task_id=task_id,
+            previous=previous_for_archive,
             claim=claim,
             verified_head=head,
             red_replay=verdict_category,
@@ -978,9 +1070,10 @@ def _cmd_verify(root: Path) -> int:
         return 1
 
     # Шаг 8: verdict PASS.
-    _write_verdict(
+    _archive_and_write_verdict(
         root,
         task_id=task_id,
+        previous=previous_for_archive,
         claim=claim,
         verified_head=head,
         red_replay=CAT_EXPECTED_FAIL,
@@ -988,6 +1081,34 @@ def _cmd_verify(root: Path) -> int:
         verdict=CAT_PASS,
         notes="",
     )
+    return 0
+
+
+def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim, head: str) -> int:
+    """Идемпотентная ветка PASS (I2.3): тот же red_sha и тот же verified_head.
+
+    Trust-boundary трейлеры (C4) уже проверены вызывающим кодом. Экономия
+    шортката — replay красного чекпоинта НЕ переигрывается; но test_path
+    обязан оставаться неизменным (та же проверка, что и в первичной
+    цепочке), а селектор реально прогоняется на HEAD (не читается из кэша
+    verdict'а) и обязан быть зелёным. Любое расхождение — fail-closed, без
+    записи нового verdict'а: подтвердить нечего, а перезаписывать
+    последний известный PASS чем-то произвольным не более честно, чем
+    промолчать.
+    """
+    if not _test_path_unchanged(root, claim.red_sha, head, claim.test_path):
+        raise GateError(
+            f"{task_id}: {claim.test_path} изменён после red-чекпоинта — "
+            "green обязан достигаться только продуктовым кодом"
+        )
+    category, _output = _run_selector(root, claim.selector)
+    if category != "green":
+        print(
+            f"verify: {claim.selector} красный на HEAD при повторном verify — "
+            "идемпотентный PASS не подтверждён",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

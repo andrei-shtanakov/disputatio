@@ -18,6 +18,7 @@ def test_claim_roundtrip(tmp_path: Path) -> None:
         red_sha="b" * 40,
         created_at="2026-08-08T00:00:00",
         revision=1,
+        test_path="tests/x.py",
     )
     path = tmp_path / "c.json"
     tdd_gate.write_json_atomic(path, claim.to_json())

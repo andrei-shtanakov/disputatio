@@ -13,6 +13,7 @@ import tdd_gate
 from .conftest import write_tasks
 
 SELECTOR = "tests/test_new.py::test_x"
+TEST_PATH = SELECTOR.split("::")[0]
 EXPECTED_BEHAVIOR = "src/mod.py должен содержать READY"
 
 ONE_RUNNING = """## Milestone
@@ -84,6 +85,7 @@ def _write_claim(
     baseline_sha: str,
     red_sha: str,
     revision: int = 1,
+    test_path: str = TEST_PATH,
 ) -> None:
     tdd_gate.write_json_atomic(
         _claim_path(repo, task_id),
@@ -95,6 +97,7 @@ def _write_claim(
             red_sha=red_sha,
             created_at="2026-08-08T00:00:00+00:00",
             revision=revision,
+            test_path=test_path,
         ).to_json(),
     )
 
@@ -183,6 +186,55 @@ def test_verify_head_moved_triggers_reverification_and_history(repo: Path) -> No
     assert len(history_lines) == 1
     archived = json.loads(history_lines[0])
     assert archived["verified_head"] == first_verdict.verified_head
+
+
+def test_verify_failed_reverification_does_not_archive_prematurely(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """M3: провал реверификации не архивирует старый PASS и не плодит дубли.
+
+    PASS@H1 → HEAD двигается на H2 → реверификация падает `GateError`
+    (форсируем сбой `git worktree add`, как в тесте на worktree-коллизию)
+    ДО того, как появляется новый verdict, который можно было бы записать.
+    History обязана остаться пустой, а живой verdict-файл — нетронутым
+    старым PASS. Последующий успешный verify архивирует его ровно один
+    раз — без дублей от несостоявшейся попытки.
+    """
+    _red_and_implement(repo)
+    assert tdd_gate.cmd_verify(repo) == 0
+    first_verdict = tdd_gate.load_verdict(repo, "TASK-001")
+    assert first_verdict is not None
+
+    (repo / "README.md").write_text("doc\n")
+    tdd_gate.git(repo, "add", "README.md")
+    tdd_gate.git(repo, "commit", "-q", "-m", "docs: doc")
+
+    collision_dir = tmp_path / "collision-m3"
+    collision_dir.mkdir()
+    (collision_dir / "stray.txt").write_text("занято до git worktree add\n")
+    monkeypatch.setattr(
+        tdd_gate.tempfile, "mkdtemp", lambda prefix="": str(collision_dir)
+    )
+
+    failed_code = tdd_gate.cmd_verify(repo)
+
+    assert failed_code == 3
+    assert not _history_path(repo).exists(), (
+        "провал реверификации не должен архивировать старый PASS преждевременно"
+    )
+    stale = tdd_gate.load_verdict(repo, "TASK-001")
+    assert stale is not None
+    assert stale.verdict == tdd_gate.CAT_PASS
+    assert stale.verified_head == first_verdict.verified_head
+
+    monkeypatch.undo()
+    success_code = tdd_gate.cmd_verify(repo)
+
+    assert success_code == 0
+    history_lines = _history_path(repo).read_text().splitlines()
+    assert len(history_lines) == 1, (
+        "не должно быть дублей после отложенного архивирования"
+    )
 
 
 # --- no-claim / waiver -------------------------------------------------------
@@ -307,6 +359,69 @@ def test_verify_waived_then_claimed_transitions_to_pass_with_history(
     assert len(history_lines) == 1
     archived = json.loads(history_lines[0])
     assert archived["verdict"] == tdd_gate.CAT_WAIVED
+
+
+# --- I2: неизменяемость теста после red ---------------------------------------
+
+
+def test_verify_test_file_deleted_after_pass_is_rejected(repo: Path) -> None:
+    """I2.4(а) — обязательный тест владельца: тест-файл удалён после PASS.
+
+    Удаление зафиксировано новым коммитом (HEAD сдвинулся) — попадает в
+    основную цепочку реверификации; новая проверка
+    `git diff --quiet red_sha..HEAD -- test_path` ловит это ДО replay.
+    """
+    _red_and_implement(repo)
+    assert tdd_gate.cmd_verify(repo) == 0
+
+    (repo / "tests" / "test_new.py").unlink()
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "чистка: удалить тест-файл")
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+
+
+def test_verify_test_weakened_to_vacuous_after_pass_is_rejected(repo: Path) -> None:
+    """I2.4(б) — обязательный тест владельца: тело теста выхолощено после PASS.
+
+    Тот же node ID, но тело заменено на `assert True` — тоже новый коммит,
+    тоже ловится проверкой неизменяемости test_path.
+    """
+    _red_and_implement(repo)
+    assert tdd_gate.cmd_verify(repo) == 0
+
+    _write_trivially_true_test(repo)
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "выхолащивание теста после PASS")
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+
+
+def test_verify_test_rewritten_between_red_and_first_verify_is_error(
+    repo: Path,
+) -> None:
+    """I2 — «выхолащивание МЕЖДУ red и первым verify»: red честный, тест переписан.
+
+    Первый verify (никакого PASS ещё не было) обязан упасть тем же
+    механизмом, что и реверификация — тест изменился в диапазоне
+    red_sha..HEAD.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_gate_test(repo)
+    code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
+    assert code == 0
+
+    _write_trivially_true_test(repo)
+    tdd_gate.git(repo, "add", "-A")
+    tdd_gate.git(repo, "commit", "-q", "-m", "выхолащивание до первого verify")
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
 
 
 # --- forged / incompatible verdict, chain violations -------------------------
