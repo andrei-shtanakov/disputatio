@@ -68,15 +68,18 @@ def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
     """REQ-009: blocker|major с пустым evidence → НОВЫЙ Review с minor.
 
     Голословный блокер не крутит цикл: issue деградируется до `minor`
-    вместо отклонения ревью. Возвращает новый объект (`model_copy`) и
-    список id деградированных issues в исходном порядке; сам `review`,
-    его вердикт и issues с непустым `evidence` не затрагиваются.
+    вместо отклонения ревью. Evidence из одних пробельных символов
+    эквивалентен пустому — критерий `not evidence.strip()` (REQ-013).
+    Возвращает новый объект (`model_copy`) и список id деградированных
+    issues в исходном порядке; сам `review`, его вердикт и issues с
+    содержательным `evidence` не затрагиваются.
     """
     degraded_ids: list[str] = []
     issues: list[Issue] = []
     for issue in review.issues:
         unevidenced = (
-            issue.severity in (Severity.BLOCKER, Severity.MAJOR) and not issue.evidence
+            issue.severity in (Severity.BLOCKER, Severity.MAJOR)
+            and not issue.evidence.strip()
         )
         if unevidenced:
             issues.append(issue.model_copy(update={"severity": Severity.MINOR}))
@@ -116,9 +119,13 @@ def check_verdict_vs_verification(
 
 
 def check_checked_nonempty(review: Review) -> str | None:
-    """REQ-011: `checked == []` → код причины (кандидат на ретрай).
+    """REQ-011: `checked` без содержательных элементов → код причины.
 
     Пустой список схемно валиден (review.py), но ревью без единого
     осмотренного объекта не принимается — дешёвый прокси верифицируемости.
+    Элементы из одних пробельных символов не считаются: `checked` принят,
+    только если хотя бы один элемент проходит `item.strip()` (REQ-013);
+    `[]` и `["   ", "\\t"]` дают один и тот же код причины.
     """
-    return None if review.checked else REASON_EMPTY_CHECKED
+    substantive = any(item.strip() for item in review.checked)
+    return None if substantive else REASON_EMPTY_CHECKED
