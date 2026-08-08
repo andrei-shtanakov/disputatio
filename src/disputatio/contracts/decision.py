@@ -34,7 +34,7 @@ class Decision(ArtifactBase):
     (кросс-артефактный слой решает, требовать ли директиву).
     """
 
-    round: int
+    round: int = Field(ge=1)
     outcome: Outcome
     reason: str
     open_issues_carried: list[str] = Field(default_factory=list)

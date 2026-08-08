@@ -48,7 +48,7 @@ class Event(ArtifactBase):
 
     ts: datetime
     session: str
-    round: int | None = None
+    round: int | None = Field(default=None, ge=1)
     source: EventSource
     type: EventType
     payload: dict[str, Any] = Field(default_factory=dict)

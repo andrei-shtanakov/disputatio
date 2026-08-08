@@ -59,7 +59,7 @@ class AgentRef(ArtifactChild):
 class Limits(ArtifactChild):
     """Лимиты сессии (§4.1 `limits`)."""
 
-    max_rounds: int
+    max_rounds: int = Field(ge=1)
     max_total_tokens: int
     max_wall_seconds: int
     schema_retries: int
@@ -68,7 +68,7 @@ class Limits(ArtifactChild):
 class BudgetUsed(ArtifactChild):
     """Израсходованный бюджет; все счётчики стартуют с нуля."""
 
-    tokens: int = 0
+    tokens: int = Field(default=0, ge=0)
     wall_seconds: float = 0.0
     cost_usd_est: float = 0.0
 
@@ -79,7 +79,7 @@ class SessionState(ArtifactBase):
     session_id: str
     created_at: datetime
     state: SessionPhase
-    current_round: int
+    current_round: int = Field(ge=0)
     task: TaskSpec
     agents: dict[Role, AgentRef]
     limits: Limits

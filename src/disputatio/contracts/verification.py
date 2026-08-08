@@ -51,7 +51,7 @@ class DiffStats(ArtifactChild):
 class VerificationReport(ArtifactBase):
     """Корневой артефакт `verification.json` (§4.3 SPEC-001)."""
 
-    round: int
+    round: int = Field(ge=1)
     gates: list[GateResult] = Field(default_factory=list)
     overall: OverallStatus
     diff_stats: DiffStats

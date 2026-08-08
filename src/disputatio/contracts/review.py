@@ -56,7 +56,7 @@ class Review(ArtifactBase):
     правило «пустой checked ⇒ не принято» живёт в validation.py (REQ-011).
     """
 
-    round: int
+    round: int = Field(ge=1)
     role: Literal[Role.REVIEWER]
     verdict: Verdict
     confidence: float = Field(ge=0.0, le=1.0)

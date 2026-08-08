@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Literal
 
 import yaml
+from pydantic import Field
 
 from disputatio.contracts.base import ArtifactBase, Role
 
@@ -34,7 +35,7 @@ class ProposalFrontmatter(ArtifactBase):
     на валидации.
     """
 
-    round: int
+    round: int = Field(ge=1)
     role: Literal[Role.AUTHOR]
     responds_to: str | None
     files_touched: list[str]
