@@ -24,10 +24,14 @@ collection error.
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 EVIDENCE = Path("spec/.tdd-evidence")
+
+_TASK_HEADING_RE = re.compile(r"^#{2,6}\s+([A-Z][A-Z0-9]*-\d+)\b")
+_RUNNING_STATUS_RE = re.compile(r"\b(IN_PROGRESS|REVIEW)\b", re.IGNORECASE)
 
 CAT_PASS = "PASS"
 CAT_EXPECTED_FAIL = "EXPECTED_FAIL"
@@ -241,3 +245,43 @@ def load_waiver(root: Path, task_id: str) -> Waiver | None:
     if data is None:
         return None
     return Waiver.from_json(data)
+
+
+def _running_task_ids(text: str) -> list[str]:
+    """Возвращает ID задач со статусом IN_PROGRESS/REVIEW в тексте `text`.
+
+    Заголовок задачи (`### TASK-NNN: ...`, уровень #### тоже допустим)
+    привязывает статус к последней встреченной строке ниже него, пока не
+    встретится следующий заголовок.
+    """
+    running: list[str] = []
+    current_task_id: str | None = None
+    for line in text.splitlines():
+        heading = _TASK_HEADING_RE.match(line)
+        if heading is not None:
+            current_task_id = heading.group(1)
+            continue
+        if current_task_id is None:
+            continue
+        if _RUNNING_STATUS_RE.search(line):
+            running.append(current_task_id)
+    return running
+
+
+def resolve_current_task(root: Path) -> str:
+    """Определяет ID единственной текущей задачи по всем `root/spec/*tasks.md`.
+
+    Задача «текущая», если её meta-строка содержит `IN_PROGRESS` или
+    `REVIEW` (эмодзи 🔄/🔍 или plain-текст). Ровно одна такая задача по всем
+    файлам → её ID; ноль или больше одной → `GateError`.
+    """
+    running: list[str] = []
+    for path in sorted((root / "spec").glob("*tasks.md")):
+        running.extend(_running_task_ids(path.read_text()))
+    if not running:
+        raise GateError("нет задачи со статусом IN_PROGRESS/REVIEW в spec/*tasks.md")
+    if len(running) > 1:
+        raise GateError(
+            f"больше одной текущей задачи: {', '.join(running)}"
+        )
+    return running[0]
