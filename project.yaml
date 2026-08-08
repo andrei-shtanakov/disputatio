@@ -45,7 +45,11 @@ spec_runner:
   task_timeout_minutes: 30
   claude_command: claude
   auto_commit: true
-  create_git_branch: true
+  # A1 (Round 2): вложенные task-ветки в Mode 2 не нужны (изоляция —
+  # worktree Maestro) и ломали бы стабильность evidence-неймспейса
+  # (namespace вычисляется из ветки один раз — INV-16); branch --show-current
+  # обязана оставаться `ws/<id>` на всём протяжении workstream'а.
+  create_git_branch: false
   run_tests_on_done: true
   test_command: "uv run python scripts/tdd_gate.py verify && uv run pytest -q"
   run_lint_on_done: true
@@ -78,7 +82,7 @@ workstreams:
     scope:
       - "src/disputatio/contracts/**"
       - "tests/contracts/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-contracts/**"
     depends_on: []
     priority: 10
 
@@ -100,7 +104,7 @@ workstreams:
     scope:
       - "src/disputatio/core/**"
       - "tests/core/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-fsm/**"
     depends_on: [w-contracts]
     priority: 5
 
@@ -119,7 +123,7 @@ workstreams:
     scope:
       - "src/disputatio/verifier/**"
       - "tests/verifier/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-verifier/**"
     depends_on: [w-contracts]
     priority: 5
 
@@ -140,7 +144,7 @@ workstreams:
     scope:
       - "src/disputatio/adapters/**"
       - "tests/adapters/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-adapters/**"
     depends_on: [w-contracts]
     priority: 5
 
@@ -159,7 +163,7 @@ workstreams:
     scope:
       - "src/disputatio/context/**"
       - "tests/context/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-context/**"
     depends_on: [w-contracts]
     priority: 5
 
@@ -176,7 +180,7 @@ workstreams:
     scope:
       - "src/disputatio/events/**"
       - "tests/events/**"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-events/**"
     depends_on: [w-contracts]
     priority: 5
 
@@ -202,6 +206,6 @@ workstreams:
       - "pyproject.toml"
       - "src/disputatio/__init__.py"
       - "tests/conftest.py"
-      - "spec/.tdd-evidence/**"
+      - "spec/.tdd-evidence/*/ws-w-runtime/**"
     depends_on: [w-fsm, w-verifier, w-adapters, w-context, w-events]
     priority: 0

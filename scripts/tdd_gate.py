@@ -5,7 +5,13 @@ Standalone-скрипт (только stdlib: он запускается из `
 фиксирует red-чекпоинт командой `red`, независимая команда `verify`
 переигрывает red SHA в отдельном git worktree и выносит типизированный
 вердикт. Evidence хранится на диске в
-`spec/.tdd-evidence/{claims,verdicts,waivers}`.
+`spec/.tdd-evidence/{claims,verdicts,waivers}/<namespace>/TASK-NNN.json`
+(вердикт-history — `verdicts/<namespace>/TASK-NNN.history.jsonl`).
+`<namespace>` — единый резолвер `resolve_namespace()` (Round 2, A2):
+в Maestro-режиме (обнаружен `spec/maestro-*tasks.md`) — `ws-<workstream-id>`
+из ветки `ws/<workstream-id>`, иначе `default`. Изолирует evidence разных
+workstream-ов друг от друга — без этого одинаковый `TASK-NNN` в двух
+параллельных WS делил бы один и тот же claim/verdict файл.
 
 Категории вердикта:
     PASS            — тест проходит на текущем HEAD, red подтверждён replay'ем
@@ -142,18 +148,27 @@ class Claim:
 
     @classmethod
     def from_json(cls, data: dict[str, object]) -> "Claim":
-        """Восстанавливает claim из dict; несовпадение `schema` → GateError."""
+        """Восстанавливает claim из dict; несовпадение `schema` → `GateError`.
+
+        Отсутствующее/некорректное поле (Round 2, A5) — тоже `GateError`, а
+        не сырой `KeyError`/`TypeError`/`ValueError`: легаси-клеймов без
+        обязательных полей (например, `test_path`, добавленного в I2) в
+        проде нет, но evidence — файл на диске, а не доверенный ввод.
+        """
         _check_schema(data, _CLAIM_SCHEMA, "claim")
-        return cls(
-            task_id=str(data["task_id"]),
-            selector=str(data["selector"]),
-            expected_behavior=str(data["expected_behavior"]),
-            baseline_sha=str(data["baseline_sha"]),
-            red_sha=str(data["red_sha"]),
-            created_at=str(data["created_at"]),
-            revision=int(data["revision"]),  # type: ignore[call-overload]
-            test_path=str(data["test_path"]),
-        )
+        try:
+            return cls(
+                task_id=str(data["task_id"]),
+                selector=str(data["selector"]),
+                expected_behavior=str(data["expected_behavior"]),
+                baseline_sha=str(data["baseline_sha"]),
+                red_sha=str(data["red_sha"]),
+                created_at=str(data["created_at"]),
+                revision=int(data["revision"]),  # type: ignore[call-overload]
+                test_path=str(data["test_path"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GateError(f"claim: некорректное/отсутствующее поле ({exc})") from exc
 
 
 @dataclass(frozen=True)
@@ -187,19 +202,28 @@ class Verdict:
 
     @classmethod
     def from_json(cls, data: dict[str, object]) -> "Verdict":
-        """Восстанавливает verdict из dict; несовпадение `schema` → GateError."""
+        """Восстанавливает verdict из dict; несовпадение `schema` → `GateError`.
+
+        Отсутствующее/некорректное поле (Round 2, A5) — тоже `GateError`, а
+        не сырой `KeyError`/`TypeError`/`ValueError`.
+        """
         _check_schema(data, _VERDICT_SCHEMA, "verdict")
-        return cls(
-            task_id=str(data["task_id"]),
-            claim_revision=int(data["claim_revision"]),  # type: ignore[call-overload]
-            red_sha=str(data["red_sha"]),
-            verified_head=str(data["verified_head"]),
-            red_replay=str(data["red_replay"]),
-            selector_at_head=str(data["selector_at_head"]),
-            verdict=str(data["verdict"]),
-            checked_at=str(data["checked_at"]),
-            notes=str(data["notes"]),
-        )
+        try:
+            return cls(
+                task_id=str(data["task_id"]),
+                claim_revision=int(data["claim_revision"]),  # type: ignore[call-overload]
+                red_sha=str(data["red_sha"]),
+                verified_head=str(data["verified_head"]),
+                red_replay=str(data["red_replay"]),
+                selector_at_head=str(data["selector_at_head"]),
+                verdict=str(data["verdict"]),
+                checked_at=str(data["checked_at"]),
+                notes=str(data["notes"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GateError(
+                f"verdict: некорректное/отсутствующее поле ({exc})"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -223,14 +247,21 @@ class Waiver:
 
     @classmethod
     def from_json(cls, data: dict[str, object]) -> "Waiver":
-        """Восстанавливает waiver из dict; несовпадение `schema` → GateError."""
+        """Восстанавливает waiver из dict; несовпадение `schema` → `GateError`.
+
+        Отсутствующее/некорректное поле (Round 2, A5) — тоже `GateError`, а
+        не сырой `KeyError`/`TypeError`/`ValueError`.
+        """
         _check_schema(data, _WAIVER_SCHEMA, "waiver")
-        return cls(
-            task_id=str(data["task_id"]),
-            reason=str(data["reason"]),
-            approved_by=str(data["approved_by"]),
-            baseline_sha=str(data["baseline_sha"]),
-        )
+        try:
+            return cls(
+                task_id=str(data["task_id"]),
+                reason=str(data["reason"]),
+                approved_by=str(data["approved_by"]),
+                baseline_sha=str(data["baseline_sha"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GateError(f"waiver: некорректное/отсутствующее поле ({exc})") from exc
 
 
 def write_json_atomic(path: Path, obj: object) -> None:
@@ -247,14 +278,15 @@ def write_json_atomic(path: Path, obj: object) -> None:
 
 
 def _read_evidence_json(
-    root: Path, subdir: str, task_id: str
+    root: Path, subdir: str, ns: str, task_id: str
 ) -> dict[str, object] | None:
-    """Читает JSON evidence-файла `root/EVIDENCE/subdir/task_id.json`.
+    """Читает JSON evidence-файла `root/EVIDENCE/subdir/ns/task_id.json`.
 
     Возвращает `None`, если файла нет; битый JSON или не-объект в корне →
-    `GateError`.
+    `GateError`. `ns` — namespace (Round 2, A2), изолирующий evidence разных
+    workstream-ов друг от друга.
     """
-    path = root / EVIDENCE / subdir / f"{task_id}.json"
+    path = root / EVIDENCE / subdir / ns / f"{task_id}.json"
     if not path.exists():
         return None
     try:
@@ -266,25 +298,25 @@ def _read_evidence_json(
     return data
 
 
-def load_claim(root: Path, task_id: str) -> Claim | None:
-    """Читает claim задачи `task_id`; `None`, если файла нет."""
-    data = _read_evidence_json(root, "claims", task_id)
+def load_claim(root: Path, task_id: str, ns: str = "default") -> Claim | None:
+    """Читает claim задачи `task_id` из namespace `ns`; `None`, если файла нет."""
+    data = _read_evidence_json(root, "claims", ns, task_id)
     if data is None:
         return None
     return Claim.from_json(data)
 
 
-def load_verdict(root: Path, task_id: str) -> Verdict | None:
-    """Читает verdict задачи `task_id`; `None`, если файла нет."""
-    data = _read_evidence_json(root, "verdicts", task_id)
+def load_verdict(root: Path, task_id: str, ns: str = "default") -> Verdict | None:
+    """Читает verdict задачи `task_id` из namespace `ns`; `None`, если файла нет."""
+    data = _read_evidence_json(root, "verdicts", ns, task_id)
     if data is None:
         return None
     return Verdict.from_json(data)
 
 
-def load_waiver(root: Path, task_id: str) -> Waiver | None:
-    """Читает waiver задачи `task_id`; `None`, если файла нет."""
-    data = _read_evidence_json(root, "waivers", task_id)
+def load_waiver(root: Path, task_id: str, ns: str = "default") -> Waiver | None:
+    """Читает waiver задачи `task_id` из namespace `ns`; `None`, если файла нет."""
+    data = _read_evidence_json(root, "waivers", ns, task_id)
     if data is None:
         return None
     return Waiver.from_json(data)
@@ -441,19 +473,80 @@ def changed_paths(root: Path) -> list[str]:
     return paths
 
 
-def _is_allowed_path(path: str, task_id: str) -> bool:
+_WS_BRANCH_PREFIX = "ws/"
+
+
+def _maestro_mode(root: Path) -> bool:
+    """`True`, если в дереве есть `spec/maestro-*tasks.md` (spec_prefix=maestro-).
+
+    Единственный сигнал maestro-режима для namespace-резолвера (A2) — сам
+    факт наличия такого файла в дереве, а не его содержимое.
+    """
+    return any((root / "spec").glob("maestro-*tasks.md"))
+
+
+def _current_branch(root: Path) -> str | None:
+    """Имя текущей ветки; `None` при detached HEAD (`git symbolic-ref` падает)."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def resolve_namespace(root: Path) -> str:
+    """Единый namespace-резолвер (Round 2, A2) — один вызов на всю команду.
+
+    Все evidence-артефакты (claims/verdicts/waivers/history/audit) живут
+    под `spec/.tdd-evidence/<subdir>/<namespace>/...` — устраняет коллизию
+    идентичности `TASK-NNN` между параллельными workstream-ами волны 1
+    (одинаковый ID задачи в разных WS — обычное дело, каждый WS решил свою
+    декомпозицию независимо).
+
+    Maestro-mode (`_maestro_mode`) ОБЯЗАН быть на ветке `ws/<workstream-id>`
+    → namespace `ws-<workstream-id>` (`/` заменяется на `-`); detached HEAD
+    или любая другая форма ветки в maestro-mode — `GateError` (INV-18):
+    Maestro-прогон не имеет права незаметно свалиться в `default`, если
+    ветка не та, что ожидалась. Вне maestro-mode — всегда `default`,
+    включая detached HEAD (ручные прогоны, смоук, `test_command` без
+    оркестрации Maestro).
+    """
+    if not _maestro_mode(root):
+        return "default"
+    branch = _current_branch(root)
+    if branch is None:
+        raise GateError(
+            "maestro-mode: detached HEAD — namespace неоднозначен, "
+            f"ожидается ветка {_WS_BRANCH_PREFIX}<workstream-id>"
+        )
+    if not branch.startswith(_WS_BRANCH_PREFIX) or len(branch) == len(
+        _WS_BRANCH_PREFIX
+    ):
+        raise GateError(
+            f"maestro-mode: ветка {branch!r} не соответствует "
+            f"{_WS_BRANCH_PREFIX}<workstream-id> — namespace неоднозначен"
+        )
+    return branch.replace("/", "-")
+
+
+def _is_allowed_path(path: str, task_id: str, ns: str = "default") -> bool:
     """Решает, разрешён ли путь `path` в рамках задачи `task_id`.
 
-    Разрешены: всё под `tests/`, claims-файл текущей задачи, правки
-    spec-runner'а (`spec/*tasks.md`, `spec/.task-history.log` и вариации
-    с иным префиксом после точки), harness-owned `spec/.gitignore`
-    (untracked, пишет spec-runner сам — git_ops.py:ensure_runtime_gitignore)
-    и `spec/maestro-*` (requirements/design/tasks — генерирует maestro/
-    spec-runner до и во время задачи).
+    Разрешены: всё под `tests/`, claims-файл текущей задачи (namespaced —
+    `ns`, Round 2 A2), правки spec-runner'а (`spec/*tasks.md`,
+    `spec/.task-history.log` и вариации с иным префиксом после точки),
+    harness-owned `spec/.gitignore` (untracked, пишет spec-runner сам —
+    git_ops.py:ensure_runtime_gitignore) и `spec/maestro-*` (requirements/
+    design/tasks — генерирует maestro/spec-runner до и во время задачи).
     """
     if path.startswith("tests/"):
         return True
-    if path == f"spec/.tdd-evidence/claims/{task_id}.json":
+    if path == f"spec/.tdd-evidence/claims/{ns}/{task_id}.json":
         return True
     if path == "spec/.gitignore":
         return True
@@ -464,12 +557,14 @@ def _is_allowed_path(path: str, task_id: str) -> bool:
     return _TASK_HISTORY_RE.match(path) is not None
 
 
-def classify_changes(paths: list[str], task_id: str) -> tuple[list[str], list[str]]:
+def classify_changes(
+    paths: list[str], task_id: str, ns: str = "default"
+) -> tuple[list[str], list[str]]:
     """Делит `paths` на (allowed, forbidden) относительно задачи `task_id`."""
     allowed: list[str] = []
     forbidden: list[str] = []
     for path in paths:
-        (allowed if _is_allowed_path(path, task_id) else forbidden).append(path)
+        (allowed if _is_allowed_path(path, task_id, ns) else forbidden).append(path)
     return allowed, forbidden
 
 
@@ -520,9 +615,9 @@ def find_red_commit_by_trailer(root: Path, task_id: str) -> str | None:
     return None
 
 
-def _claim_path(root: Path, task_id: str) -> Path:
-    """Путь к claim-файлу задачи `task_id`."""
-    return root / EVIDENCE / "claims" / f"{task_id}.json"
+def _claim_path(root: Path, task_id: str, ns: str = "default") -> Path:
+    """Путь к claim-файлу задачи `task_id` в namespace `ns`."""
+    return root / EVIDENCE / "claims" / ns / f"{task_id}.json"
 
 
 def _commit_exists(root: Path, sha: str) -> bool:
@@ -539,7 +634,9 @@ def _trailer_value(root: Path, sha: str, key: str) -> str:
     return git(root, "show", "-s", f"--format=%(trailers:key={key},valueonly)", sha)
 
 
-def _is_claim_resolved(root: Path, task_id: str, claim: Claim) -> bool:
+def _is_claim_resolved(
+    root: Path, task_id: str, claim: Claim, ns: str = "default"
+) -> bool:
     """`True`, если ИМЕННО этот `claim` закрыт PASS/WAIVED-вердиктом.
 
     Закрытый claim не «pending» — supersession новым red поверх него
@@ -551,7 +648,7 @@ def _is_claim_resolved(root: Path, task_id: str, claim: Claim) -> bool:
     (verdict формально WAIVED, но не про этот claim) вместо идемпотентного
     повтора.
     """
-    verdict = load_verdict(root, task_id)
+    verdict = load_verdict(root, task_id, ns)
     return (
         verdict is not None
         and verdict.verdict in (CAT_PASS, CAT_WAIVED)
@@ -559,25 +656,33 @@ def _is_claim_resolved(root: Path, task_id: str, claim: Claim) -> bool:
     )
 
 
-def _foreign_pending_claim(root: Path, task_id: str) -> str | None:
-    """ID чужой задачи с pending claim'ом (без PASS/WAIVED), если есть."""
-    claims_dir = root / EVIDENCE / "claims"
+def _foreign_pending_claim(root: Path, task_id: str, ns: str = "default") -> str | None:
+    """ID чужой задачи с pending claim'ом (без PASS/WAIVED) В ЭТОМ namespace, если есть.
+
+    Round 2 (A2/INV-17): скан ограничен `claims/<ns>/` — claim'ы других
+    workstream-ов (другой namespace) не видны и не блокируют этот запуск.
+    """
+    claims_dir = root / EVIDENCE / "claims" / ns
     if not claims_dir.exists():
         return None
     for path in sorted(claims_dir.glob("*.json")):
         other_id = path.stem
         if other_id == task_id:
             continue
-        other_claim = load_claim(root, other_id)
+        other_claim = load_claim(root, other_id, ns)
         if other_claim is not None and not _is_claim_resolved(
-            root, other_id, other_claim
+            root, other_id, other_claim, ns
         ):
             return other_id
     return None
 
 
 def _recover_claim_from_commit(
-    root: Path, task_id: str, red_sha: str, expected_behavior: str
+    root: Path,
+    task_id: str,
+    red_sha: str,
+    expected_behavior: str,
+    ns: str = "default",
 ) -> Claim:
     """Восстанавливает и записывает claim из трейлеров red-коммита `red_sha`.
 
@@ -598,7 +703,7 @@ def _recover_claim_from_commit(
         revision=1,
         test_path=selector.split("::")[0],
     )
-    write_json_atomic(_claim_path(root, task_id), claim.to_json())
+    write_json_atomic(_claim_path(root, task_id, ns), claim.to_json())
     return claim
 
 
@@ -651,17 +756,20 @@ def cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
 
 def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     """Логика `cmd_red`; `GateError` пробрасывается наружу (перехват — выше)."""
+    ns = resolve_namespace(root)  # A2: единый резолвер, один раз за вызов команды
     task_id = resolve_current_task(root)  # шаг 1
 
-    own_claim = load_claim(root, task_id)
+    own_claim = load_claim(root, task_id, ns)
     if own_claim is None:
         # Шаг 8 (recovery): claim не записан, но red-коммит уже есть —
         # предыдущий запуск упал между commit_red и записью claim'а.
         recovered_sha = find_red_commit_by_trailer(root, task_id)
         if recovered_sha is not None:
-            _recover_claim_from_commit(root, task_id, recovered_sha, expected_behavior)
+            _recover_claim_from_commit(
+                root, task_id, recovered_sha, expected_behavior, ns
+            )
             return 0
-    elif not _is_claim_resolved(root, task_id, own_claim):
+    elif not _is_claim_resolved(root, task_id, own_claim, ns):
         # Шаг 2: существующий pending claim этой задачи.
         if _commit_exists(root, own_claim.red_sha):
             return 0  # идемпотентный повтор — второй red-коммит не создаётся
@@ -670,7 +778,9 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
             # sha в claim устарел (например, история переписана), но коммит
             # с тем же трейлером найден — чиним claim свежими данными из
             # него, а не молча репортим успех с битым файлом на диске.
-            _recover_claim_from_commit(root, task_id, recovered_sha, expected_behavior)
+            _recover_claim_from_commit(
+                root, task_id, recovered_sha, expected_behavior, ns
+            )
             return 0
         raise GateError(
             f"{task_id}: claim ссылается на red-коммит {own_claim.red_sha}, "
@@ -686,13 +796,13 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
             f"{task_id}: supersession запрещена — claim уже закрыт вердиктом"
         )
 
-    # Шаг 3: чужой pending claim блокирует запуск.
-    foreign = _foreign_pending_claim(root, task_id)
+    # Шаг 3: чужой pending claim блокирует запуск (только в этом namespace).
+    foreign = _foreign_pending_claim(root, task_id, ns)
     if foreign is not None:
         raise GateError(f"чужой pending claim блокирует red: {foreign}")
 
     # Шаг 4: продуктовый код менять до red нельзя.
-    _, forbidden = classify_changes(changed_paths(root), task_id)
+    _, forbidden = classify_changes(changed_paths(root), task_id, ns)
     if forbidden:
         print(
             "red: запрещённые правки до red-чекпоинта: " + ", ".join(forbidden),
@@ -730,22 +840,24 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
         revision=1,
         test_path=selector.split("::")[0],
     )
-    write_json_atomic(_claim_path(root, task_id), claim.to_json())
+    write_json_atomic(_claim_path(root, task_id, ns), claim.to_json())
     return 0
 
 
-def _verdict_path(root: Path, task_id: str) -> Path:
-    """Путь к verdict-файлу задачи `task_id`."""
-    return root / EVIDENCE / "verdicts" / f"{task_id}.json"
+def _verdict_path(root: Path, task_id: str, ns: str = "default") -> Path:
+    """Путь к verdict-файлу задачи `task_id` в namespace `ns`."""
+    return root / EVIDENCE / "verdicts" / ns / f"{task_id}.json"
 
 
-def _history_path(root: Path, task_id: str) -> Path:
-    """Путь к append-only history-файлу verdict'ов задачи `task_id`."""
-    return root / EVIDENCE / "verdicts" / f"{task_id}.history.jsonl"
+def _history_path(root: Path, task_id: str, ns: str = "default") -> Path:
+    """Путь к append-only history-файлу verdict'ов задачи `task_id` в namespace `ns`."""
+    return root / EVIDENCE / "verdicts" / ns / f"{task_id}.history.jsonl"
 
 
-def _append_verdict_history(root: Path, task_id: str, verdict: Verdict) -> None:
-    """Дописывает `verdict` строкой JSON в history.
+def _append_verdict_history(
+    root: Path, task_id: str, verdict: Verdict, ns: str = "default"
+) -> None:
+    """Дописывает `verdict` строкой JSON в history (namespace `ns`).
 
     History — append-only: старые записи никогда не переписываются и не
     читаются обратно самим гейтом. Вызывается ТОЛЬКО из
@@ -755,7 +867,7 @@ def _append_verdict_history(root: Path, task_id: str, verdict: Verdict) -> None:
     записи нового verdict'а), не должна архивировать старый результат
     преждевременно.
     """
-    path = _history_path(root, task_id)
+    path = _history_path(root, task_id, ns)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as history_file:
         history_file.write(json.dumps(verdict.to_json(), ensure_ascii=False) + "\n")
@@ -771,8 +883,9 @@ def _write_verdict(
     selector_at_head: str,
     verdict: str,
     notes: str,
+    ns: str = "default",
 ) -> None:
-    """Собирает `Verdict` из `claim` и пишет его атомарно в evidence."""
+    """Собирает `Verdict` из `claim` и пишет его атомарно в evidence (namespace `ns`)."""
     record = Verdict(
         task_id=task_id,
         claim_revision=claim.revision,
@@ -784,7 +897,7 @@ def _write_verdict(
         checked_at=datetime.now(UTC).isoformat(),
         notes=notes,
     )
-    write_json_atomic(_verdict_path(root, task_id), record.to_json())
+    write_json_atomic(_verdict_path(root, task_id, ns), record.to_json())
 
 
 def _archive_and_write_verdict(
@@ -798,6 +911,7 @@ def _archive_and_write_verdict(
     selector_at_head: str,
     verdict: str,
     notes: str,
+    ns: str = "default",
 ) -> None:
     """Точка ФАКТИЧЕСКОЙ перезаписи verdict'а: архивирует `previous`, затем пишет новый.
 
@@ -809,7 +923,7 @@ def _archive_and_write_verdict(
     как есть, без потери и без дублей при последующем повторе.
     """
     if previous is not None:
-        _append_verdict_history(root, task_id, previous)
+        _append_verdict_history(root, task_id, previous, ns)
     _write_verdict(
         root,
         task_id=task_id,
@@ -819,6 +933,7 @@ def _archive_and_write_verdict(
         selector_at_head=selector_at_head,
         verdict=verdict,
         notes=notes,
+        ns=ns,
     )
 
 
@@ -943,14 +1058,17 @@ def _is_valid_waiver(root: Path, waiver: Waiver, task_id: str, head: str) -> boo
     return _is_ancestor(root, waiver.baseline_sha, head)
 
 
-def _verify_without_claim(root: Path, task_id: str, head: str) -> int:
+def _verify_without_claim(
+    root: Path, task_id: str, head: str, ns: str = "default"
+) -> int:
     """Шаг 2 `cmd_verify`: без claim'а единственный путь дальше — валидный waiver.
 
     Невалидный или отсутствующий waiver — fail-closed, `1`. Валидный —
     пишет verdict `WAIVED` (WAIVED != PASS, ось H3 им не закрывается — см.
-    докстринг модуля) и возвращает `0`.
+    докстринг модуля) и возвращает `0`. Waiver и verdict — в namespace `ns`
+    (Round 2, A2): waiver из чужого namespace не виден и не принимается.
     """
-    waiver = load_waiver(root, task_id)
+    waiver = load_waiver(root, task_id, ns)
     if waiver is None or not _is_valid_waiver(root, waiver, task_id, head):
         print(
             f"verify: {task_id}: нет claim'а и нет валидного waiver — fail-closed",
@@ -968,7 +1086,7 @@ def _verify_without_claim(root: Path, task_id: str, head: str) -> int:
         checked_at=datetime.now(UTC).isoformat(),
         notes=f"waiver: {waiver.reason}",
     )
-    write_json_atomic(_verdict_path(root, task_id), verdict.to_json())
+    write_json_atomic(_verdict_path(root, task_id, ns), verdict.to_json())
     return 0
 
 
@@ -993,12 +1111,13 @@ def cmd_verify(root: Path) -> int:
 
 def _cmd_verify(root: Path) -> int:
     """Логика `cmd_verify`; `GateError` пробрасывается наружу (перехват — выше)."""
+    ns = resolve_namespace(root)  # A2: единый резолвер, один раз за вызов команды
     task_id = resolve_current_task(root)  # шаг 1
     head = head_sha(root)
 
-    claim = load_claim(root, task_id)
+    claim = load_claim(root, task_id, ns)
     if claim is None:
-        return _verify_without_claim(root, task_id, head)  # шаг 2
+        return _verify_without_claim(root, task_id, head, ns)  # шаг 2
 
     # Проверка baseline_sha симметрична проверке red_sha ниже — битый/
     # несуществующий SHA обязан давать чистый exit 3 через GateError, а не
@@ -1023,7 +1142,7 @@ def _cmd_verify(root: Path) -> int:
     # `previous_for_archive` — то, что уйдёт в history, но ТОЛЬКО в момент
     # фактической перезаписи verdict'а (M3, `_archive_and_write_verdict`);
     # само по себе присутствие здесь ничего не архивирует.
-    existing = load_verdict(root, task_id)
+    existing = load_verdict(root, task_id, ns)
     previous_for_archive: Verdict | None = None
     if existing is not None:
         if existing.verdict == CAT_WAIVED:
@@ -1085,6 +1204,7 @@ def _cmd_verify(root: Path) -> int:
             selector_at_head="",
             verdict=verdict_category,
             notes=replay_output[-_NOTES_MAX_LEN:],
+            ns=ns,
         )
         return 1 if verdict_category == CAT_UNEXPECTED_FAIL else 3
 
@@ -1109,6 +1229,7 @@ def _cmd_verify(root: Path) -> int:
         selector_at_head=CAT_PASS,
         verdict=CAT_PASS,
         notes="",
+        ns=ns,
     )
     return 0
 
@@ -1161,13 +1282,19 @@ def cmd_audit(root: Path) -> int:
 
 
 def _cmd_audit(root: Path) -> int:
-    """Логика `cmd_audit`; `GateError` пробрасывается наружу (перехват — выше)."""
+    """Логика `cmd_audit`; `GateError` пробрасывается наружу (перехват — выше).
+
+    Round 2 (A2): namespace резолвится один раз и сканируется ТОЛЬКО он —
+    DONE-задачи проверяются по evidence их собственного workstream'а, не
+    по всему дереву `.tdd-evidence`.
+    """
+    ns = resolve_namespace(root)
     violations: list[str] = []
     for path in sorted((root / "spec").glob("*tasks.md")):
         for task_id in _done_task_ids(path.read_text()):
-            if load_claim(root, task_id) is None:
+            if load_claim(root, task_id, ns) is None:
                 continue  # DONE без claim — гейт для этой задачи не применялся
-            verdict = load_verdict(root, task_id)
+            verdict = load_verdict(root, task_id, ns)
             if verdict is None or verdict.verdict not in (CAT_PASS, CAT_WAIVED):
                 violations.append(task_id)
     if violations:

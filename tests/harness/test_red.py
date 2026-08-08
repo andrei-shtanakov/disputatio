@@ -50,7 +50,7 @@ def _write_broken_import_test(repo: Path) -> None:
 
 
 def _claim_path(repo: Path, task_id: str = "TASK-001") -> Path:
-    return repo / "spec" / ".tdd-evidence" / "claims" / f"{task_id}.json"
+    return repo / "spec" / ".tdd-evidence" / "claims" / "default" / f"{task_id}.json"
 
 
 def test_red_happy_path_creates_commit_and_claim(repo: Path) -> None:
@@ -250,7 +250,7 @@ def test_red_after_pass_verdict_is_supersession_error_without_new_commit(
         ).to_json(),
     )
     tdd_gate.write_json_atomic(
-        repo / "spec" / ".tdd-evidence" / "verdicts" / "TASK-001.json",
+        repo / "spec" / ".tdd-evidence" / "verdicts" / "default" / "TASK-001.json",
         tdd_gate.Verdict(
             task_id="TASK-001",
             claim_revision=1,
@@ -281,7 +281,13 @@ def test_red_ignores_untracked_gitignore_and_maestro_spec_files(repo: Path) -> N
     остаётся untracked — git_ops.py:ensure_runtime_gitignore), а
     `spec/maestro-requirements.md` генерирует maestro/spec-runner до и во
     время задачи. Ни то, ни другое не должно попадать в forbidden-правки.
+
+    `maestro-tasks.md` включает maestro-mode (Round 2, A2) — namespace-
+    резолвер требует ветку `ws/<id>`, поэтому фикстура переключается на неё
+    (`repo` по умолчанию на `master`); проверка claim'а идёт по
+    соответствующему namespace, а не по `default`.
     """
+    tdd_gate.git(repo, "checkout", "-b", "ws/w-fsm")
     write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
     _write_expected_fail_test(repo)
     (repo / "spec" / ".gitignore").write_text(
@@ -293,7 +299,7 @@ def test_red_ignores_untracked_gitignore_and_maestro_spec_files(repo: Path) -> N
     code = tdd_gate.cmd_red(repo, SELECTOR, EXPECTED_BEHAVIOR)
 
     assert code == 0
-    assert tdd_gate.load_claim(repo, "TASK-001") is not None
+    assert tdd_gate.load_claim(repo, "TASK-001", "ws-w-fsm") is not None
 
 
 def test_red_waived_then_claimed_repeat_red_is_idempotent_not_supersession(
@@ -313,7 +319,7 @@ def test_red_waived_then_claimed_repeat_red_is_idempotent_not_supersession(
     write_tasks(repo, "tasks.md", ONE_RUNNING)
     baseline = tdd_gate.head_sha(repo)
     tdd_gate.write_json_atomic(
-        repo / "spec" / ".tdd-evidence" / "waivers" / "TASK-001.json",
+        repo / "spec" / ".tdd-evidence" / "waivers" / "default" / "TASK-001.json",
         tdd_gate.Waiver(
             task_id="TASK-001",
             reason="временно одобрено",

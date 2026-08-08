@@ -90,14 +90,14 @@ def test_classify_changes_task_history_log_allowed() -> None:
 
 
 def test_classify_changes_claims_file_allowed_for_own_task() -> None:
-    claim_path = "spec/.tdd-evidence/claims/TASK-001.json"
+    claim_path = "spec/.tdd-evidence/claims/default/TASK-001.json"
     allowed, forbidden = tdd_gate.classify_changes([claim_path], "TASK-001")
     assert allowed == [claim_path]
     assert forbidden == []
 
 
 def test_classify_changes_claims_file_forbidden_for_other_task() -> None:
-    claim_path = "spec/.tdd-evidence/claims/TASK-001.json"
+    claim_path = "spec/.tdd-evidence/claims/default/TASK-001.json"
     allowed, forbidden = tdd_gate.classify_changes([claim_path], "TASK-002")
     assert forbidden == [claim_path]
     assert allowed == []

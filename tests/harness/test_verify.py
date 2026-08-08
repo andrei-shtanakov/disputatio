@@ -33,20 +33,22 @@ def _use_local_pytest(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tdd_gate, "PYTEST_CMD", (sys.executable, "-m", "pytest", "-q"))
 
 
-def _verdict_path(repo: Path, task_id: str = "TASK-001") -> Path:
-    return repo / "spec" / ".tdd-evidence" / "verdicts" / f"{task_id}.json"
+def _verdict_path(repo: Path, task_id: str = "TASK-001", ns: str = "default") -> Path:
+    return repo / "spec" / ".tdd-evidence" / "verdicts" / ns / f"{task_id}.json"
 
 
-def _history_path(repo: Path, task_id: str = "TASK-001") -> Path:
-    return repo / "spec" / ".tdd-evidence" / "verdicts" / f"{task_id}.history.jsonl"
+def _history_path(repo: Path, task_id: str = "TASK-001", ns: str = "default") -> Path:
+    return (
+        repo / "spec" / ".tdd-evidence" / "verdicts" / ns / f"{task_id}.history.jsonl"
+    )
 
 
-def _claim_path(repo: Path, task_id: str = "TASK-001") -> Path:
-    return repo / "spec" / ".tdd-evidence" / "claims" / f"{task_id}.json"
+def _claim_path(repo: Path, task_id: str = "TASK-001", ns: str = "default") -> Path:
+    return repo / "spec" / ".tdd-evidence" / "claims" / ns / f"{task_id}.json"
 
 
-def _waiver_path(repo: Path, task_id: str = "TASK-001") -> Path:
-    return repo / "spec" / ".tdd-evidence" / "waivers" / f"{task_id}.json"
+def _waiver_path(repo: Path, task_id: str = "TASK-001", ns: str = "default") -> Path:
+    return repo / "spec" / ".tdd-evidence" / "waivers" / ns / f"{task_id}.json"
 
 
 def _write_gate_test(repo: Path) -> None:
@@ -418,6 +420,22 @@ def test_verify_test_rewritten_between_red_and_first_verify_is_error(
     _write_trivially_true_test(repo)
     tdd_gate.git(repo, "add", "-A")
     tdd_gate.git(repo, "commit", "-q", "-m", "выхолащивание до первого verify")
+
+    code = tdd_gate.cmd_verify(repo)
+
+    assert code == 3
+
+
+# --- A5: from_json нормализация -----------------------------------------------
+
+
+def test_verify_claim_with_deleted_field_on_disk_is_clean_error(repo: Path) -> None:
+    """A5: claim с удалённым полем на диске → `verify` exit 3, не traceback."""
+    _red_and_implement(repo)
+    claim_path = _claim_path(repo)
+    data = json.loads(claim_path.read_text())
+    del data["test_path"]
+    claim_path.write_text(json.dumps(data))
 
     code = tdd_gate.cmd_verify(repo)
 
