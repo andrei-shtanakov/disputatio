@@ -21,12 +21,14 @@ from disputatio.runtime.errors import (
     ConfigError,
     DirtyWorkingTree,
     DisputatioError,
+    EmptyRepository,
+    GitCommandError,
     NotAGitRepository,
     ReviewParseError,
     SessionNotFound,
     UnknownAdapterError,
 )
-from disputatio.runtime.git import GitOps
+from disputatio.runtime.git import GitCli, GitOps, preflight
 from disputatio.runtime.purity import (
     FORBIDDEN_ROOTS,
     PurityViolation,
@@ -41,6 +43,9 @@ __all__ = [
     "ConfigError",
     "DirtyWorkingTree",
     "DisputatioError",
+    "EmptyRepository",
+    "GitCli",
+    "GitCommandError",
     "GitOps",
     "LimitsConfig",
     "NotAGitRepository",
@@ -51,5 +56,6 @@ __all__ = [
     "SessionNotFound",
     "UnknownAdapterError",
     "build_runtime",
+    "preflight",
     "scan_package_purity",
 ]

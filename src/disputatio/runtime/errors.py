@@ -24,6 +24,23 @@ class NotAGitRepository(DisputatioError):
     """Pre-flight: `root` не является git-репозиторием."""
 
 
+class EmptyRepository(DisputatioError):
+    """Pre-flight: в репозитории нет ни одного коммита — `HEAD` не разрешается.
+
+    Отдельный класс, а не `NotAGitRepository`: репозиторий тут настоящий, и
+    пользователю нужно услышать «сделайте первый коммит», а не «это не git».
+    """
+
+
+class GitCommandError(DisputatioError):
+    """git-команда вернула ненулевой код; текст несёт и команду, и stderr.
+
+    Замена `CalledProcessError`, чей `__str__` печатает только код возврата:
+    без stderr причина сбоя не восстанавливается ни из отчёта, ни из
+    `events.jsonl` (NFR-003).
+    """
+
+
 class SessionNotFound(DisputatioError):
     """Resume: сессии с таким `session_id` в `.disputatio/` нет."""
 

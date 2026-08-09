@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/runtime/test_git_preflight.py::test_dirty_tracked_tree_is_rejected",
+  "expected_behavior": "preflight отвергает грязное по tracked-файлам дерево DirtyWorkingTree с человекочитаемым текстом и не создаёт .disputatio/",
+  "baseline_sha": "282dd842f1db5eedae3ecc25662f925ed88429e1",
+  "red_sha": "4d51f8b202237f0ec8890d1c6949d24a5e19818d",
+  "created_at": "2026-08-09T17:15:48.722926+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_git_preflight.py"
+}
