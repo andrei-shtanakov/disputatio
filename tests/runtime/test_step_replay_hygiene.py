@@ -13,6 +13,16 @@ I3 и после этого чиститься будет некому.
 кладётся на диск готовым. Проверяется другое: что шаг вообще берётся за
 уборку своего раунда, и что уборка не задевает ни артефактов, ни маркера
 финализации ([REQ-016]).
+
+Второе измерение — МОМЕНТ уборки. «Шаг убирает мусор» и «шаг убирает мусор
+раньше своего тела» — разные обещания, и пинятся они по-разному: первое
+видно на удачном прогоне, второе — только на прогоне, где тело до артефакта
+не доходит. Мутационная проба показала, что уборка, перенесённая в конец
+шага, переживает полный suite у ВСЕХ четырёх шагов; между тем именно
+падающая попытка и копит огрызки — успешная перезаписывает свой артефакт
+сама. Поэтому у каждого шага здесь есть тест с телом, которое падает:
+упавший автор, упавший верификатор, ревьюер, чей ответ не разобрать, и
+чужое решение в закрытом раунде.
 """
 
 import subprocess
@@ -21,12 +31,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
+import pytest
 
 from disputatio.contracts import (
     AgentAdapter,
     AgentRef,
     AgentTurn,
     BudgetUsed,
+    Decision,
     DiffStats,
     Event,
     GateResult,
@@ -34,6 +46,7 @@ from disputatio.contracts import (
     Issue,
     Limits,
     Mode,
+    Outcome,
     OverallStatus,
     Review,
     Role,
@@ -43,19 +56,21 @@ from disputatio.contracts import (
     TaskSpec,
     Verdict,
     VerificationReport,
+    Verifier,
 )
 from disputatio.core import SessionFsm
-from disputatio.events import write_round_artifact
-from disputatio.runtime import GitCli, GitOps, RuntimeDeps
+from disputatio.events import RoundImmutableError, finalize_round, write_round_artifact
+from disputatio.runtime import GitCli, GitOps, ReviewParseError, RuntimeDeps
 from disputatio.runtime.layout import (
     CHANGES_PATCH_NAME,
     DECISION_NAME,
     PROPOSAL_NAME,
     REVIEW_NAME,
     VERIFICATION_NAME,
+    round_artifact,
     round_dir,
 )
-from disputatio.runtime.steps import StepContext, decide_step, propose
+from disputatio.runtime.steps import StepContext, decide_step, propose, review, verify
 
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _ROUND = 1
@@ -122,6 +137,47 @@ class NoVerifier:
         raise AssertionError(f"шаг не вправе гонять гейты (раунд {round_no})")
 
 
+class PortFailure(Exception):
+    """Отказ порта — не схемная ошибка агента, повтором она не лечится.
+
+    Своё исключение, а не `RuntimeError`: `SCHEMA_INVALID_ERRORS` перечислен
+    поимённо, и тест обязан падать шагом, а не быть проглоченным повтором.
+    Отдельный тип делает это видимым в `pytest.raises`.
+    """
+
+
+@dataclass
+class CrashingAgent:
+    """`AgentAdapter`-фейк: разговор с агентом срывается ([REQ-006])."""
+
+    async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
+        """Падает вместо ответа — шаг до своего артефакта не доходит."""
+        raise PortFailure("адаптер агента упал посреди разговора")
+
+
+@dataclass
+class ProseAgent:
+    """`AgentAdapter`-фейк: ответ без JSON-объекта, и так на каждой попытке."""
+
+    prompts: list[str] = field(default_factory=list)
+
+    async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
+        """Отвечает прозой: `extract_json_object` разобрать её не сможет."""
+        self.prompts.append(prompt)
+        return AgentTurn(
+            text="Патч посмотрел, возражений нет.", session_ref=session_ref
+        )
+
+
+@dataclass
+class CrashingVerifier:
+    """`Verifier`-фейк: прогон гейтов срывается на полпути."""
+
+    def verify(self, round_no: int) -> VerificationReport:
+        """Падает вместо отчёта — `verification.json` не появится."""
+        raise PortFailure(f"прогон гейтов раунда {round_no} сорвался")
+
+
 @dataclass
 class CountingGit:
     """`GitOps`-фейк для DECIDING: коммит считается, дерево не трогается."""
@@ -175,11 +231,18 @@ def _context(
     root: Path,
     *,
     phase: SessionPhase,
-    author: AgentAdapter,
     git: GitOps,
+    author: AgentAdapter | None = None,
+    reviewer: AgentAdapter | None = None,
+    verifier: Verifier | None = None,
     base_commit: str = "0" * 40,
 ) -> StepContext:
-    """`StepContext` поверх свежего состояния — то же, что даёт resume."""
+    """`StepContext` поверх свежего состояния — то же, что даёт resume.
+
+    Порты, которые тест не назвал, подставляются фейками, отказывающимися
+    работать: шаг, дотянувшийся до чужой роли, обязан упасть на этом, а не
+    пройти на пустышке.
+    """
     store = FakeStore()
     sink = FakeSink()
     fsm = SessionFsm(_state(phase), store=store, sink=sink, now=lambda: _FROZEN_NOW)
@@ -187,9 +250,9 @@ def _context(
         root=root,
         store=store,
         sink=sink,
-        author=author,
-        reviewer=NoAgent(),
-        verifier=NoVerifier(),
+        author=author or NoAgent(),
+        reviewer=reviewer or NoAgent(),
+        verifier=verifier or NoVerifier(),
         git=git,
         now=lambda: _FROZEN_NOW,
         monotonic=lambda: 0.0,
@@ -282,6 +345,26 @@ def _seed_leftovers(root: Path, name: str) -> None:
     (directory / f"{name}~").write_text("копия редактора", encoding="utf-8")
 
 
+def _seed_for_review(root: Path) -> None:
+    """Кладёт то, из чего шаг REVIEWING собирает промпт: отчёт, текст, патч."""
+    write_round_artifact(
+        root,
+        _ROUND,
+        VERIFICATION_NAME,
+        _verification().model_dump_json(by_alias=True),
+    )
+    write_round_artifact(root, _ROUND, PROPOSAL_NAME, _proposal())
+    write_round_artifact(root, _ROUND, CHANGES_PATCH_NAME, "--- a/feature.py\n")
+
+
+def _seed_for_decision(root: Path) -> None:
+    """Кладёт то, из чего шаг DECIDING собирает снимок для ядра."""
+    _seed_for_review(root)
+    write_round_artifact(
+        root, _ROUND, REVIEW_NAME, _review().model_dump_json(by_alias=True)
+    )
+
+
 def test_proposing_replay_sweeps_an_interrupted_proposal_write(
     git_repo: Path,
 ) -> None:
@@ -322,22 +405,11 @@ def test_deciding_replay_sweeps_leftovers_without_touching_the_marker(
     такой же скрытый файл рядом — уцелел. Уборка, сметающая `.finalized`,
     открыла бы закрытый раунд на запись, и это было бы хуже мусора.
     """
-    write_round_artifact(
-        tmp_path, _ROUND, REVIEW_NAME, _review().model_dump_json(by_alias=True)
-    )
-    write_round_artifact(
-        tmp_path,
-        _ROUND,
-        VERIFICATION_NAME,
-        _verification().model_dump_json(by_alias=True),
-    )
-    write_round_artifact(tmp_path, _ROUND, CHANGES_PATCH_NAME, "--- a/feature.py\n")
+    _seed_for_decision(tmp_path)
     _seed_leftovers(tmp_path, DECISION_NAME)
     git = CountingGit()
 
-    decide_step(
-        _context(tmp_path, phase=SessionPhase.DECIDING, author=NoAgent(), git=git)
-    )
+    decide_step(_context(tmp_path, phase=SessionPhase.DECIDING, git=git))
 
     assert git.commits == [_ROUND]
     assert _leftovers(tmp_path) == []
@@ -346,6 +418,164 @@ def test_deciding_replay_sweeps_leftovers_without_touching_the_marker(
         _FINALIZED_MARKER,
         CHANGES_PATCH_NAME,
         DECISION_NAME,
+        PROPOSAL_NAME,
         REVIEW_NAME,
         VERIFICATION_NAME,
     ]
+
+
+def test_proposing_sweeps_before_it_asks_the_author(git_repo: Path) -> None:
+    """Уборка PROPOSING идёт до автора, а не после ([REQ-015]).
+
+    Автор — первое, что в шаге способно упасть, и падение это законное:
+    адаптер живёт в чужом процессе. Убирай шаг за собой в конце — попытка,
+    не дошедшая до `proposal.md`, не убрала бы ничего, и каталог раунда
+    копил бы по огрызку на каждый сорванный разговор. Пинится тем, что
+    после падения каталог уже чист.
+    """
+    _seed_leftovers(git_repo, PROPOSAL_NAME)
+
+    with pytest.raises(PortFailure):
+        anyio.run(
+            propose,
+            _context(
+                git_repo,
+                phase=SessionPhase.PROPOSING,
+                author=CrashingAgent(),
+                git=GitCli(git_repo),
+                base_commit=_head(git_repo),
+            ),
+        )
+
+    assert _leftovers(git_repo) == []
+    assert not round_artifact(git_repo, _ROUND, PROPOSAL_NAME).exists()
+
+
+def test_verifying_sweeps_before_it_runs_the_gates(tmp_path: Path) -> None:
+    """Уборка VERIFYING идёт до прогона гейтов ([REQ-015]).
+
+    Гейт — внешний процесс, и сорваться прогон вправе. Отчёта в этом случае
+    нет вовсе, а значит уборка, стоящая после записи отчёта, не случится ни
+    разу за всю серию сорванных попыток.
+    """
+    _seed_leftovers(tmp_path, VERIFICATION_NAME)
+
+    with pytest.raises(PortFailure):
+        verify(
+            _context(
+                tmp_path,
+                phase=SessionPhase.VERIFYING,
+                verifier=CrashingVerifier(),
+                git=CountingGit(),
+            )
+        )
+
+    assert _leftovers(tmp_path) == []
+    assert not round_artifact(tmp_path, _ROUND, VERIFICATION_NAME).exists()
+
+
+def test_reviewing_sweeps_even_when_no_answer_ever_parses(tmp_path: Path) -> None:
+    """Уборка REVIEWING переживает исчерпание повторов ([REQ-006], [REQ-015]).
+
+    Ревьюер, отвечающий прозой, тратит все попытки и роняет шаг — на диск не
+    попадает ничего. Это и есть та серия, ради которой уборка стоит впереди:
+    исход «повторы кончились» повторяется при каждом resume, и мусор, не
+    убранный на входе, не будет убран уже никогда.
+    """
+    _seed_for_review(tmp_path)
+    _seed_leftovers(tmp_path, REVIEW_NAME)
+    reviewer = ProseAgent()
+
+    with pytest.raises(ReviewParseError):
+        anyio.run(
+            review,
+            _context(
+                tmp_path,
+                phase=SessionPhase.REVIEWING,
+                reviewer=reviewer,
+                git=CountingGit(),
+            ),
+        )
+
+    assert len(reviewer.prompts) > 1, (
+        "тест обязан пройти через повтор, а не одну попытку"
+    )
+    assert _leftovers(tmp_path) == []
+    assert not round_artifact(tmp_path, _ROUND, REVIEW_NAME).exists()
+
+
+def test_deciding_sweeps_before_it_finds_the_round_closed(tmp_path: Path) -> None:
+    """Уборка DECIDING идёт до записи решения ([REQ-015], [REQ-016]).
+
+    Раунд закрыт маркером, а лежащее в нём решение шагу не принадлежит:
+    переписать его шаг не вправе и падает. Уборка обязана случиться всё
+    равно — она предшествует записи, а не следует за ней. Второй половиной
+    пинится обратное: закрытый раунд остаётся закрытым, уборка его на запись
+    не открывает.
+    """
+    _seed_for_decision(tmp_path)
+    foreign = Decision(
+        round=_ROUND,
+        outcome=Outcome.CONVERGED,
+        reason="чужое решение",
+        open_issues_carried=[],
+        next_round_directive=None,
+    )
+    write_round_artifact(
+        tmp_path, _ROUND, DECISION_NAME, foreign.model_dump_json(by_alias=True)
+    )
+    finalize_round(tmp_path, _ROUND)
+    _seed_leftovers(tmp_path, DECISION_NAME)
+    git = CountingGit()
+
+    with pytest.raises(RoundImmutableError):
+        decide_step(_context(tmp_path, phase=SessionPhase.DECIDING, git=git))
+
+    assert _leftovers(tmp_path) == []
+    assert (round_dir(tmp_path, _ROUND) / _FINALIZED_MARKER).exists()
+    assert git.commits == []
+    on_disk = Decision.model_validate_json(
+        round_artifact(tmp_path, _ROUND, DECISION_NAME).read_text(encoding="utf-8")
+    )
+    assert on_disk.reason == "чужое решение"
+
+
+def test_a_directory_named_like_a_leftover_is_left_alone(git_repo: Path) -> None:
+    """Уборка снимает файлы, а не всё, что подошло по имени ([REQ-015]).
+
+    Каталог, чьё имя совпало с шаблоном огрызка, огрызком не является:
+    `unlink` по нему не проходит вовсе, и шаг, взявшийся его снести, упал бы
+    там, где обязан был всего лишь прибраться, — то есть уборка мусора
+    остановила бы раунд. Отбор по `is_file()` — единственное, что отделяет
+    одно от другого, и пинится он тем, что шаг доходит до конца, а каталог с
+    его содержимым остаётся нетронутым.
+    """
+    stale = round_dir(git_repo, _ROUND) / "stale.tmp"
+    stale.mkdir(parents=True)
+    (stale / "внутри.txt").write_text("не огрызок", encoding="utf-8")
+    _seed_leftovers(git_repo, PROPOSAL_NAME)
+
+    anyio.run(
+        propose,
+        _context(
+            git_repo,
+            phase=SessionPhase.PROPOSING,
+            author=ReplyingAgent(reply=_proposal(), root=git_repo),
+            git=GitCli(git_repo),
+            base_commit=_head(git_repo),
+        ),
+    )
+
+    directory = round_dir(git_repo, _ROUND)
+    files_left = sorted(
+        entry.name
+        for entry in directory.iterdir()
+        if entry.is_file() and entry.name.endswith((".tmp", "~"))
+    )
+    assert files_left == []
+    assert stale.is_dir()
+    assert (stale / "внутри.txt").read_text(encoding="utf-8") == "не огрызок"
+    assert (
+        round_artifact(git_repo, _ROUND, PROPOSAL_NAME).read_text(encoding="utf-8")
+        == _proposal()
+    )
