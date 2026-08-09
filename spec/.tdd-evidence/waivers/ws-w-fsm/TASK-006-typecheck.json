@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "TASK-006",
+  "reason": "Operator-fix приёмки: tests/core/test_deciding.py:492,540 — литералы dict без явной аннотации выводились как dict[int, tuple[Issue]] вместо dict[int, tuple[Issue, ...]], давая 2 ошибки pyrefly. Тест byte-locked claim-ом TASK-006, правка вне полномочий агента. Изменение чисто типовое (добавлена аннотация 'history: dict[int, tuple[Issue, ...]]'), поведение теста не менялось — 36 passed до и после. Красный цикл невоспроизводим: ошибка была у type-checker'а, не у теста. Обнаружено при приёмке WS (протокол ledger требует чистый typecheck); TASK-012 приёмку прошла, не поймав это — отдельная находка о слабости приёмочного критерия.",
+  "approved_by": "human",
+  "baseline_sha": "ddbcfcecf6e421cbb140954a57ca42d46a9f0fc0"
+}

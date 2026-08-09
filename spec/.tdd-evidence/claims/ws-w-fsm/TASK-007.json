@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-007",
+  "selector": "tests/core/test_deciding.py::test_decide_converged_wins_over_budget_hit",
+  "expected_behavior": "decide() не существует; converged должен побеждать budget_hit в top-down порядке §5 [REQ-006]",
+  "baseline_sha": "cc86ab872fc76ae0d0db700e8c2064adc1750501",
+  "red_sha": "ead74b17b7114f1e0bafe2a4cdc6b34d10517801",
+  "created_at": "2026-08-09T06:45:52.311180+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_deciding.py"
+}

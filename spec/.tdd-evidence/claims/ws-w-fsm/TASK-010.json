@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-010",
+  "selector": "tests/core/test_purity.py::test_check_purity_dynamically_discovers_new_module_with_bad_import",
+  "expected_behavior": "чекер чистоты ядра обходит модули пакета динамически и называет запрещённый импорт по имени, до создания tests/core/purity_checker.py упадёт ImportError->AssertionError",
+  "baseline_sha": "22c4ae45f86bdbd901c4c8c044c0aba174e916f3",
+  "red_sha": "3d2a8edf6c4ae8fc40e6cc97ec4cdafcdbe62103",
+  "created_at": "2026-08-09T08:09:15.033407+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_purity.py"
+}

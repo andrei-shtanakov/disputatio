@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-010",
+  "selector": "tests/adapters/test_acceptance_w_adapters.py::test_every_adapter_task_has_red_green_evidence",
+  "expected_behavior": "",
+  "baseline_sha": "44713a0d57f4689803c14f520c0c978f962b094c",
+  "red_sha": "d01ad63cde62d6762b40c6ee4f4986d4a3c66216",
+  "created_at": "2026-08-09T10:47:44.528470+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_acceptance_w_adapters.py"
+}

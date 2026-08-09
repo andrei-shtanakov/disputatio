@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-009",
+  "selector": "tests/core/test_retry.py::test_third_consecutive_schema_invalid_fails_with_write_ahead",
+  "expected_behavior": "handle_schema_invalid: третий подряд schema-invalid при schema_retries=2 должен перевести FSM в FAILED (write-ahead + событие) и вернуть RetryAction.FAILED",
+  "baseline_sha": "18976568f34c727514f3a384f1b40bec464d0858",
+  "red_sha": "4af981f26e77cee42b5f2da35acf12c9faedf044",
+  "created_at": "2026-08-09T07:52:42.539350+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_retry.py"
+}

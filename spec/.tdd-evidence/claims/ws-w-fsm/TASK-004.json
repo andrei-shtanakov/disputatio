@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/core/test_machine.py::test_save_precedes_emit_on_transition",
+  "expected_behavior": "SessionFsm.transition: write-ahead I2 (save строго раньше emit), одно событие state_change (payload from/to, round, ts от инжектированных часов); отказ save и InvalidTransition не меняют состояние и не эмитят событий; раунд растёт только на IDLE→PROPOSING и DECIDING→PROPOSING",
+  "baseline_sha": "52acb676b26998728339101a372e6d6f29f1b407",
+  "red_sha": "c8d1629a7258ae3ea54c309d217dd208ad050cc1",
+  "created_at": "2026-08-09T05:05:49.668480+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_machine.py"
+}

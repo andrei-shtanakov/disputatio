@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-002",
+  "selector": "tests/core/test_writers.py::test_active_writer_map_is_pinned",
+  "expected_behavior": "",
+  "baseline_sha": "9076d5f964051f0a5c108b687d69d9b694c6d96b",
+  "red_sha": "2e11bef6c304180defae56b10ad6ef5549c87901",
+  "created_at": "2026-08-09T04:42:42.003880+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_writers.py"
+}
