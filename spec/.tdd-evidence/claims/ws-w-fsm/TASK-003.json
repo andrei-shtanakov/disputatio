@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/core/test_fakes.py::test_fakes_satisfy_runtime_checkable_ports",
+  "expected_behavior": "Фейки ports (FakeStateStore/FailingStateStore/FakeEventSink) и фикстуры (calls, store, sink, failing_store, session_state, fixed_now) из tests/core/conftest.py: isinstance по runtime_checkable-портам, общий журнал пинает порядок save-до-emit, FailingStateStore.save бросает StoreFailure, fixed_now детерминирован, фейки не пишут на диск.",
+  "baseline_sha": "05705eddfefe7201997b3459b32c606ad8a17273",
+  "red_sha": "6c9a337126b845af84ab1fe152d320a7f6fb4b35",
+  "created_at": "2026-08-09T04:53:26.182586+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_fakes.py"
+}
