@@ -1,10 +1,12 @@
-"""Снимок входов `DECIDING` и критерий converged §5.1 (DESIGN-004/005).
+"""Снимок входов `DECIDING`, критерий converged и `decide()` §5 (DESIGN-004/005).
 
 `DecidingInputs`/`DecisionDraft` — frozen-датаклассы: значения, а не объекты
 с поведением. `is_converged()` реализует критерий сходимости [REQ-007] и
 анти-сикофантию [REQ-008] в одном месте — по DESIGN-005 защита раунда 1
 живёт внутри критерия converged, не как отдельная ветка. `decide()`
-(TASK-007) вызывает `is_converged()` первым шагом top-down порядка §5.
+реализует строгий top-down порядок §5 [REQ-006]: converged → budget_hit
+[REQ-010] → осцилляция [REQ-011] → max_rounds [REQ-012] → иначе continue,
+линейной цепочкой ранних `return` без таблиц приоритетов.
 """
 
 from collections.abc import Mapping
@@ -23,9 +25,26 @@ from disputatio.contracts import (
     Verdict,
     VerificationReport,
 )
+from disputatio.core.oscillation import (
+    OSCILLATION_DIFF_THRESHOLD,
+    find_repeated_issue,
+    patch_similarity,
+)
 
 REASON_CONVERGED: Final = "approve_with_gates_pass"
 REASON_ANTI_SYCOPHANCY: Final = "anti_sycophancy_forced_review"
+REASON_BUDGET_TOKENS: Final = "budget_hit: tokens"
+REASON_BUDGET_WALL: Final = "budget_hit: wall_seconds"
+REASON_OSCILLATION_DIFF: Final = "oscillation: diff-similarity"
+REASON_OSCILLATION_ISSUE: Final = "oscillation: repeated issue"
+REASON_MAX_ROUNDS: Final = "max_rounds"
+REASON_CONTINUE: Final = "continue_revise_cycle"
+
+_ANTI_SYCOPHANCY_DIRECTIVE: Final = (
+    "Раунд 1 принят только для analyze без правок кода; требуется один "
+    "содержательный цикл ревью: минимум 3 замечания любой severity либо "
+    "явное обоснование в checked, почему их нет."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,3 +104,106 @@ def is_converged(inputs: DecidingInputs) -> bool:
     if not _no_carried_blocker(inputs):
         return False
     return _passes_anti_sycophancy(inputs)
+
+
+def _anti_sycophancy_blocked(inputs: DecidingInputs) -> bool:
+    """True, если converged не сработал именно из-за анти-сикофантии раунда 1."""
+    if inputs.review.verdict is not Verdict.APPROVE:
+        return False
+    if not _gates_pass(inputs):
+        return False
+    if not _no_carried_blocker(inputs):
+        return False
+    return not _passes_anti_sycophancy(inputs)
+
+
+def _budget_hit_reason(inputs: DecidingInputs) -> str | None:
+    """`REASON_BUDGET_TOKENS`/`REASON_BUDGET_WALL` при строгом превышении лимита [REQ-010]."""
+    if inputs.budget_used.tokens > inputs.limits.max_total_tokens:
+        return REASON_BUDGET_TOKENS
+    if inputs.budget_used.wall_seconds > inputs.limits.max_wall_seconds:
+        return REASON_BUDGET_WALL
+    return None
+
+
+def _oscillation_reason(inputs: DecidingInputs) -> str | None:
+    """Diff-similarity, затем repeated-issue, в этом порядке (DESIGN-006) [REQ-011]."""
+    if inputs.patch_two_back is not None:
+        similarity = patch_similarity(inputs.patch_current, inputs.patch_two_back)
+        if similarity > OSCILLATION_DIFF_THRESHOLD:
+            return REASON_OSCILLATION_DIFF
+    repeated = find_repeated_issue(inputs.review.issues, inputs.issue_history)
+    if repeated is not None:
+        return f"{REASON_OSCILLATION_ISSUE}: {repeated.file}/{repeated.id}"
+    return None
+
+
+def _build_directive(review: Review) -> str:
+    """Директива автору следующего раунда, собранная из issues ревью (§5)."""
+    if not review.issues:
+        return "Продолжить работу над задачей: цикл ревью продолжается."
+    return "; ".join(f"{issue.file}: {issue.claim}" for issue in review.issues)
+
+
+def decide(inputs: DecidingInputs) -> DecisionDraft:
+    """`DECIDING` §5: converged → budget_hit → осцилляция → max_rounds → continue.
+
+    Строгий top-down порядок [REQ-006] — линейная цепочка ранних `return`,
+    первое сработавшее условие терминально.
+    """
+    open_issues_carried = tuple(issue.id for issue in inputs.carried_issues)
+
+    if is_converged(inputs):
+        return DecisionDraft(
+            outcome=Outcome.CONVERGED,
+            reason=REASON_CONVERGED,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+        )
+
+    budget_reason = _budget_hit_reason(inputs)
+    if budget_reason is not None:
+        return DecisionDraft(
+            outcome=Outcome.BUDGET_HIT,
+            reason=budget_reason,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+        )
+
+    oscillation_reason = _oscillation_reason(inputs)
+    if oscillation_reason is not None:
+        return DecisionDraft(
+            outcome=Outcome.DEADLOCK,
+            reason=oscillation_reason,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+        )
+
+    if inputs.round >= inputs.limits.max_rounds:
+        return DecisionDraft(
+            outcome=Outcome.DEADLOCK,
+            reason=REASON_MAX_ROUNDS,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+        )
+
+    if _anti_sycophancy_blocked(inputs):
+        return DecisionDraft(
+            outcome=Outcome.CONTINUE,
+            reason=REASON_ANTI_SYCOPHANCY,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=_ANTI_SYCOPHANCY_DIRECTIVE,
+            forced_review=True,
+        )
+
+    return DecisionDraft(
+        outcome=Outcome.CONTINUE,
+        reason=REASON_CONTINUE,
+        open_issues_carried=open_issues_carried,
+        next_round_directive=_build_directive(inputs.review),
+        forced_review=False,
+    )
