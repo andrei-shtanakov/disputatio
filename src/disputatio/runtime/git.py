@@ -36,13 +36,33 @@ GIT_USER_EMAIL: Final = "disputatio@localhost"
 # что из дерева исключить.
 SESSION_DIR_NAME: Final = ".disputatio"
 
-# Pathspec диффа: всё дерево от корня репозитория минус каталог сессии.
-# `:/` и магия `top` привязывают шаблоны к корню, а не к `cwd`; исключающий
+# Pathspec диффа: всё дерево репозитория минус каталог сессии. Исключающий
 # pathspec без положительного ничего не отбирает, поэтому пара неразделима.
+# `:/` берёт дерево целиком: дерево было чисто на pre-flight, значит правка
+# вне `root` — тоже работа автора и обязана попасть в ревью. Исключение,
+# наоборот, идёт БЕЗ магии `top`: она считала бы `.disputatio` от корня
+# репозитория, а каталог сессии лежит в `root`, и совпадают эти два пути
+# только когда `root` и есть toplevel — чего `preflight` не требует.
 # `.disputatio/` — журнал оркестратора, а не работа автора: попав в патч,
 # он стал бы предметом ревью, а попав в индекс через intent-to-add — частью
 # коммита раунда.
-_TREE_PATHSPEC: Final = (":/", f":(exclude,top){SESSION_DIR_NAME}")
+_TREE_PATHSPEC: Final = (":/", f":(exclude){SESSION_DIR_NAME}")
+
+# Флаги, отключающие влияние ЛОКАЛЬНОГО `.git/config` на форму патча:
+# `_env` гасит системный и глобальный конфиг, но `.git/config` лежит внутри
+# рабочей директории и в дифф не попадает — подмена была бы невидима.
+# `diff.external` подменяет весь вывод выводом произвольной программы (и
+# запускает её), `color.ui = always` вклеивает ANSI-escape'ы, `noprefix`/
+# `mnemonicPrefix` ломают заголовок `--- a/… +++ b/…`, `diff.relative`
+# вырезает всё вне `cwd`, а textconv отдаёт вместо содержимого пересказ.
+_DIFF_FLAGS: Final = (
+    "--no-ext-diff",
+    "--no-color",
+    "--no-textconv",
+    "--no-relative",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+)
 
 _IDENTITY_ARGS: Final = (
     "-c",
@@ -149,12 +169,16 @@ class GitCli:
         автором модуль исчез бы из ревью бесследно. Записи intent-to-add
         содержимого не несут, поэтому коммит раунда они не подменяют.
 
+        Форма патча задаётся флагами, а не конфигом репозитория
+        (`_DIFF_FLAGS`): `changes.patch` — предмет ревью, и он обязан быть
+        одним и тем же unified-диффом в любом пользовательском репозитории.
+
         Пустая строка — валидный результат (режим `analyze`): артефакт
         пишется всегда, в том числе пустым, и шаг ошибкой не считается
         ([REQ-013]).
         """
         _checked(self.root, "add", "--intent-to-add", "--", *_TREE_PATHSPEC)
-        return _checked(self.root, "diff", "HEAD", "--", *_TREE_PATHSPEC)
+        return _checked(self.root, "diff", *_DIFF_FLAGS, "HEAD", "--", *_TREE_PATHSPEC)
 
     def commit_round(self, round_no: int) -> None:
         """TODO: [TASK-006] — коммит `disputatio: round NNN` ([DESIGN-011])."""
