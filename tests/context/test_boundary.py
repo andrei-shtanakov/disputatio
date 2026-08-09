@@ -15,6 +15,10 @@
 from . import boundary
 
 DATA = "текст артефакта"
+# Хвост после закрывающей метки. Без него `end` блока совпадает с длиной
+# промпта, и «символ за блоком снаружи» проверялся бы на несуществующем
+# символе — правая граница осталась бы незапиненной.
+SUFFIX = "\n## Статика оркестратора после блока"
 
 
 def _block(content: str) -> str:
@@ -68,14 +72,23 @@ def test_scan_reports_a_block_that_is_never_closed() -> None:
 
 
 def test_contains_covers_the_block_including_its_own_tags() -> None:
-    """Границы полудиапазона: метки принадлежат блоку, символ за ним — нет."""
-    prompt = _block(DATA)
+    """Границы полудиапазона: ОБЕ метки принадлежат блоку, символ за ним — нет.
+
+    Правая граница пинится явно. Блок, обрезанный по началу закрывающей
+    метки, проходит все проверки слева и молча перестаёт видеть нарушения
+    у своего правого края — а через `contains`/`overlaps` меряет себя весь
+    `test_hygiene.py`.
+    """
+    prompt = f"{_block(DATA)}{SUFFIX}"
+    close = prompt.index(boundary.CLOSE_TAG)
 
     scan = boundary.scan(prompt)
     (start, end) = scan.blocks[0]
 
+    assert end == close + len(boundary.CLOSE_TAG)
     assert scan.contains(start)
     assert scan.contains(prompt.index(DATA))
+    assert scan.contains(close)
     assert scan.contains(end - 1)
     assert not scan.contains(end)
 
@@ -89,6 +102,17 @@ def test_overlaps_catches_a_range_that_only_straddles_the_opening_tag() -> None:
 
     assert not scan.overlaps(0, len(prefix))
     assert scan.overlaps(len(prefix) - 1, len(prefix) + 1)
+
+
+def test_overlaps_catches_a_range_that_only_straddles_the_closing_tag() -> None:
+    """Симметрично справа: текст, заехавший на закрывающую метку, — нарушение."""
+    prompt = f"{_block(DATA)}{SUFFIX}"
+    close = prompt.index(boundary.CLOSE_TAG)
+
+    scan = boundary.scan(prompt)
+
+    assert scan.overlaps(close, close + len(boundary.CLOSE_TAG))
+    assert not scan.overlaps(close + len(boundary.CLOSE_TAG), len(prompt))
 
 
 def test_find_all_returns_overlapping_occurrences() -> None:
