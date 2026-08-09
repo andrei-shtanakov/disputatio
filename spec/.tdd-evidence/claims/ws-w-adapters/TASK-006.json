@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/adapters/test_events_translate.py::test_recognized_line_maps_to_typed_event",
+  "expected_behavior": "translate_line отображает распознанную парсером строку в типизированный Event (type/payload/source/session/round/ts); нераспознанную — в agent_text_delta с raw:true и неурезанным text",
+  "baseline_sha": "14e610b62877f15af65e7556ac80430bf5fc527f",
+  "red_sha": "73f32ff8d02a615864d67ce879e04701868adb27",
+  "created_at": "2026-08-09T09:34:34.277966+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_events_translate.py"
+}

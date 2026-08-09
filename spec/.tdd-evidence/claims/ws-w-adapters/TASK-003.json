@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/adapters/test_process_seam.py::test_run_returns_agent_turn_from_fake_stdout",
+  "expected_behavior": "ClaudeCodeAdapter.run() собирает AgentTurn из фейкового launcher/stdout (TASK-003)",
+  "baseline_sha": "fbd2a4e9715b7b78b6c3427884d875d8b7dfab15",
+  "red_sha": "970b663519f5674186e71fded223c7b7346c7d2a",
+  "created_at": "2026-08-09T08:01:01.097498+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_process_seam.py"
+}
