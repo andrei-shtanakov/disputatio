@@ -8,7 +8,12 @@ TOML-текста. Содержимое `config.toml` для этого слоя
 from pathlib import Path
 
 from disputatio.events.atomic import atomic_write
-from disputatio.events.paths import config_toml_path, result_dir, session_dir
+from disputatio.events.paths import (
+    config_toml_path,
+    result_dir,
+    rounds_dir,
+    session_dir,
+)
 
 
 def bootstrap_session(root: Path) -> Path:
@@ -18,14 +23,18 @@ def bootstrap_session(root: Path) -> Path:
     повторный вызов не бросает и не трогает существующие файлы — в частности,
     `session.json` не читается и не пишется этой функцией ([REQ-002]).
     """
-    directory = session_dir(root)
-    (directory / "rounds").mkdir(parents=True, exist_ok=True)
+    rounds_dir(root).mkdir(parents=True, exist_ok=True)
     result_dir(root).mkdir(parents=True, exist_ok=True)
-    return directory
+    return session_dir(root)
 
 
 def write_config_snapshot(root: Path, toml_text: str) -> None:
     """Атомарно пишет `.disputatio/config.toml` из готовой TOML-строки.
+
+    Предусловие: `bootstrap_session(root)` уже вызван — `atomic_write` кладёт
+    временный файл рядом с целевым, поэтому без `.disputatio/` вызов упадёт
+    `FileNotFoundError` (директорию эта функция не создаёт: bootstrap —
+    единственная точка `mkdir`, [REQ-002]).
 
     Снапшот пишется один раз при старте сессии, чтобы конфигурация не зависела
     от последующих правок внешнего конфиг-файла (SPEC-001 §3). Повторный вызов

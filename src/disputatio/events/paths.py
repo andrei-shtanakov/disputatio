@@ -30,9 +30,14 @@ def events_jsonl_path(root: Path) -> Path:
     return session_dir(root) / "events.jsonl"
 
 
+def rounds_dir(root: Path) -> Path:
+    """Директория всех раундов `rounds/` — родитель `round_dir`."""
+    return session_dir(root) / "rounds"
+
+
 def round_dir(root: Path, round_no: int) -> Path:
     """Директория раунда `rounds/{round_no:03d}`."""
-    return session_dir(root) / "rounds" / f"{round_no:03d}"
+    return rounds_dir(root) / f"{round_no:03d}"
 
 
 def result_dir(root: Path) -> Path:
