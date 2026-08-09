@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-002",
+  "selector": "tests/events/test_atomic_write.py::test_atomic_write_creates_file_with_str_content",
+  "expected_behavior": "atomic_write записывает str-содержимое целиком через temp-file+rename",
+  "baseline_sha": "e7690dc9fdf7dc65a1136e738e650fd0e839bd13",
+  "red_sha": "4a8a8a807b09f80a205604d30c793bb8174a7e9e",
+  "created_at": "2026-08-09T06:30:57.024942+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_atomic_write.py"
+}
