@@ -10,16 +10,18 @@ search-path = ["scripts", "tests"]
 # ValidationError; тест-файлы после red-чекпоинта байт-неизменяемы, поэтому
 # inline-suppression недоступен — отключаем read-only точечно, только для
 # фактически нуждающихся файлов (test_base.py, test_validation.py).
-# unexpected-keyword — той же природы: негативные тесты extra="forbid" передают
-# заведомо лишний kwarg и ждут ValidationError. Новые тест-файлы ревизии 2
-# пишутся под строгий pyrefly (негативные сценарии — model_validate с
-# dict-payload) и послаблений не получают (DESIGN-015).
+# unexpected-keyword остаётся только у test_validation.py: его негативные
+# тесты extra="forbid" передают заведомо лишний литеральный kwarg и ждут
+# ValidationError; в test_base.py лишние поля идут через model_validate с
+# dict-payload, статике ловить нечего — релаксация снята (TASK-025).
+# Новые тест-файлы ревизии 2 пишутся под строгий pyrefly (негативные
+# сценарии — model_validate с dict-payload) и послаблений не получают
+# (DESIGN-015).
 [[sub-config]]
 matches = "tests/contracts/test_base.py"
 
 [sub-config.errors]
 read-only = false
-unexpected-keyword = false
 
 [[sub-config]]
 matches = "tests/contracts/test_validation.py"
