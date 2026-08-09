@@ -1,0 +1,12 @@
+{
+  "schema": "tdd-verdict/v1",
+  "task_id": "TASK-009",
+  "claim_revision": 1,
+  "red_sha": "ea7e4c69164fd8b0cfe9f7cad417283ec33d39ab",
+  "verified_head": "3bf56e3d2e6ed17d92a32b7ac8b9ad969cb519f1",
+  "red_replay": "EXPECTED_FAIL",
+  "selector_at_head": "PASS",
+  "verdict": "PASS",
+  "checked_at": "2026-08-09T10:54:58.364902+00:00",
+  "notes": ""
+}
