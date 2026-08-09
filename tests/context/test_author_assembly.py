@@ -7,6 +7,12 @@
 склейке. Шесть мутантов реализации переживали весь `tests/context/` — этот
 файл их закрывает.
 
+Второй проход пробы добавил ещё три выживших мутанта: сам разделитель
+секций (`"\\n\\n"` → `"\\n"`), разделитель внутри секции задачи и сжатие
+условия «замечания без решения оркестратора не показываются» до одного
+`prior_review is None` — последнее падало `AttributeError` на комбинации
+`prior_review` без `prior_decision`, которую не проверял ни один тест.
+
 Файл отдельный, а не дополнение к `test_author.py`: тот байт-заморожен
 red-чекпоинтом TASK-004 и правке не подлежит.
 """
@@ -37,9 +43,14 @@ def _module(name: str) -> ModuleType:
         ) from exc
 
 
-def _full_round_kwargs() -> dict[str, object]:
-    """Раунд 4 со всеми тремя артефактами раунда 3 — все секции непусты."""
-    review = Review(
+def _task() -> TaskSpec:
+    """Задача пользователя; текст не пересекается с полями артефактов."""
+    return TaskSpec(prompt="Почини ретраи клиента.", mode=Mode.DEVELOP)
+
+
+def _prior_review() -> Review:
+    """`review.json` раунда 3 с единственным blocker'ом `R3-1`."""
+    return Review(
         round=3,
         role=Role.REVIEWER,
         verdict=Verdict.REQUEST_CHANGES,
@@ -56,6 +67,11 @@ def _full_round_kwargs() -> dict[str, object]:
         checked=["src/client.py"],
         summary="нужны правки",
     )
+
+
+def _full_round_kwargs() -> dict[str, object]:
+    """Раунд 4 со всеми тремя артефактами раунда 3 — все секции непусты."""
+    review = _prior_review()
     verification = VerificationReport(
         round=3,
         gates=[
@@ -78,7 +94,7 @@ def _full_round_kwargs() -> dict[str, object]:
         next_round_directive="Сначала почини гейт pytest.",
     )
     return {
-        "task": TaskSpec(prompt="Почини ретраи клиента.", mode=Mode.DEVELOP),
+        "task": _task(),
         "round": 4,
         "prior_review": review,
         "prior_verification": verification,
@@ -152,3 +168,38 @@ def test_absent_sections_leave_no_blank_gap() -> None:
 
     assert "\n\n\n" not in minimal
     assert "\n\n\n" not in full
+
+
+def test_blank_line_separates_sections_and_never_splits_one() -> None:
+    """Пустая строка — граница секций: внутри секции её нет, между — есть."""
+    author = _module("author")
+    sections = _module("sections")
+    tags = _module("tags")
+
+    prompt = author.build_author_prompt(**_full_round_kwargs())
+
+    for title in (
+        author.TASK_TITLE,
+        sections.DIRECTIVE_TITLE,
+        sections.OPEN_ISSUES_TITLE,
+        sections.FAILED_GATES_TITLE,
+    ):
+        assert f"\n\n{title}" in prompt
+    # Заголовок, режим и открывающая метка — сплошной блок одной секции.
+    task_head = prompt[prompt.index(author.TASK_TITLE) : prompt.index(tags._OPEN_TAG)]
+    assert "\n\n" not in task_head
+
+
+def test_review_without_decision_renders_no_issues_section() -> None:
+    """Какие замечания остались открытыми, знает только `DECIDING` (§6.1)."""
+    author = _module("author")
+    sections = _module("sections")
+    review = _prior_review()
+
+    prompt = author.build_author_prompt(task=_task(), round=4, prior_review=review)
+
+    assert sections.OPEN_ISSUES_TITLE not in prompt
+    # Ни id, ни текст замечания: без решения оркестратора неизвестно, какие
+    # из них ещё открыты, — и автор не должен чинить уже закрытое.
+    assert review.issues[0].id not in prompt
+    assert review.issues[0].claim not in prompt
