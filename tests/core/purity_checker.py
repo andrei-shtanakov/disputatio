@@ -78,6 +78,8 @@ def find_forbidden_calls(tree: ast.AST) -> list[str]:
         func = node.func
         if isinstance(func, ast.Name) and func.id in FORBIDDEN_CALL_NAMES:
             violations.append(func.id)
+        elif isinstance(func, ast.Attribute) and func.attr in FORBIDDEN_CALL_NAMES:
+            violations.append(func.attr)
         elif isinstance(func, ast.Attribute) and func.attr in FORBIDDEN_DATETIME_ATTRS:
             violations.append(f"datetime.{func.attr}")
     return violations
