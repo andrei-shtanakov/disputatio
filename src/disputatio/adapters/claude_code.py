@@ -36,9 +36,11 @@ class ClaudeCodeAdapter:
 
         buffer = ""
         stdout = cast(AsyncIterator[bytes], process.stdout)
-        async for raw in stdout:
-            buffer += raw.decode()
-        await process.wait()
+        try:
+            async for raw in stdout:
+                buffer += raw.decode()
+        finally:
+            await process.wait()
 
         return AgentTurn(text=buffer, session_ref=None, tokens_used=None)
 
