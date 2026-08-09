@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/adapters/test_permissions.py::test_author_argv_unrestricted",
+  "expected_behavior": "",
+  "baseline_sha": "d7dd3c05da3802be0e9915cc754a9fb214508f40",
+  "red_sha": "4190e2943ad5d0f094324bc746ba97ce434ea928",
+  "created_at": "2026-08-09T08:14:37.895519+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_permissions.py"
+}

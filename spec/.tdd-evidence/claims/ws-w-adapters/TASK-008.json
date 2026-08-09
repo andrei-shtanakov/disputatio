@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-008",
+  "selector": "tests/adapters/test_codex_adapter.py::test_run_returns_agent_turn_from_fake_stdout",
+  "expected_behavior": "CodexAdapter.run() возвращает AgentTurn из фейкового stdout (REQ-004, DESIGN-007)",
+  "baseline_sha": "786b96694ecbd6f21bb4f1dc02d36d41c8e56c4e",
+  "red_sha": "c02963bd1af76ead84c16cf4fbc41782a74260f6",
+  "created_at": "2026-08-09T10:15:14.028131+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_codex_adapter.py"
+}
