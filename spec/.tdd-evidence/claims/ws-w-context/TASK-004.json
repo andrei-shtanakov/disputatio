@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/context/test_author.py::test_cold_start_round_one_renders_task_only",
+  "expected_behavior": "build_author_prompt: раунд 1 без prior_* собирает промпт с дословной задачей пользователя и без единой необязательной секции (REQ-001)",
+  "baseline_sha": "99bd0ee0892526cf505d982c2c0029bba2c57c55",
+  "red_sha": "f18b39e257527efd19d64351f124d0ce798f1edc",
+  "created_at": "2026-08-09T13:14:35.814093+00:00",
+  "revision": 1,
+  "test_path": "tests/context/test_author.py"
+}
