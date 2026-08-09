@@ -53,12 +53,26 @@ def _git(workdir: Path, *args: str) -> None:
 
 @pytest.fixture
 def tmp_git_repo(tmp_path: Path) -> Path:
-    """Git-репозиторий во временном каталоге: init, `.gitignore`, один коммит."""
+    """Git-репозиторий во временном каталоге: init, `.gitignore`, tracked-файл.
+
+    `.gitignore` перечисляет два кэш-каталога: `__pycache__/` (побочный
+    продукт python-гейтов) и `.pytest_cache/` — [REQ-009] прямо объявляет
+    появление таких кэшей допустимым, и без записи в игнорируемый каталог
+    инвариант mutation-freedom проверялся бы только на пустом множестве.
+
+    `tracked.txt` коммитится ради негативного контроля того же теста: без
+    отслеживаемого файла портить в дереве нечего, кроме самого
+    `.gitignore`, а его мутация меняла бы правила игнорирования по ходу
+    проверки.
+    """
     _git(tmp_path, "init", "--quiet")
     _git(tmp_path, "config", "user.email", "verifier@tests.local")
     _git(tmp_path, "config", "user.name", "verifier-tests")
-    (tmp_path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
-    _git(tmp_path, "add", ".gitignore")
+    (tmp_path / ".gitignore").write_text(
+        "__pycache__/\n.pytest_cache/\n", encoding="utf-8"
+    )
+    (tmp_path / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore", "tracked.txt")
     _git(tmp_path, "commit", "--quiet", "-m", "init")
     return tmp_path
 
