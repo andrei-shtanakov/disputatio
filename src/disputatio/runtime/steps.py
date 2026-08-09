@@ -11,6 +11,7 @@
 ними `StepContext`.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from disputatio.runtime.layout import (
     round_artifact,
 )
 from disputatio.runtime.parsing import extract_json_object
+from disputatio.runtime.retry import run_with_schema_retry
 from disputatio.verifier import GateSpec
 
 
@@ -94,8 +96,9 @@ async def propose(ctx: StepContext) -> None:
     3. Единственный `await` шага — вызов адаптера.
     4. Ответ разбирается `parse_proposal` **до** записи: `proposal.md` с
        битым фронтматтером на диске означал бы, что следующий раунд читает
-       как артефакт то, что артефактом не является ([REQ-006] подключит
-       сюда schema-retry).
+       как артефакт то, что артефактом не является. Разбор идёт внутри
+       schema-retry ([DESIGN-006]): невалидный ответ — повод переспросить
+       автора с текстом ошибки, а не сразу уронить сессию.
     5. `changes.patch` пишется всегда, в том числе пустым ([REQ-013]):
        «автор ничего не менял» и «шаг не дошёл до патча» — разные факты, и
        различает их только наличие файла. `diff_head` идёт ПОСЛЕ записи
@@ -110,16 +113,25 @@ async def propose(ctx: StepContext) -> None:
     ctx.deps.git.clean()
 
     prior = load_prior_round(root, round_no - 1)
-    prompt = build_author_prompt(
-        task=ctx.fsm.state.task,
-        round=round_no,
-        prior_review=prior.review,
-        prior_verification=prior.verification,
-        prior_decision=prior.decision,
+    failures: list[Exception] = []
+    outcome = await run_with_schema_retry(
+        ctx,
+        adapter=ctx.deps.author,
+        build_prompt=lambda: build_author_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            prior_review=prior.review,
+            prior_verification=prior.verification,
+            prior_decision=prior.decision,
+        ),
+        parse=parse_proposal,
+        source=EventSource.AUTHOR,
+        session_ref=_author_session_ref(ctx),
+        on_invalid=failures.append,
     )
-
-    turn = await ctx.deps.author.run(prompt, session_ref=_author_session_ref(ctx))
-    parse_proposal(turn.text)
+    if outcome is None:
+        raise _exhausted(failures)
+    _, turn = outcome
 
     write_round_artifact(root, round_no, PROPOSAL_NAME, turn.text)
     diff = ctx.deps.git.diff_head()
@@ -209,35 +221,86 @@ async def review(ctx: StepContext) -> None:
     Отчёт проверок читается с диска (раунд N, не N−1) — тот же источник,
     что переживёт перезапуск процесса, и тот же, из которого §4.4 узнает
     про красные гейты.
+
+    Все три исхода отказа (нет JSON, не та схема, не приняли §4.4) идут
+    через schema-retry ([DESIGN-006]): ревьюера переспрашивают с текстом
+    ошибки, и только исчерпание лимита делает раунд `FAILED`.
     """
     round_no = ctx.round
     root = ctx.root
 
     verification = _round_verification(root, round_no)
     prior = load_prior_round(root, round_no - 1)
-    prompt = build_reviewer_prompt(
-        task=ctx.fsm.state.task,
-        round=round_no,
-        proposal_path=_relative_artifact(root, round_no, PROPOSAL_NAME),
-        patch_path=_relative_artifact(root, round_no, CHANGES_PATCH_NAME),
-        verification=verification,
-        prior_review=prior.review,
-        prior_decision=prior.decision,
+    failures: list[Exception] = []
+    outcome = await run_with_schema_retry(
+        ctx,
+        adapter=ctx.deps.reviewer,
+        build_prompt=lambda: build_reviewer_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            proposal_path=_relative_artifact(root, round_no, PROPOSAL_NAME),
+            patch_path=_relative_artifact(root, round_no, CHANGES_PATCH_NAME),
+            verification=verification,
+            prior_review=prior.review,
+            prior_decision=prior.decision,
+        ),
+        parse=lambda text: _accepted_review(text, verification, round_no),
+        source=EventSource.REVIEWER,
+        session_ref=_reviewer_session_ref(ctx),
+        on_invalid=failures.append,
     )
-
-    turn = await ctx.deps.reviewer.run(prompt, session_ref=_reviewer_session_ref(ctx))
-    parsed = Review.model_validate_json(extract_json_object(turn.text))
-    acceptance = validate_review(parsed, verification)
-    _require_accepted(acceptance, round_no)
+    if outcome is None:
+        raise _exhausted(failures)
+    review_model, _turn = outcome
 
     write_round_artifact(
         root,
         round_no,
         REVIEW_NAME,
-        acceptance.review.model_dump_json(by_alias=True),
+        review_model.model_dump_json(by_alias=True),
     )
 
     ctx.fsm.handle_step_success()
+
+
+def _accepted_review(
+    text: str, verification: VerificationReport, round_no: int
+) -> Review:
+    """Текст ревьюера → принятая §4.4 модель; иначе ошибка для повтора.
+
+    Три исхода отказа — нет JSON, не та схема, не приняли правила §4.4 —
+    поднимаются как исключения, потому что для schema-retry ([DESIGN-006])
+    это один и тот же факт: вывод агента не той формы, и лечится он
+    повтором с текстом ошибки, а не ветвлением здесь.
+
+    Возвращается `acceptance.review` — деградированная копия: исходная
+    модель сохранила бы `blocker`, который §4.4 уже не признал, и следующий
+    раунд читал бы его как настоящий.
+    """
+    parsed = Review.model_validate_json(extract_json_object(text))
+    acceptance = validate_review(parsed, verification)
+    _require_accepted(acceptance, round_no)
+    return acceptance.review
+
+
+def _exhausted(failures: Sequence[Exception]) -> Exception:
+    """Ошибка, с которой шаг падает после исчерпания повторов ([REQ-006]).
+
+    Наружу уходит ошибка ПОСЛЕДНЕЙ попытки: сессия к этому моменту уже
+    `FAILED` в `session.json`, а все попытки — в журнале событиями `error`,
+    но пользователь обязан услышать причину, а не только факт остановки.
+    Переписывать её в собственный текст незачем: §4.4 и схема уже сказали,
+    что именно не так, и второй формулировкой они бы разошлись.
+
+    Пустой список означает возврат `None` без единой неудачной попытки —
+    состояние, невозможное по контракту хелпера, поэтому `AssertionError`.
+    """
+    if not failures:
+        raise AssertionError(
+            "schema-retry вернул None, не зафиксировав ни одной ошибки "
+            "валидации: счёт попыток разошёлся с их разбором"
+        )
+    return failures[-1]
 
 
 def _round_verification(root: Path, round_no: int) -> VerificationReport:
