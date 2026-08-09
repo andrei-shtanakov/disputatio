@@ -233,12 +233,21 @@ def load_config(root: Path) -> RuntimeConfig:
     Читается именно снапшот сессии, а не конфиг текущего окружения: сессия
     обязана продолжиться тем, чем была запущена, даже если внешний файл с
     тех пор переписали.
+
+    Байты, не декодируемые как UTF-8, — тоже `ConfigError`, и отдельным
+    `except`: `UnicodeDecodeError` наследуется от `ValueError`, а не от
+    `OSError`, и один только перехват ошибок ввода-вывода выпустил бы его
+    наружу traceback'ом. Случай не выдуманный: `config.toml` — текстовый
+    файл ровно затем, чтобы его правили руками, а редактор, сохранивший
+    русский `task.prompt` в однобайтовой кодировке, даёт именно эти байты.
     """
     path = config_toml(root)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"снапшот конфига {path} не читается: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"снапшот конфига {path} не в UTF-8: {exc}") from exc
     return RuntimeConfig.from_toml(text)
 
 
