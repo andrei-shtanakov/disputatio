@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-024",
+  "selector": "tests/contracts/test_agent_turn_session_ref.py::test_task024_red_checkpoint_claim_recorded",
+  "expected_behavior": "",
+  "baseline_sha": "17106a8ef9948795fb9ded0aa2b43a5e1e5d27dc",
+  "red_sha": "184e07b598afda2cbbc6475ad30b9564a6e12ffa",
+  "created_at": "2026-08-09T03:50:18.937332+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_agent_turn_session_ref.py"
+}
