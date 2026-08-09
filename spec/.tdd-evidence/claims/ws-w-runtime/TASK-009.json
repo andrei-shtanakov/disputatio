@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-009",
+  "selector": "tests/runtime/test_step_verifying.py::test_step_has_no_branch_able_to_cancel_the_transition",
+  "expected_behavior": "steps.verify отсутствует; шаг VERIFYING не имеет ветки, способной отменить переход в REVIEWING",
+  "baseline_sha": "25ddbbe94fd8860db3c1261a0cefe96ab1de1dfb",
+  "red_sha": "d3eb81c10a41241fb2e0dcf097382ced87647e9f",
+  "created_at": "2026-08-09T19:19:49.039650+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_step_verifying.py"
+}

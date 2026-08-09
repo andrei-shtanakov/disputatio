@@ -6,21 +6,27 @@
 здесь можно испортить, портится перестановкой строк, а не логикой, — поэтому
 порядок операций каждого шага зафиксирован тестом по общему spy-логу.
 
-Пока реализован `propose` ([DESIGN-003]); остальные шаги приходят своими
-задачами и делят с ним `StepContext`.
+Пока реализованы `propose` ([DESIGN-003]) и `verify` ([DESIGN-004]);
+остальные шаги приходят своими задачами и делят с ними `StepContext`.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from disputatio.context import build_author_prompt
-from disputatio.contracts import Role, parse_proposal
+from disputatio.contracts import Event, EventSource, EventType, Role, parse_proposal
 from disputatio.core import SessionFsm, Writer, active_writer
 from disputatio.events import write_round_artifact
 from disputatio.runtime.composition import RuntimeDeps
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import load_prior_round
-from disputatio.runtime.layout import CHANGES_PATCH_NAME, PROPOSAL_NAME
+from disputatio.runtime.layout import (
+    CHANGES_PATCH_NAME,
+    PROPOSAL_NAME,
+    VERIFICATION_NAME,
+)
+from disputatio.verifier import GateSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,11 +40,18 @@ class StepContext:
     `base_commit` приходит из снапшота `config.toml` (ADR-003): `HEAD` на
     старте сессии — единственная цель сброса раунда 1, и восстановима она
     только из файла, пережившего перезапуск процесса.
+
+    `gates` — тот же список `GateSpec`, из которого собран `deps.verifier`.
+    Он нужен именно здесь, а не внутри верификатора: пакет `verifier` от
+    `EventSink` не зависит и `gate_started` эмитить не может, а событие
+    «гейт пошёл» обязано уйти в журнал ДО прогона — то есть до того, как у
+    оркестратора появится хоть один `GateResult` ([DESIGN-004]).
     """
 
     deps: RuntimeDeps
     fsm: SessionFsm
     base_commit: str
+    gates: tuple[GateSpec, ...] = field(default=())
 
     @property
     def root(self) -> Path:
@@ -98,6 +111,79 @@ async def propose(ctx: StepContext) -> None:
     write_round_artifact(root, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
+
+
+def verify(ctx: StepContext) -> None:
+    """Шаг VERIFYING раунда `ctx.round`: гейт-события, прогон, отчёт.
+
+    `Verifier.verify` синхронен и монолитен: он прогоняет все гейты за один
+    вызов и об `EventSink` не знает — пакет `verifier` от порта событий не
+    зависит ([REQ-010] там же). Поэтому обрамление — работа runtime:
+
+    1. `gate_started` по каждому `GateSpec` — **до** вызова. Позже было бы
+       поздно: UI подписан на `events.jsonl` и обязан показать «идёт
+       `pytest`» пока `pytest` идёт, а не после того, как всё кончилось.
+    2. `gate_finished` по каждому `GateResult` — после. Пара «спека →
+       результат» держится индексом и именем: порядок `report.gates` равен
+       порядку конфигурации, и это гарантия `VerifierRunner`, которую здесь
+       нельзя нарушить — гейты не сортируются и не фильтруются.
+    3. `verification.json` пишется `model_dump_json(by_alias=True)`: поле
+       схемы называется `schema`, а атрибут модели — `schema_`.
+
+    `overall == fail` шаг не прерывает и переход `VERIFYING → REVIEWING` не
+    отменяет ([REQ-004]): провалившийся гейт — это материал для ревьюера, а
+    не приговор раунду. Правило выражено отсутствием кода — в теле шага нет
+    ни ветвления, ни `raise`, — а не проверкой: проверку можно было бы
+    случайно инвертировать, отсутствующую ветку инвертировать нельзя.
+    """
+    round_no = ctx.round
+
+    for spec in ctx.gates:
+        _emit_gate_event(
+            ctx, EventType.GATE_STARTED, {"name": spec.name, "cmd": spec.cmd}
+        )
+
+    report = ctx.deps.verifier.verify(round_no)
+
+    for result in report.gates:
+        _emit_gate_event(
+            ctx,
+            EventType.GATE_FINISHED,
+            {
+                "name": result.name,
+                "status": result.status.value,
+                "exit_code": result.exit_code,
+            },
+        )
+
+    write_round_artifact(
+        ctx.root,
+        round_no,
+        VERIFICATION_NAME,
+        report.model_dump_json(by_alias=True),
+    )
+
+
+def _emit_gate_event(
+    ctx: StepContext, event_type: EventType, payload: dict[str, Any]
+) -> None:
+    """Кладёт в журнал событие гейта §8 от имени `verifier`.
+
+    Источник — `EventSource.VERIFIER`, а не `ORCHESTRATOR`: для подписчика
+    важно, чей это поток, а не кто физически дописал строку. `ts` берётся у
+    инжектированных часов сессии — второй источник времени сделал бы
+    `events.jsonl` недетерминированным в тестах ([REQ-001]).
+    """
+    ctx.deps.sink.emit(
+        Event(
+            ts=ctx.deps.now(),
+            session=ctx.fsm.state.session_id,
+            round=ctx.round,
+            source=EventSource.VERIFIER,
+            type=event_type,
+            payload=payload,
+        )
+    )
 
 
 def _require_author(ctx: StepContext) -> None:
