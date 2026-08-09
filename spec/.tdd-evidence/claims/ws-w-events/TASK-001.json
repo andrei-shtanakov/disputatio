@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/events/test_paths.py::test_session_dir_under_root",
+  "expected_behavior": "session_dir(root) == root/.disputatio; единая точка построения путей .disputatio/",
+  "baseline_sha": "69c99c717beba915217773cf62ab314e296a4bf1",
+  "red_sha": "3aa48bcbec8e4c5185d2de7a1a69875b2583fba1",
+  "created_at": "2026-08-09T06:23:30.203223+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_paths.py"
+}

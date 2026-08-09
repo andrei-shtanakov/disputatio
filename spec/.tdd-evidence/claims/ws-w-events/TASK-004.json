@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/events/test_state_store.py::test_save_then_load_roundtrip",
+  "expected_behavior": "",
+  "baseline_sha": "16f63c1de8f4c7a0f485881e703d2acf55e539fa",
+  "red_sha": "08060923a9128c1b11638086b96cf72a81b6421d",
+  "created_at": "2026-08-09T11:29:24.644675+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_state_store.py"
+}
