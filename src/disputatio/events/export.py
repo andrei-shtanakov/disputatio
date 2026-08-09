@@ -41,8 +41,10 @@ def write_result(
     только он ([REQ-002]), иначе вызов упадёт `FileNotFoundError`.
 
     `ValueError`, если имя файла — не простое имя внутри `result/` или занято
-    манифестом. Имена проверяются все до первой записи, поэтому неудачный
-    вызов не оставляет частичного экспорта.
+    манифестом; `TypeError`, если `manifest` не сериализуем в JSON. И имена, и
+    сам манифест проверяются до первой записи, поэтому неудачный вызов не
+    оставляет ни частичного экспорта, ни прежнего манифеста рядом с уже
+    перезаписанными файлами.
 
     `sha256` считается по тем же UTF-8 байтам, что уходят в файл, — контент
     сериализуется ровно один раз ([REQ-012]).
@@ -51,19 +53,19 @@ def write_result(
     for name in payloads:
         _check_file_name(name)
 
-    directory = result_dir(root)
-    for name, data in payloads.items():
-        atomic_write(directory / name, data)
-
     checksums = {
         name: {"sha256": hashlib.sha256(data).hexdigest()}
         for name, data in payloads.items()
     }
     document = {**manifest, "files": checksums}
-    atomic_write(
-        directory / MANIFEST_NAME,
-        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+    serialized = (
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
     )
+
+    directory = result_dir(root)
+    for name, data in payloads.items():
+        atomic_write(directory / name, data)
+    atomic_write(directory / MANIFEST_NAME, serialized)
 
 
 def _check_file_name(name: str) -> None:
@@ -73,8 +75,13 @@ def _check_file_name(name: str) -> None:
     путь) увёл бы запись мимо `result/`. Имя манифеста зарезервировано: файл
     вызывающей стороны был бы затёрт манифестом, который при этом обещает его
     checksum.
+
+    Сравнение с именем манифеста — регистронезависимое: на case-insensitive
+    ФС (APFS, NTFS) `Manifest.JSON` — тот же файл, и точное сравнение пропустило
+    бы ровно тот случай, ради которого имя зарезервировано. Правило одинаково на
+    всех платформах: экспорт должен переноситься между ФС.
     """
     if not name or name in {".", ".."} or "/" in name or "\\" in name:
         raise ValueError(f"имя файла результата должно быть простым именем: {name!r}")
-    if name == MANIFEST_NAME:
+    if name.casefold() == MANIFEST_NAME.casefold():
         raise ValueError(f"имя {name!r} зарезервировано за манифестом экспорта")
