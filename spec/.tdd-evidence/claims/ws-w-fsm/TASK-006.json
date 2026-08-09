@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/core/test_deciding.py::test_deciding_inputs_is_frozen",
+  "expected_behavior": "",
+  "baseline_sha": "1a403e0d082dd889648e596ff26823538f8bc6c6",
+  "red_sha": "36306a49a0450ea15188a30ddff8c8755e4826c8",
+  "created_at": "2026-08-09T06:26:35.927938+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_deciding.py"
+}
