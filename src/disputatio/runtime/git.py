@@ -30,6 +30,20 @@ from disputatio.runtime.errors import (
 GIT_USER_NAME: Final = "disputatio"
 GIT_USER_EMAIL: Final = "disputatio@localhost"
 
+# Имя служебного каталога сессии. Дублирует `events.paths.SESSION_DIR_NAME`
+# намеренно: `paths` объявлен внутренней деталью раскладки `.disputatio/` и
+# наружу пакетом `events` не экспортируется, а git-дисциплина обязана знать,
+# что из дерева исключить.
+SESSION_DIR_NAME: Final = ".disputatio"
+
+# Pathspec диффа: всё дерево от корня репозитория минус каталог сессии.
+# `:/` и магия `top` привязывают шаблоны к корню, а не к `cwd`; исключающий
+# pathspec без положительного ничего не отбирает, поэтому пара неразделима.
+# `.disputatio/` — журнал оркестратора, а не работа автора: попав в патч,
+# он стал бы предметом ревью, а попав в индекс через intent-to-add — частью
+# коммита раунда.
+_TREE_PATHSPEC: Final = (":/", f":(exclude,top){SESSION_DIR_NAME}")
+
 _IDENTITY_ARGS: Final = (
     "-c",
     f"user.name={GIT_USER_NAME}",
@@ -118,8 +132,8 @@ def preflight(root: Path) -> None:
 class GitCli:
     """`GitOps` поверх git CLI: единственная реализация порта (ADR-005).
 
-    Остальные методы порта приходят своими задачами ([DESIGN-011]…
-    [DESIGN-013]) — заглушки здесь нужны, чтобы `RuntimeDeps.git` уже
+    Остальные методы порта приходят своими задачами ([DESIGN-011],
+    [DESIGN-012]) — заглушки здесь нужны, чтобы `RuntimeDeps.git` уже
     удовлетворял `GitOps`, и при этом не отдают поведения, которое эти
     задачи обязаны доказать собственным red-чекпоинтом.
     """
@@ -127,8 +141,20 @@ class GitCli:
     root: Path
 
     def diff_head(self) -> str:
-        """TODO: [TASK-005] — `git diff HEAD` с intent-to-add ([DESIGN-013])."""
-        raise NotImplementedError("GitCli.diff_head приходит с [DESIGN-013]")
+        """`git diff HEAD` — unified-дифф рабочего дерева ([DESIGN-013]).
+
+        Диффу предшествует `git add -N` (intent-to-add): `git diff HEAD`
+        сравнивает `HEAD` с индексом и рабочим деревом, а untracked-файлов
+        не видит ни та, ни другая сторона — без intent-to-add созданный
+        автором модуль исчез бы из ревью бесследно. Записи intent-to-add
+        содержимого не несут, поэтому коммит раунда они не подменяют.
+
+        Пустая строка — валидный результат (режим `analyze`): артефакт
+        пишется всегда, в том числе пустым, и шаг ошибкой не считается
+        ([REQ-013]).
+        """
+        _checked(self.root, "add", "--intent-to-add", "--", *_TREE_PATHSPEC)
+        return _checked(self.root, "diff", "HEAD", "--", *_TREE_PATHSPEC)
 
     def commit_round(self, round_no: int) -> None:
         """TODO: [TASK-006] — коммит `disputatio: round NNN` ([DESIGN-011])."""
