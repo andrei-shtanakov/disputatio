@@ -18,6 +18,7 @@ from disputatio.runtime.composition import (
 )
 from disputatio.runtime.config import AgentConfig, LimitsConfig, RuntimeConfig
 from disputatio.runtime.errors import (
+    BaseRevisionNotFound,
     ConfigError,
     DirtyWorkingTree,
     DisputatioError,
@@ -33,6 +34,7 @@ from disputatio.runtime.git import (
     ROUND_COMMIT_TEMPLATE,
     GitCli,
     GitOps,
+    base_rev,
     preflight,
 )
 from disputatio.runtime.purity import (
@@ -48,6 +50,7 @@ __all__ = [
     "ROUND_COMMIT_TEMPLATE",
     "AdapterFactory",
     "AgentConfig",
+    "BaseRevisionNotFound",
     "ConfigError",
     "DirtyWorkingTree",
     "DisputatioError",
@@ -63,6 +66,7 @@ __all__ = [
     "RuntimeDeps",
     "SessionNotFound",
     "UnknownAdapterError",
+    "base_rev",
     "build_runtime",
     "preflight",
     "scan_package_purity",

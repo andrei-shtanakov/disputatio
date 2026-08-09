@@ -32,6 +32,16 @@ class EmptyRepository(DisputatioError):
     """
 
 
+class BaseRevisionNotFound(DisputatioError):
+    """Цель `git reset` перед PROPOSING не вычисляется ([DESIGN-012]).
+
+    Либо `base_commit` из конфига не разрешается в коммит, либо в истории
+    нет коммита предыдущего раунда. Отдельный класс, а не `GitCommandError`:
+    сбоя git тут нет — есть история, которая не совпала с ожиданиями сессии,
+    и молчаливый откат к `HEAD` вместо ошибки стёр бы принятую работу.
+    """
+
+
 class GitCommandError(DisputatioError):
     """git-команда не выполнилась: ненулевой код либо git отсутствует в PATH.
 

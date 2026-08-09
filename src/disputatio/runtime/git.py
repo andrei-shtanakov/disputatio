@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
 from disputatio.runtime.errors import (
+    BaseRevisionNotFound,
     DirtyWorkingTree,
     EmptyRepository,
     GitCommandError,
@@ -164,6 +165,95 @@ def preflight(root: Path) -> None:
         )
 
 
+def base_rev(root: Path, round_no: int, *, base_commit: str) -> str:
+    """Цель `git reset` перед PROPOSING раунда `round_no` ([DESIGN-012]).
+
+    Вычисляется, а не хранится в изменяемом состоянии ([REQ-012]):
+
+        base_rev(N) = коммит «disputatio: round (N-1):03d»   при N > 1
+                    = base_commit                            при N == 1
+
+    Оба источника лежат на диске — история git и снапшот `config.toml`, —
+    поэтому цель восстанавливается после перезапуска процесса и шаг остаётся
+    идемпотентным ([REQ-015]).
+
+    Возвращается полный SHA, а не то, что подали на вход: `base_commit` в
+    конфиге вправе быть сокращённым, а `git reset` следующего раунда обязан
+    получить однозначную ревизию.
+
+    Ненайденная цель — `BaseRevisionNotFound`. Молчаливый откат к `HEAD`
+    был бы худшим из возможных ответов: на входе в раунд `HEAD` — это
+    состояние прерванной попытки, и сброс на него сохранил бы ровно то, от
+    чего сброс избавляет.
+    """
+    if round_no < 1:
+        raise BaseRevisionNotFound(
+            f"раунды нумеруются с 1, а цель сброса запрошена для раунда "
+            f"{round_no} — вычислять её не из чего"
+        )
+    if round_no == 1:
+        return _resolve_commit(root, base_commit)
+    subject = ROUND_COMMIT_TEMPLATE.format(round=round_no - 1)
+    found = _find_round_commit(root, subject)
+    if found is None:
+        raise BaseRevisionNotFound(
+            f"в истории {root} нет коммита «{subject}» — раунд {round_no} "
+            "сбрасывать не на что; история сессии оборвана либо переписана"
+        )
+    return found
+
+
+def _resolve_commit(root: Path, rev: str) -> str:
+    """Полный SHA коммита `rev`; неразрешимая ревизия — доменная ошибка.
+
+    `^{commit}` обязателен: без него `rev-parse` подтвердит и тег, и дерево,
+    а `git reset --hard` на не-коммит ушёл бы в git-ошибку на шаг позже —
+    уже внутри PROPOSING, а не при вычислении цели.
+    """
+    completed = _run(root, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+    if completed.returncode != 0:
+        raise BaseRevisionNotFound(
+            f"ревизия {rev} не разрешается в коммит репозитория {root}: "
+            "сессия стартовала в другом репозитории либо история переписана"
+        )
+    return completed.stdout.strip()
+
+
+def _find_round_commit(root: Path, subject: str) -> str | None:
+    """SHA ближайшего к `HEAD` коммита с сообщением ровно `subject`.
+
+    `--grep` только сужает выборку (`--fixed-strings` — чтобы шаблон не
+    зависел от диалекта регулярок в конкретной сборке git), а решает
+    **точное** сравнение заголовка в Python: по вхождению подстроки
+    `fixup! disputatio: round 003` и `disputatio: round 003 (wip)` прошли бы
+    за коммит раунда, и сброс ушёл бы на чужую работу. Оно же делает разбор
+    нечувствительным к лишним строкам, которые подмешивает локальный конфиг
+    пользователя (`log.showSignature`): ни одна из них не совпадёт с
+    сообщением целиком.
+
+    Поиск идёт по предкам `HEAD`, а не по всем ссылкам: чужая ветка — в том
+    числе оставшаяся от прошлой сессии в этом же репозитории — вправе нести
+    своё «disputatio: round NNN», и сброс текущей ветки на неё стёр бы
+    принятую работу. Коммит раунда, ставший недостижимым после сброса,
+    целью по той же причине уже не является.
+
+    Отсутствие — `None`: решение, ошибка это или нет, принимает вызывающий.
+    """
+    log = _checked(
+        root,
+        "log",
+        "--format=%H %s",
+        "--fixed-strings",
+        f"--grep={subject}",
+        "HEAD",
+    )
+    for line in log.splitlines():
+        sha, _, found = line.partition(" ")
+        if found == subject:
+            return sha
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class GitCli:
     """`GitOps` поверх git CLI: единственная реализация порта (ADR-005).
@@ -250,12 +340,58 @@ class GitCli:
         )
 
     def reset_hard(self, rev: str) -> None:
-        """TODO: [TASK-007] — `git reset --hard <rev>` ([DESIGN-012])."""
-        raise NotImplementedError("GitCli.reset_hard приходит с [DESIGN-012]")
+        """`git reset --hard <rev>` — сброс дерева к цели ([DESIGN-012]).
+
+        Именно `--hard`: `--mixed` и `--soft` оставили бы правку прерванной
+        попытки в рабочем дереве, и следующий `changes.patch` предъявил бы
+        ревьюеру чужую работу как работу автора.
+
+        `.disputatio/` сброс не трогает: каталог сессии не отслеживается, а
+        `reset` работает по tracked-файлам. Untracked-файлы прерванной
+        попытки он по той же причине не убирает — это дело `clean`.
+
+        Завершающий `--` отделяет ревизию от путей: `rev`, совпавший с
+        именем файла в дереве, без него неоднозначен, и git отказал бы в
+        сбросе (`Cannot do hard reset with paths`) вместо того, чтобы
+        сбросить дерево на одноимённый коммит.
+        """
+        _checked(self.root, "reset", "--hard", "--quiet", rev, "--")
 
     def clean(self) -> None:
-        """TODO: [TASK-007] — уборка untracked прерванной попытки ([DESIGN-012])."""
-        raise NotImplementedError("GitCli.clean приходит с [DESIGN-012]")
+        """Убирает untracked-файлы прерванной попытки ([DESIGN-012]).
+
+        Без уборки новые файлы пережили бы `reset_hard` (он их не видит) и
+        попали бы в `changes.patch` следующей попытки: `diff_head` тянет
+        untracked через intent-to-add, и чужой черновик стал бы работой
+        автора — идемпотентность шага ([REQ-015]) на этом кончается.
+
+        Убирается ровно то, что `diff_head` показал бы как работу автора:
+        тот же `_TREE_PATHSPEC` — всё дерево репозитория (`:/`) минус
+        каталог сессии. Правка вне `root` в патч попадает, значит и уборкой
+        должна сниматься. Один и тот же pathspec на обе операции — не
+        экономия: разойдись они, `changes.patch` показывал бы одно
+        множество файлов, а уборка снимала другое.
+
+        Каталог сессии закрыт вдобавок `--exclude`, и это не дубль
+        pathspec'а: когда сам `root` — untracked-каталог (сессия в свежем
+        подкаталоге чужого репозитория), под `:/` попадает он целиком, а
+        исключение пути внутри него уже ничего не решает. Гейт здесь —
+        gitignore-шаблон, он же спасает журнал до первого принятого раунда,
+        пока правила в `.git/info/exclude` ещё нет ([DESIGN-011]).
+
+        Игнорируемые файлы не трогаются вовсе: `-x` не передаётся, поэтому
+        сборочный мусор пользователя уборка раунда не выносит.
+        """
+        _checked(
+            self.root,
+            "clean",
+            "--force",
+            "-d",
+            "--quiet",
+            f"--exclude={_EXCLUDE_ENTRY}",
+            "--",
+            *_TREE_PATHSPEC,
+        )
 
 
 def _unstage_session_dir(root: Path) -> None:
