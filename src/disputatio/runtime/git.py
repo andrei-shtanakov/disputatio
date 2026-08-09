@@ -192,8 +192,17 @@ class GitCli:
         Пустая строка — валидный результат (режим `analyze`): артефакт
         пишется всегда, в том числе пустым, и шаг ошибкой не считается
         ([REQ-013]).
+
+        Каталог сессии снимается с индекса отдельным шагом, а не исключающим
+        pathspec на месте `add`: со второго раунда `.disputatio/` уже лежит
+        в `.git/info/exclude` ([DESIGN-011]), а `git add` с явно названным
+        игнорируемым путём — пусть даже названным в `:(exclude)` — считает
+        это ошибкой и возвращает код 1. Дифф исключающий pathspec сохраняет:
+        игнор на `git diff` не влияет, а каталог сессии обязан остаться вне
+        патча и когда он в репозитории пользователя уже отслеживается.
         """
-        _checked(self.root, "add", "--intent-to-add", "--", *_TREE_PATHSPEC)
+        _checked(self.root, "add", "--intent-to-add", "--", ":/")
+        _unstage_session_dir(self.root)
         return _checked(self.root, "diff", *_DIFF_FLAGS, "HEAD", "--", *_TREE_PATHSPEC)
 
     def commit_round(self, round_no: int) -> None:
@@ -219,7 +228,7 @@ class GitCli:
         """
         _exclude_session_dir(self.root)
         _checked(self.root, "add", "--all")
-        _checked(self.root, "reset", "--quiet", "--", SESSION_DIR_NAME)
+        _unstage_session_dir(self.root)
         staged = _checked(
             self.root, "diff", "--cached", "--name-only", "HEAD", "--", *_TREE_PATHSPEC
         )
@@ -247,6 +256,19 @@ class GitCli:
     def clean(self) -> None:
         """TODO: [TASK-007] — уборка untracked прерванной попытки ([DESIGN-012])."""
         raise NotImplementedError("GitCli.clean приходит с [DESIGN-012]")
+
+
+def _unstage_session_dir(root: Path) -> None:
+    """Возвращает индексу состояние `HEAD` по `.disputatio/` ([DESIGN-011]).
+
+    Снимает и записи intent-to-add, и содержимое, затянутое `git add --all`:
+    `.disputatio/` — журнал оркестратора, а не работа автора, и ни в патч,
+    ни в коммит раунда попасть не вправе. Путь передаётся голым, без магии
+    `:(exclude)`: он относителен `cwd` (== `root`), а `git add` с явно
+    названным игнорируемым путём падает кодом 1. Пустое совпадение ошибкой
+    не считается — до первого раунда каталога может ещё не быть.
+    """
+    _checked(root, "reset", "--quiet", "--", SESSION_DIR_NAME)
 
 
 def _exclude_session_dir(root: Path) -> None:
