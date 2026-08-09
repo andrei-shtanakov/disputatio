@@ -16,7 +16,6 @@
 
 import os
 import subprocess
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -160,23 +159,31 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
     Код возврата остаётся вызывающему: для `rev-parse` ненулевой код — это
     ответ «нет» (не репозиторий, нет `HEAD`), а не сбой. Трансляцию сбоя в
-    доменную ошибку делает `_checked`.
+    доменную ошибку делает `_checked` — кроме одного случая: отсутствие
+    самого клиента кода возврата не даёт, `exec` роняет `FileNotFoundError`
+    мимо любой проверки, поэтому он переводится здесь (NFR-003).
     """
-    return subprocess.run(
-        ["git", *_IDENTITY_ARGS, *args],
-        cwd=root,
-        env=_env(),
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        return subprocess.run(
+            ["git", *_IDENTITY_ARGS, *args],
+            cwd=root,
+            env=_env(),
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError as exc:
+        raise GitCommandError(
+            "git не найден в PATH: disputatio ведёт историю сессии коммитами, "
+            "поэтому без git-клиента сессия не стартует"
+        ) from exc
 
 
-def _env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+def _env() -> dict[str, str]:
     """Окружение git-вызова: без унаследованного, с отключённым конфигом."""
-    env = dict(os.environ if base is None else base)
+    env = dict(os.environ)
     for var in _DROPPED_ENV_VARS:
         env.pop(var, None)
     env["GIT_CONFIG_NOSYSTEM"] = "1"

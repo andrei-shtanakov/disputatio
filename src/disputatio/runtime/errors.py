@@ -33,7 +33,9 @@ class EmptyRepository(DisputatioError):
 
 
 class GitCommandError(DisputatioError):
-    """git-команда вернула ненулевой код; текст несёт и команду, и stderr.
+    """git-команда не выполнилась: ненулевой код либо git отсутствует в PATH.
+
+    Текст несёт и команду, и stderr.
 
     Замена `CalledProcessError`, чей `__str__` печатает только код возврата:
     без stderr причина сбоя не восстанавливается ни из отчёта, ни из
