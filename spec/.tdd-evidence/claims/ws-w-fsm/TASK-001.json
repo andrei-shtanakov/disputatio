@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/core/test_transitions.py::test_full_graph_is_pinned",
+  "expected_behavior": "Полный граф переходов §2 (DESIGN-001) запинен снимком всех рёбер TRANSITIONS",
+  "baseline_sha": "69c99c717beba915217773cf62ab314e296a4bf1",
+  "red_sha": "607bb97b97ef3f2e3d699274026da7bc58fbcbf4",
+  "created_at": "2026-08-09T04:32:37.608706+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_transitions.py"
+}

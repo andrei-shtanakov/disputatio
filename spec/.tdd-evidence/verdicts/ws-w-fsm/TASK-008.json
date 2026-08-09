@@ -1,0 +1,12 @@
+{
+  "schema": "tdd-verdict/v1",
+  "task_id": "TASK-008",
+  "claim_revision": 0,
+  "red_sha": "",
+  "verified_head": "4d7b5c304408621c82d8065677a3259955a7d6aa",
+  "red_replay": "",
+  "selector_at_head": "",
+  "verdict": "WAIVED",
+  "checked_at": "2026-08-09T07:48:16.637199+00:00",
+  "notes": "waiver: Operator-fix: test_deadlock_and_budget_hit_reach_exporting_via_escalated сравнивал outcome.value (Outcome enum, lowercase, напр. 'deadlock') там, где реализация обязана писать SessionPhase-значение (uppercase, 'DEADLOCK') — подлинная опечатка автора теста, не слабость ассерта. Реализация apply_decision/is_partial уже была верна на момент диагностики (подтверждено: исправленный тест проходит немедленно, без изменений в machine.py). Честный красный цикл для исправленной строки теста воссоздать нельзя — тест и реализация сходятся сразу. Исправление: outcome.value -> outcome.name (совпадает по значению с SessionPhase per имени члена enum) в двух ассертах. См. коммит с меткой 'fix(TASK-008)'."
+}
