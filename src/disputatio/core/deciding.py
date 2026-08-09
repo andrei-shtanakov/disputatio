@@ -95,26 +95,25 @@ def _passes_anti_sycophancy(inputs: DecidingInputs) -> bool:
     return inputs.mode is Mode.ANALYZE and not inputs.patch_current.strip()
 
 
-def is_converged(inputs: DecidingInputs) -> bool:
-    """Критерий CONVERGED §5.1, включая анти-сикофантию раунда 1 [REQ-007/008]."""
+def _converged_except_anti_sycophancy(inputs: DecidingInputs) -> bool:
+    """approve+gates_pass+no_carried_blocker, без учёта анти-сикофантии (§5.1)."""
     if inputs.review.verdict is not Verdict.APPROVE:
         return False
     if not _gates_pass(inputs):
         return False
-    if not _no_carried_blocker(inputs):
-        return False
-    return _passes_anti_sycophancy(inputs)
+    return _no_carried_blocker(inputs)
+
+
+def is_converged(inputs: DecidingInputs) -> bool:
+    """Критерий CONVERGED §5.1, включая анти-сикофантию раунда 1 [REQ-007/008]."""
+    return _converged_except_anti_sycophancy(inputs) and _passes_anti_sycophancy(inputs)
 
 
 def _anti_sycophancy_blocked(inputs: DecidingInputs) -> bool:
     """True, если converged не сработал именно из-за анти-сикофантии раунда 1."""
-    if inputs.review.verdict is not Verdict.APPROVE:
-        return False
-    if not _gates_pass(inputs):
-        return False
-    if not _no_carried_blocker(inputs):
-        return False
-    return not _passes_anti_sycophancy(inputs)
+    return _converged_except_anti_sycophancy(inputs) and not _passes_anti_sycophancy(
+        inputs
+    )
 
 
 def _budget_hit_reason(inputs: DecidingInputs) -> str | None:
@@ -127,8 +126,16 @@ def _budget_hit_reason(inputs: DecidingInputs) -> str | None:
 
 
 def _oscillation_reason(inputs: DecidingInputs) -> str | None:
-    """Diff-similarity, затем repeated-issue, в этом порядке (DESIGN-006) [REQ-011]."""
-    if inputs.patch_two_back is not None:
+    """Diff-similarity, затем repeated-issue, в этом порядке (DESIGN-006) [REQ-011].
+
+    Diff-similarity пропускается для `analyze`: в этом режиме `patch_current`
+    всегда пуст, а `patch_similarity("", "") == 1.0` (два пустых патча
+    считаются идентичными по определению) ложно триггернуло бы осцилляцию
+    на каждой analyze-сессии, дошедшей до раунда 3, хотя правки кода там в
+    принципе не производятся — `_gates_pass` для `analyze` делает такое же
+    исключение.
+    """
+    if inputs.mode is not Mode.ANALYZE and inputs.patch_two_back is not None:
         similarity = patch_similarity(inputs.patch_current, inputs.patch_two_back)
         if similarity > OSCILLATION_DIFF_THRESHOLD:
             return REASON_OSCILLATION_DIFF
