@@ -16,6 +16,7 @@
 
 import shlex
 import subprocess
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,10 +36,12 @@ class RunOutcome:
     `error` несёт причину несостоявшегося запуска, `duration_s` — время
     жизни процесса ([DESIGN-007]).
 
-    Сам `run_gate_command` такие исходы пока не возвращает: несостоявшийся
-    запуск он выпускает наружу исключением, а `duration_s` не заполняет
-    ([DESIGN-007]). Значения со skip-семантикой конструирует вызывающий
-    код, отображающий исход в `GateResult` ([DESIGN-006]).
+    Состоявшийся запуск `run_gate_command` всегда возвращает с
+    заполненным `duration_s`; `None` остаётся только у исходов со
+    skip-семантикой, которые конструирует вызывающий код, отображающий
+    исход в `GateResult` ([DESIGN-006], [REQ-006]). Несостоявшийся запуск
+    `run_gate_command` по-прежнему выпускает наружу исключением, а не
+    исходом с `error`.
     """
 
     exit_code: int | None = None
@@ -64,6 +67,13 @@ def run_gate_command(
     держится на строках: одна аномально длинная строка без переводов
     материализуется целиком — побайтового лимита [DESIGN-005] не вводит.
 
+    `duration_s` — секунды по `time.monotonic()` от старта процесса до
+    его завершения ([REQ-006], [DESIGN-007]). Монотонные часы, а не
+    `time.time()`: коррекция системных часов посреди работы gate не должна
+    делать длительность отрицательной или скачкообразной. Замер снимается
+    здесь, а не в вызывающем коде, поэтому в него входит и чтение хвоста
+    из пайпа — пока процесс жив, его вывод и есть часть его работы.
+
     stdout и stderr объединяются в один поток — хвост сохраняет реальный
     порядок интерливинга; `errors="replace"` защищает захват от не-UTF-8
     вывода. Исключения запуска (`FileNotFoundError`, `ValueError` разбора
@@ -86,6 +96,7 @@ def run_gate_command(
         raise ValueError("empty command")
     if tail_lines < 1:
         raise ValueError(f"tail_lines must be >= 1, got {tail_lines}")
+    started = time.monotonic()
     with subprocess.Popen(
         argv,
         shell=False,
@@ -102,4 +113,8 @@ def run_gate_command(
             for line in stream:
                 tail.append(line.rstrip("\n"))
         exit_code = proc.wait()
-    return RunOutcome(exit_code=exit_code, tail="\n".join(tail))
+    return RunOutcome(
+        exit_code=exit_code,
+        tail="\n".join(tail),
+        duration_s=time.monotonic() - started,
+    )
