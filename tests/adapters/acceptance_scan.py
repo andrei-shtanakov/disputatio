@@ -11,9 +11,14 @@
   ([REQ-012], [DESIGN-002]).
 
 Как и `gate_scan.py`, читает исходники через `ast.parse` — ничего не исполняет.
-Известное ограничение то же самое: проверка синтаксическая и обходится
-динамическим `getattr`/`__import__`. Здесь это принимается: acceptance-критерии
-[REQ-012]/[REQ-014] сформулированы про явные вызовы и явные маркеры.
+Имена вызовов сначала раскрываются по импортам модуля (`_import_bindings`),
+поэтому `from subprocess import run`, `import subprocess as sp` и
+`from pytest import skip` ловятся наравне с точечной записью.
+
+Известное ограничение то же самое, что у `gate_scan.py`: проверка синтаксическая
+и обходится динамическим `getattr`/`__import__`. Здесь это принимается:
+acceptance-критерии [REQ-012]/[REQ-014] сформулированы про явные вызовы и явные
+маркеры.
 """
 
 import ast
@@ -271,38 +276,70 @@ def collect_test_node_ids(directory: Path) -> set[str]:
 
 
 def find_skip_markers(source: str) -> list[str]:
-    """Появления `skip`/`skipif`/`xfail`/`importorskip` — маркеры и вызовы."""
-    return sorted(
-        {
-            ast.unparse(node)
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Attribute) and node.attr in SKIP_MARK_NAMES
-        }
-    )
+    """Появления `skip`/`skipif`/`xfail`/`importorskip` — маркеры и вызовы.
+
+    Ловит и точечную форму (`pytest.mark.skipif`), и голое имя, втянутое
+    `from pytest import skip`: имя вызова раскрывается по импортам модуля.
+    """
+    tree = ast.parse(source)
+    bindings = _import_bindings(tree)
+    found = {
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr in SKIP_MARK_NAMES
+    }
+    found |= {
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _resolve_call(node, bindings).rpartition(".")[2] in SKIP_MARK_NAMES
+    }
+    return sorted(found)
 
 
 def find_binary_probes(source: str) -> list[str]:
-    """Вызовы, способные дотянуться до настоящего бинаря ([REQ-012])."""
+    """Вызовы, способные дотянуться до настоящего бинаря ([REQ-012]).
+
+    Сравнивается раскрытое по импортам имя, поэтому `import subprocess as sp`
+    и `from subprocess import run` не проходят мимо; в отчёт попадает исходное
+    написание вызова.
+    """
+    tree = ast.parse(source)
+    bindings = _import_bindings(tree)
     return sorted(
         {
-            called
-            for node in ast.walk(ast.parse(source))
+            ast.unparse(node.func)
+            for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and (called := ast.unparse(node.func)) in PROBE_CALLS
+            and _resolve_call(node, bindings) in PROBE_CALLS
         }
     )
 
 
 def find_subprocess_exec(source: str) -> list[str]:
-    """Вызовы порождения процесса — по хвосту имени, включая `from`-импорт."""
-    return sorted(
-        {
-            ast.unparse(node.func)
-            for node in ast.walk(ast.parse(source))
-            if isinstance(node, ast.Call)
-            and ast.unparse(node.func).rpartition(".")[2] in SUBPROCESS_EXEC_NAMES
-        }
-    )
+    """Порождение процесса — вызовы по хвосту имени и сам факт импорта.
+
+    Импорт учитывается отдельно от вызова: `from asyncio import
+    create_subprocess_exec` в чужом модуле нарушает [DESIGN-002] и без вызова —
+    иначе шов расползается через re-export, а grep-инвариант чек-листа TASK-010
+    расходится с исполняемой формой.
+    """
+    tree = ast.parse(source)
+    bindings = _import_bindings(tree)
+    found = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in SUBPROCESS_EXEC_NAMES
+    }
+    found |= {
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _resolve_call(node, bindings).rpartition(".")[2] in SUBPROCESS_EXEC_NAMES
+    }
+    return sorted(found)
 
 
 def scan_skip_markers(directory: Path) -> dict[str, list[str]]:
@@ -335,6 +372,33 @@ def _scan_tests(
         if hits:
             found[path.name] = hits
     return found
+
+
+def _import_bindings(tree: ast.AST) -> dict[str, str]:
+    """`{локальное имя: канонический путь}` — снимает alias'ы импортов модуля."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                separator = "." if module else ""
+                bindings[alias.asname or alias.name] = (
+                    f"{module}{separator}{alias.name}"
+                )
+    return bindings
+
+
+def _resolve_call(node: ast.Call, bindings: dict[str, str]) -> str:
+    """Имя вызываемого с раскрытым alias'ом: `sp.run` → `subprocess.run`."""
+    called = ast.unparse(node.func)
+    head, _, tail = called.partition(".")
+    canonical = bindings.get(head)
+    if canonical is None:
+        return called
+    return f"{canonical}.{tail}" if tail else canonical
 
 
 def _claim_path(task_id: str) -> Path:
