@@ -18,10 +18,20 @@ resume, но молчать о сломанном журнале нельзя; �
 `transition()`, т.е. с тем же write-ahead и событием. `Decision.round` берётся
 из `current_round` ДО первого hop'а: revise-петля `CONTINUE` увеличивает
 раунд, но решение принадлежит раунду N, не N+1 (I3 [REQ-015]).
+
+Инвариант I4 [DESIGN-008]/[REQ-014]: счётчик повторов текущего шага при
+schema-невалидном выводе агента — эфемерный, живёт в `SessionFsm`, а не в
+`SessionState` (ADR-W2-05: после kill шаг перезапускается с нуля, что для
+I4 безопасно консервативно). `handle_schema_invalid` инкрементирует счётчик
+и либо возвращает `RetryAction.RETRY` (без касания портов), либо — при
+исчерпании лимита — проводит `transition(FAILED)` и возвращает
+`RetryAction.FAILED`. Сброс — явный `handle_step_success()` либо любой
+успешный `transition()` (новый шаг — новый лимит).
 """
 
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from enum import StrEnum
 
 from disputatio.contracts import (
     Decision,
@@ -65,6 +75,13 @@ _PARTIAL_OUTCOMES: frozenset[Outcome] = frozenset(
 )
 
 
+class RetryAction(StrEnum):
+    """Исход `handle_schema_invalid` — инвариант I4 [DESIGN-008]."""
+
+    RETRY = "retry"
+    FAILED = "failed"
+
+
 class SessionFsm:
     """FSM одной сессии; все эффекты — через ports (I2 write-ahead)."""
 
@@ -81,6 +98,7 @@ class SessionFsm:
         self._store = store
         self._sink = sink
         self._now = now
+        self._schema_retry_count = 0
 
     @property
     def state(self) -> SessionState:
@@ -117,7 +135,27 @@ class SessionFsm:
             )
         )
         self._state = new_state
+        self._schema_retry_count = 0  # новый шаг — новый лимит I4
         return new_state
+
+    def handle_schema_invalid(self, detail: str) -> RetryAction:
+        """Учёт I4: инкремент счётчика повторов текущего шага [DESIGN-008].
+
+        Пока `count <= limits.schema_retries` — `RetryAction.RETRY`, ни
+        состояние, ни порты не тронуты. При исчерпании — `transition(FAILED)`
+        (write-ahead + событие) и `RetryAction.FAILED`. `detail` — сообщение
+        об ошибке валидации агента (§I4); ядро его не интерпретирует, только
+        считает попытки.
+        """
+        self._schema_retry_count += 1
+        if self._schema_retry_count <= self._state.limits.schema_retries:
+            return RetryAction.RETRY
+        self.transition(SessionPhase.FAILED)
+        return RetryAction.FAILED
+
+    def handle_step_success(self) -> None:
+        """Сбрасывает счётчик повторов текущего шага (I4 [DESIGN-008])."""
+        self._schema_retry_count = 0
 
     def apply_decision(self, draft: DecisionDraft) -> tuple[Decision, SessionState]:
         """Материализует `Decision` и проходит цепочку переходов §5 [DESIGN-007].
