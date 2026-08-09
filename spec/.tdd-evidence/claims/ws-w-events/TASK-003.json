@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/events/test_bootstrap.py::test_bootstrap_session_creates_session_directories",
+  "expected_behavior": "",
+  "baseline_sha": "911cea5b79c6a1ff24c158bdfb545fb5ee49d286",
+  "red_sha": "e3df338ee360395a8c0ec7c395de476499036d78",
+  "created_at": "2026-08-09T11:22:11.323438+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_bootstrap.py"
+}
