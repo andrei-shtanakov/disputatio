@@ -34,7 +34,20 @@ _HERMETIC_GIT_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
 }
 
+# `GIT_DIR`/`GIT_WORK_TREE` из окружения перебивают `cwd` — под git-хуком
+# (pre-commit гоняет suite) снимок молча читал бы ВНЕШНИЙ репозиторий, и
+# чистое дерево дало бы «до == после» вообще без участия фикстуры.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
 _PORCELAIN_ARGV = ("git", "status", "--porcelain")
+
+
+def _git_env() -> dict[str, str]:
+    """Окружение снимка: герметичный конфиг без унаследованных путей репозитория."""
+    env = dict(os.environ)
+    for key in _GIT_LOCATION_VARS:
+        env.pop(key, None)
+    return {**env, **_HERMETIC_GIT_ENV}
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +85,7 @@ def porcelain(workdir: Path) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, **_HERMETIC_GIT_ENV},
+        env=_git_env(),
     )
     if result.returncode != 0:
         raise RuntimeError(
