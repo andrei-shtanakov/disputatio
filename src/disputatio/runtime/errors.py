@@ -11,6 +11,8 @@
 config.toml».
 """
 
+from collections.abc import Sequence
+
 
 class DisputatioError(Exception):
     """База доменных ошибок runtime; CLI печатает `.args[0]`, не traceback."""
@@ -71,4 +73,30 @@ class ConfigError(DisputatioError):
 
 
 class ReviewParseError(DisputatioError):
-    """Вывод ревьюера не разобрался в `review.json` после всех retry."""
+    """Текст ревьюера не содержит разбираемого JSON-объекта ([DESIGN-005]).
+
+    Отдельный класс, а не `ValueError`/`json.JSONDecodeError`: «агент
+    ответил прозой» и «агент ответил не той схемой» — разные диагнозы с
+    разными действиями пользователя, и склеивать их в одно техническое
+    исключение значит потерять первый.
+    """
+
+
+class ReviewNotAccepted(DisputatioError):
+    """Ревью схемно валидно, но отвергнуто правилами §4.4 ([REQ-005]).
+
+    Не ошибка агента и не ошибка пользователя, а штатный исход шага
+    REVIEWING: ревью не принято — значит нужен повтор с перечислением
+    причин ([DESIGN-006]). Поэтому причины живут отдельным полем
+    `reasons` machine-readable кодами `contracts.REASON_*`, а не только
+    внутри текста: следующий промпт собирается из них, и разбирать
+    собственное сообщение обратно оркестратор не должен.
+    """
+
+    def __init__(self, reasons: Sequence[str], *, round_no: int) -> None:
+        """Запоминает коды причин и складывает из них строку для CLI."""
+        self.reasons: tuple[str, ...] = tuple(reasons)
+        super().__init__(
+            f"ревью раунда {round_no:03d} не принято правилами §4.4: "
+            f"{', '.join(self.reasons)}"
+        )

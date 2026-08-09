@@ -57,6 +57,17 @@ def load_prior_round(root: Path, round_no: int) -> PriorRound:
     )
 
 
+def load_verification(root: Path, round_no: int) -> VerificationReport | None:
+    """Отчёт проверок раунда `round_no`; нет файла — `None`.
+
+    Отдельно от `load_prior_round`, потому что читается отчёт ТЕКУЩЕГО
+    раунда: шаг REVIEWING выносит вердикт по тем же гейтам, что прогнал
+    шаг VERIFYING (§6.2), и подмена «взять отчёт прошлого раунда» — самая
+    дешёвая ошибка сборки промпта. Разные функции делают её видимой.
+    """
+    return _load(root, round_no, VERIFICATION_NAME, VerificationReport)
+
+
 def _load[T: (Review, VerificationReport, Decision)](
     root: Path, round_no: int, name: str, model: type[T]
 ) -> T | None:
