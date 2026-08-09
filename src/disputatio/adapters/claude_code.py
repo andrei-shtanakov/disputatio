@@ -40,6 +40,10 @@ _MISSING_WORKTREE_OPS = (
     "worktree_remove: read-only (§7) иначе ничем не обеспечен"
 )
 
+_BAD_ROUND_NO = (
+    "round_no должен быть >= 1 (Event.round: ge=1) либо None для событий вне раунда"
+)
+
 
 class ClaudeCodeAdapter:
     """AgentAdapter over the `claude` CLI (SPEC-001 §7/§8)."""
@@ -70,6 +74,8 @@ class ClaudeCodeAdapter:
             worktree_create is None or worktree_remove is None
         ):
             raise ValueError(_MISSING_WORKTREE_OPS)
+        if round_no is not None and round_no < 1:
+            raise ValueError(_BAD_ROUND_NO)
 
     async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
         workspace = self._make_workspace()
@@ -88,8 +94,11 @@ class ClaudeCodeAdapter:
         stdout = cast(AsyncIterator[bytes], process.stdout)
         try:
             async for raw in stdout:
+                # errors="replace": §8 требует, чтобы НИ ОДНА строка не
+                # пропала. Строгий decode на одном битом байте уронил бы
+                # весь turn вместе с уже накопленным текстом.
                 event = translate_line(
-                    raw.decode(),
+                    raw.decode(errors="replace"),
                     parser=self._parse_native_line,
                     session=self.session,
                     source=_EVENT_SOURCE_BY_ROLE[self.role],

@@ -25,6 +25,15 @@ class SubprocessLike(Protocol):
 ProcessLauncher = Callable[..., Awaitable[SubprocessLike] | SubprocessLike]
 
 
+STDOUT_LINE_LIMIT = 1 << 20
+"""Потолок длины строки `stdout`.
+
+Дефолтные 64 KiB `StreamReader` роняют `async for` c `ValueError` на
+длинном stream-json конверте (tool result), а вместе с ним — и весь turn:
+прямое нарушение §8 «ни одна строка не теряется».
+"""
+
+
 async def default_launcher(*argv: str, cwd: str | None = None) -> SubprocessLike:
     """Тонкая обёртка над `asyncio.create_subprocess_exec` (продовый дефолт)."""
     process = await asyncio.create_subprocess_exec(
@@ -32,5 +41,6 @@ async def default_launcher(*argv: str, cwd: str | None = None) -> SubprocessLike
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=STDOUT_LINE_LIMIT,
     )
     return cast(SubprocessLike, process)
