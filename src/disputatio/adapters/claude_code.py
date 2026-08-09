@@ -1,8 +1,8 @@
 """`ClaudeCodeAdapter` over the `claude` CLI ([DESIGN-002]/[DESIGN-006], TASK-003).
 
-Минимальная рабочая версия `run()`: без ролей/permissions (TASK-004), без
-read-only fallback (TASK-005) и без `EventSink` (TASK-006) — argv простой,
-`stdout` фейка/CLI накапливается построчно в текст.
+Роли/permissions подключены (TASK-004) через `permissions.build_role_argv`.
+Без read-only fallback (TASK-005) и без `EventSink` (TASK-006) — `stdout`
+фейка/CLI накапливается построчно в текст.
 """
 
 import inspect
@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import cast
 
 from disputatio.adapters._process import ProcessLauncher, default_launcher
+from disputatio.adapters.permissions import AdapterCapabilities, build_role_argv
 from disputatio.contracts.base import Role
 from disputatio.contracts.ports import AgentTurn
+
+_DEFAULT_CAPABILITIES = AdapterCapabilities(supports_granular_permissions=True)
 
 
 class ClaudeCodeAdapter:
@@ -23,10 +26,12 @@ class ClaudeCodeAdapter:
         *,
         role: Role,
         session_dir: Path,
+        capabilities: AdapterCapabilities = _DEFAULT_CAPABILITIES,
         launcher: ProcessLauncher = default_launcher,
     ) -> None:
         self.role = role
         self.session_dir = session_dir
+        self.capabilities = capabilities
         self.launcher = launcher
 
     async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
@@ -45,4 +50,4 @@ class ClaudeCodeAdapter:
         return AgentTurn(text=buffer, session_ref=None, tokens_used=None)
 
     def _build_argv(self, prompt: str) -> list[str]:
-        return ["claude", "-p", prompt]
+        return ["claude", "-p", prompt, *build_role_argv(self.role, self.capabilities)]
