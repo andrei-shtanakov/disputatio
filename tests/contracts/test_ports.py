@@ -182,7 +182,6 @@ def test_sync_fakes_satisfy_protocol_annotations() -> None:
 def test_agent_adapter_fake_runs_via_anyio() -> None:
     """Async-фейк AgentAdapter типизируется портом и вызывается через anyio."""
     import anyio
-
     from disputatio.contracts.ports import AgentAdapter, AgentTurn
 
     adapter: AgentAdapter = FakeAgentAdapter()
