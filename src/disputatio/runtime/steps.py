@@ -6,6 +6,10 @@
 здесь можно испортить, портится перестановкой строк, а не логикой, — поэтому
 порядок операций каждого шага зафиксирован тестом по общему spy-логу.
 
+Общее у всех четырёх — начало: шаг переигрывается целиком ([REQ-015],
+[DESIGN-015]), поэтому первым делом он убирает огрызки прерванной попытки
+(`_purge_partial_artifacts`), а не пытается их доиспользовать.
+
 Пока реализованы `propose` ([DESIGN-003]), `verify` ([DESIGN-004]),
 `review` ([DESIGN-005]) и `decide_step` ([DESIGN-007]); остальные шаги
 приходят своими задачами и делят с ними `StepContext`.
@@ -14,7 +18,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from disputatio.context import build_author_prompt, build_reviewer_prompt
 from disputatio.contracts import (
@@ -61,10 +65,25 @@ from disputatio.runtime.layout import (
     REVIEW_NAME,
     VERIFICATION_NAME,
     round_artifact,
+    round_dir,
 )
 from disputatio.runtime.parsing import extract_json_object
 from disputatio.runtime.retry import run_with_schema_retry
 from disputatio.verifier import GateSpec
+
+TEMP_ARTIFACT_PATTERNS: Final = ("*.tmp", "*~")
+"""Шаблоны огрызков записи, которые шаг убирает перед своим телом.
+
+`*.tmp` — то, что оставляет `events.atomic_write`, оборванный между
+`mkstemp` и `os.replace`: временный файл лежит рядом с целью и её имени не
+носит. `*~` — резервная копия редактора; в `rounds/NNN/` она попадает,
+только если каталог сессии кто-то открывал руками, но раунд обязан
+состоять из артефактов, а не из следов.
+
+Ни один артефакт раунда и ни маркер `.finalized` под эти шаблоны не
+подходят, и это не совпадение, а условие: уборка мусора, отменяющая I3,
+была бы хуже мусора ([REQ-016]).
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +149,7 @@ async def propose(ctx: StepContext) -> None:
     round_no = ctx.round
     root = ctx.root
 
+    _purge_partial_artifacts(root, round_no)
     ctx.deps.git.reset_hard(base_rev(root, round_no, base_commit=ctx.base_commit))
     ctx.deps.git.clean()
 
@@ -186,6 +206,7 @@ def verify(ctx: StepContext) -> None:
     """
     round_no = ctx.round
 
+    _purge_partial_artifacts(ctx.root, round_no)
     for spec in ctx.gates:
         _emit_gate_event(
             ctx, EventType.GATE_STARTED, {"name": spec.name, "cmd": spec.cmd}
@@ -250,6 +271,7 @@ async def review(ctx: StepContext) -> None:
     round_no = ctx.round
     root = ctx.root
 
+    _purge_partial_artifacts(root, round_no)
     verification = _round_verification(root, round_no)
     prior = load_prior_round(root, round_no - 1)
     failures: list[Exception] = []
@@ -321,6 +343,7 @@ def decide_step(ctx: StepContext) -> None:
     round_no = ctx.round
     root = ctx.root
 
+    _purge_partial_artifacts(root, round_no)
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
         round=round_no,
@@ -336,6 +359,41 @@ def decide_step(ctx: StepContext) -> None:
         ctx.deps.git.commit_round(round_no)
 
     ctx.fsm.apply_decision(draft)
+
+
+def _purge_partial_artifacts(root: Path, round_no: int) -> None:
+    """Убирает огрызки прерванной записи из `rounds/NNN/` ([REQ-015]).
+
+    `events.atomic_write` обещает атомарность ОДНОЙ записи, а не уборку
+    после обрыва посреди неё: временный файл создаётся рядом с целью, и при
+    падении процесса между `mkstemp` и `os.replace` он остаётся на диске —
+    так и задокументировано. Обещание «временных файлов не остаётся в
+    `rounds/NNN/`» даёт не писатель, а тот, кто переигрывает шаг, и другого
+    момента у него нет: шаг начинается ровно там, где оборвался прошлый.
+
+    Уборка идёт ДО тела шага, а не после: артефакт, который шаг перезапишет
+    сам, уборке не нужен, а вот огрызок, оставшийся от попытки, обязан
+    исчезнуть даже если эта попытка до своего артефакта не дойдёт вовсе.
+
+    Область — только шаблоны `TEMP_ARTIFACT_PATTERNS` и только файлы: имя,
+    не совпавшее с шаблоном, это чей-то артефакт, и снести его молча
+    означало бы вычистить историю раунда вместо мусора. Финализированный
+    раунд убирается наравне с прочими — маркер I3 закрывает от правок
+    артефакты, а не следы недописанного файла, и хранить их в закрытом
+    раунде вечно было бы худшим из прочтений [REQ-016].
+
+    Отсутствие директории — законный вход, и обрабатывается оно не проверкой,
+    а `Path.glob`, который по несуществующему каталогу не даёт ничего: раунд
+    появляется на диске вместе с первым своим артефактом, и до него убирать
+    попросту нечего. Отбор файлов тоже живёт в выражении, а не в ветке —
+    уборка обязана быть тотальной: у шага VERIFYING нет и не должно быть
+    формы, способной отменить его собственный переход ([REQ-004]).
+    """
+    directory = round_dir(root, round_no)
+    for pattern in TEMP_ARTIFACT_PATTERNS:
+        leftovers = sorted(path for path in directory.glob(pattern) if path.is_file())
+        for leftover in leftovers:
+            leftover.unlink(missing_ok=True)
 
 
 def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
