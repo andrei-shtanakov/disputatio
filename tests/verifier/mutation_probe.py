@@ -6,23 +6,20 @@
 добавляет к публичному API Verifier'а и не имеет права протащить в
 `src/disputatio/verifier/**` ни одной новой git-команды ([REQ-010]).
 
-`run_verifier_surface` — временный стенд-ин `VerifierRunner.verify()`
-([DESIGN-003], TASK-008): выполняет ровно тот набор операций, из которых
-`verify()` будет собран, — `run_gate` по каждому `GateSpec` и один
-`collect_diff_stats`. TODO(TASK-008): заменить тело на вызов
-`VerifierRunner(...).verify(round_no)`; тесты при этом не меняются.
+`run_verifier_surface` — драйвер проверяемой поверхности: с TASK-008 это
+прямой вызов `VerifierRunner(...).verify()` ([DESIGN-003]), а не набор
+составных операций, как было на момент TASK-009. Инвариант [REQ-009]
+тем самым проверяется на публичном API пакета; тесты не менялись —
+`VerificationReport` несёт те же `gates` и `diff_stats`.
 """
 
 import os
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
-from disputatio.contracts.verification import DiffStats, GateResult
-from disputatio.verifier import GateSpec
-from disputatio.verifier.diffstats import collect_diff_stats
-from disputatio.verifier.runner import run_gate
+from disputatio.contracts.verification import VerificationReport
+from disputatio.verifier import GateSpec, VerifierRunner
 
 # То же герметичное окружение, что и в `conftest._HERMETIC_GIT_ENV`:
 # снимок обязан читать состояние репозитория фикстуры, а не глобальный
@@ -50,23 +47,15 @@ def _git_env() -> dict[str, str]:
     return {**env, **_HERMETIC_GIT_ENV}
 
 
-@dataclass(frozen=True, slots=True)
-class SurfaceRun:
-    """Исход прогона поверхности: результаты gates и статистика diff'а."""
+def run_verifier_surface(
+    specs: Sequence[GateSpec], workdir: Path
+) -> VerificationReport:
+    """Прогоняет `VerifierRunner.verify()` по `specs` в `workdir`.
 
-    gates: list[GateResult]
-    diff_stats: DiffStats
-
-
-def run_verifier_surface(specs: Sequence[GateSpec], workdir: Path) -> SurfaceRun:
-    """Прогоняет каждый `GateSpec` и собирает `DiffStats` — как сделает `verify()`.
-
-    Порядок сохраняется: `diff_stats` снимается ПОСЛЕ всех gates, иначе
-    мутация, устроенная последним gate'ом, не попала бы в статистику и
-    негативный контроль теста оказался бы слепым к ней.
+    Номер раунда для [REQ-009] безразличен — инвариант о рабочем дереве, а
+    не об артефакте, — поэтому фиксирован единицей.
     """
-    gates = [run_gate(spec, workdir) for spec in specs]
-    return SurfaceRun(gates=gates, diff_stats=collect_diff_stats(workdir))
+    return VerifierRunner(list(specs), workdir).verify(1)
 
 
 def porcelain(workdir: Path) -> str:

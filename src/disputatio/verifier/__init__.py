@@ -7,5 +7,6 @@ CLI ([REQ-010]).
 """
 
 from disputatio.verifier.config import GateSpec
+from disputatio.verifier.runner_impl import VerifierRunner
 
-__all__ = ["GateSpec"]
+__all__ = ["GateSpec", "VerifierRunner"]
