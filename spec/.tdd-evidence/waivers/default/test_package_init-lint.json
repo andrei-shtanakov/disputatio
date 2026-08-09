@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "INTEGRATION",
+  "reason": "Operator-fix на интеграционной базе: tests/adapters/test_package_init.py содержал I001 (несортированный import-блок внутри функции) и byte-locked claim-ом w-adapters/TASK-002. Тот же класс ловушки, что уже был с tests/contracts/test_ports.py: любой следующий WS, гоняющий repo-wide ruff, чинил бы её и получал scope-эскейп на чужом файле. Правка форматная (пустая строка между import-группами), тесты зелёные до и после. Исправлено один раз на pilot/wave-1.",
+  "approved_by": "human",
+  "baseline_sha": "510aba9f261b2d75e69b5dfcd6e788a1ca2cbb5b"
+}

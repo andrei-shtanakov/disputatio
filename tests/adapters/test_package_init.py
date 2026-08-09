@@ -48,7 +48,6 @@ def test_public_names_reexported_via_all() -> None:
 
 def test_adapter_stubs_satisfy_agent_adapter_protocol(tmp_path: Path) -> None:
     from disputatio.adapters import ClaudeCodeAdapter, CodexAdapter
-
     from disputatio.contracts.base import Role
     from disputatio.contracts.ports import AgentAdapter
 
