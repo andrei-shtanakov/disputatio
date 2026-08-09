@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/verifier/test_tail_bounding.py::test_tail_keeps_only_the_last_lines_when_output_exceeds_the_limit",
+  "expected_behavior": "",
+  "baseline_sha": "c2e0e29d92e716bb2b2e3d39dee4907e26b998c1",
+  "red_sha": "13cfc99863b9e03ff1e39a61be5133283be302fc",
+  "created_at": "2026-08-09T10:58:08.573922+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_tail_bounding.py"
+}
