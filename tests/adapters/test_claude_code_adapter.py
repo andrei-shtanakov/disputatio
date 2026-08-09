@@ -9,14 +9,21 @@
 read-only worktree — `launcher` получает его путь как `cwd`, а не
 `session_dir`; во всех остальных сочетаниях роли и capabilities
 `ReadOnlyWorkspace` не создаётся вовсе.
+
+[DESIGN-005], [REQ-008], [REQ-009], TASK-006: каждая строка `stdout`
+доезжает до `EventSink` как `Event` — распознанная нативная строка
+типизированной, любая другая (включая невалидный JSON) — `agent_text_delta`
+с `raw: true` и неурезанным текстом.
 """
 
 from pathlib import Path
+from typing import Any
 
 import anyio
 import pytest
 
 from disputatio.contracts.base import Role
+from disputatio.contracts.events import Event, EventSource, EventType
 
 
 def test_author_role_argv_has_no_allowed_tools_restriction(
@@ -194,3 +201,66 @@ def test_fallback_workspace_not_created_outside_reviewer_without_granular(
     assert create_calls == []
     assert remove_calls == []
     assert captured_cwd == [str(session_dir)]
+
+
+class _SpySink:
+    """Шпион `contracts.ports.EventSink`: копит всё, что ему отдали."""
+
+    def __init__(self) -> None:
+        self.events: list[Event] = []
+
+    def emit(self, event: Event) -> None:
+        self.events.append(event)
+
+
+def _adapter_with_sink(
+    stdout_line: str, tmp_path: Path, make_fake_process
+) -> tuple[Any, _SpySink]:
+    """`ClaudeCodeAdapter` (author) с одной строкой `stdout` и шпион-сником."""
+    from disputatio.adapters.claude_code import ClaudeCodeAdapter
+
+    sink = _SpySink()
+    try:
+        adapter = ClaudeCodeAdapter(
+            role=Role.AUTHOR,
+            session_dir=tmp_path,
+            launcher=lambda *a, **kw: make_fake_process([stdout_line]),
+            event_sink=sink,
+            session="s-42",
+            round_no=2,
+        )
+    except TypeError as exc:
+        raise AssertionError(
+            "ClaudeCodeAdapter ещё не принимает event_sink/session/round_no из TASK-006"
+        ) from exc
+    return adapter, sink
+
+
+def test_recognized_native_line_emits_typed_event(
+    tmp_path: Path, make_fake_process
+) -> None:
+    adapter, sink = _adapter_with_sink(
+        '{"type": "content_block_delta", "text": "hello"}', tmp_path, make_fake_process
+    )
+
+    turn = anyio.run(adapter.run, "do the thing")
+
+    assert [event.type for event in sink.events] == [EventType.AGENT_TEXT_DELTA]
+    assert sink.events[0].payload == {"text": "hello", "raw": False}
+    assert sink.events[0].source is EventSource.AUTHOR
+    assert sink.events[0].session == "s-42"
+    assert sink.events[0].round == 2
+    assert turn.text == "hello"
+
+
+def test_unrecognized_native_line_emits_raw_delta(
+    tmp_path: Path, make_fake_process
+) -> None:
+    adapter, sink = _adapter_with_sink("не json вовсе", tmp_path, make_fake_process)
+
+    turn = anyio.run(adapter.run, "do the thing")
+
+    assert [event.type for event in sink.events] == [EventType.AGENT_TEXT_DELTA]
+    assert sink.events[0].payload["raw"] is True
+    assert sink.events[0].payload["text"] == "не json вовсе\n"
+    assert turn.text == "не json вовсе\n"
