@@ -16,7 +16,12 @@ from disputatio.runtime.composition import (
     RuntimeDeps,
     build_runtime,
 )
-from disputatio.runtime.config import AgentConfig, LimitsConfig, RuntimeConfig
+from disputatio.runtime.config import (
+    AgentConfig,
+    LimitsConfig,
+    RuntimeConfig,
+    load_config,
+)
 from disputatio.runtime.errors import (
     BaseRevisionNotFound,
     ConfigError,
@@ -38,6 +43,7 @@ from disputatio.runtime.git import (
     base_rev,
     preflight,
 )
+from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.purity import (
     FORBIDDEN_ROOTS,
     PurityViolation,
@@ -70,6 +76,9 @@ __all__ = [
     "UnknownAdapterError",
     "base_rev",
     "build_runtime",
+    "drive",
+    "load_config",
     "preflight",
+    "resume_session",
     "scan_package_purity",
 ]

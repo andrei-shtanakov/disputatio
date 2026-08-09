@@ -32,10 +32,17 @@
 
 from collections.abc import Awaitable, Callable, Mapping
 from inspect import isawaitable
+from pathlib import Path
+from typing import Any
 
 from disputatio.contracts import SessionPhase, SessionState
-from disputatio.core import TERMINAL_PHASES
+from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import steps
+from disputatio.runtime.composition import build_runtime
+from disputatio.runtime.config import load_config
+from disputatio.runtime.errors import SessionNotFound
+from disputatio.runtime.git import GitCli
+from disputatio.runtime.layout import session_dir
 from disputatio.runtime.steps import StepContext
 
 StepFn = Callable[[StepContext], Awaitable[None] | None]
@@ -61,6 +68,54 @@ NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
     SessionPhase.REVIEWING: SessionPhase.DECIDING,
 }
 """Безусловные рёбра раунда. `DECIDING`/`EXPORTING` отсутствуют намеренно."""
+
+
+async def resume_session(root: Path, session_id: str, **overrides: Any) -> SessionState:
+    """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
+
+    Собственной «логики восстановления» здесь нет и быть не должно: всё
+    восстановление — это четыре строки сборки, после которых `drive`
+    начинает с фазы, записанной в `session.json`. Холодный старт отличается
+    ровно одним — откуда взялось начальное `SessionState`; заведись у
+    resume хоть один свой шаг («досчитать раунд», «переиграть фазу»,
+    «поправить конфиг»), он существовал бы только на этом пути и проверялся
+    бы только после обрыва, то есть никогда.
+
+    Порядок тоже значим. Конфиг читается ПЕРВЫМ, потому что из него собран
+    и `RuntimeDeps`, и `base_commit` шага; состояние — ВТОРЫМ, потому что
+    его читает уже собранный `deps.store`, который тест вправе подменить.
+    Оба отказа переводятся в доменную иерархию ([DESIGN-020]): битый
+    снапшот — `ConfigError` из `load_config`, отсутствующая сессия —
+    `SessionNotFound` вместо `KeyError`, чей `repr` ключа в кавычках
+    пользователю ничего не говорит.
+
+    `git` по умолчанию — `GitCli(root)`; `overrides` целиком уходит в
+    `build_runtime`, поэтому подмена любого порта фейком не требует ни
+    одной ветки здесь ([REQ-001]).
+    """
+    config = load_config(root)
+    if "git" not in overrides:
+        overrides = {**overrides, "git": GitCli(root=root)}
+    deps = build_runtime(config, root, **overrides)
+
+    try:
+        state = deps.store.load(session_id)
+    except KeyError as exc:
+        raise SessionNotFound(
+            f"в {session_dir(root)} нет сессии {session_id!r}: сессия не "
+            "запускалась в этой рабочей директории либо её `session.json` "
+            "принадлежит другому запуску"
+        ) from exc
+
+    fsm = SessionFsm(state, store=deps.store, sink=deps.sink, now=deps.now)
+    return await drive(
+        StepContext(
+            deps=deps,
+            fsm=fsm,
+            base_commit=config.base_commit,
+            gates=config.gates,
+        )
+    )
 
 
 async def drive(ctx: StepContext) -> SessionState:

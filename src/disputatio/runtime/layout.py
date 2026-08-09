@@ -22,6 +22,8 @@ from typing import Final
 SESSION_DIR_NAME: Final = ".disputatio"
 ROUNDS_DIR_NAME: Final = "rounds"
 
+CONFIG_TOML_NAME: Final = "config.toml"
+
 PROPOSAL_NAME: Final = "proposal.md"
 CHANGES_PATCH_NAME: Final = "changes.patch"
 VERIFICATION_NAME: Final = "verification.json"
@@ -32,6 +34,16 @@ DECISION_NAME: Final = "decision.json"
 def session_dir(root: Path) -> Path:
     """Корневая директория сессии: `root/.disputatio`."""
     return root / SESSION_DIR_NAME
+
+
+def config_toml(root: Path) -> Path:
+    """Снапшот конфига сессии `config.toml` ([DESIGN-014], [REQ-014]).
+
+    Read-side половина `events.write_config_snapshot`: писателю путь строит
+    его собственная раскладка, а resume читает файл отсюда — импортировать
+    приватный `events.paths` §4.2 запрещает.
+    """
+    return session_dir(root) / CONFIG_TOML_NAME
 
 
 def rounds_dir(root: Path) -> Path:
