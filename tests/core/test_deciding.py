@@ -489,7 +489,7 @@ def test_decide_oscillation_repeated_issue_third_time_triggers_deadlock() -> Non
         claim="Off by one error in loop",
         evidence="see diff",
     )
-    history = {
+    history: dict[int, tuple[Issue, ...]] = {
         1: (
             Issue(
                 id="i1",
@@ -537,7 +537,7 @@ def test_decide_oscillation_repeated_issue_second_time_does_not_trigger() -> Non
         claim="Off by one error in loop",
         evidence="see diff",
     )
-    history = {
+    history: dict[int, tuple[Issue, ...]] = {
         1: (
             Issue(
                 id="i1",
