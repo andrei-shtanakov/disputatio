@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "INTEGRATION",
+  "reason": "Operator-fix на интеграционной базе: tests/contracts/test_ports.py содержал I001 (несортированный import-блок) и при этом byte-locked claim-ом TASK-011 w-contracts. Каждый WS волны, запускавший repo-wide 'ruff format/--fix', чинил эту строку и получал scope-эскейп на чужом файле — рекуррентная ловушка, наступили три WS подряд (w-adapters, w-verifier, w-fsm), каждый раз требуя ручного ревёрта. Правка чисто форматная (пустая строка между import-группами), поведение не менялось: тесты зелёные до и после. Исправлено один раз на pilot/wave-1, чтобы ловушка не воспроизводилась у оставшихся WS.",
+  "approved_by": "human",
+  "baseline_sha": "4152f815b265982fcf26bf80b2252fc332da7262"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-005",
+  "selector": "tests/core/test_oscillation.py::test_patch_similarity_identical_patches_is_one",
+  "expected_behavior": "patch_similarity(identical) == 1.0, ImportError до реализации → AssertionError",
+  "baseline_sha": "97d2ec627e7bad8c947e2599a5175142a86df424",
+  "red_sha": "011e25d3935e3020f334e8f2309584782431c55f",
+  "created_at": "2026-08-09T06:15:40.000635+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_oscillation.py"
+}

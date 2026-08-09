@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/adapters/test_conftest_fakes.py::test_make_fake_process_yields_bytes_lines_wait_and_stderr",
+  "expected_behavior": "make_fake_process fixture отсутствует в tests/adapters/conftest.py",
+  "baseline_sha": "69c99c717beba915217773cf62ab314e296a4bf1",
+  "red_sha": "43bbad5c68417102200572ab4698c60b30a37e95",
+  "created_at": "2026-08-09T06:21:14.650281+00:00",
+  "revision": 1,
+  "test_path": "tests/adapters/test_conftest_fakes.py"
+}
