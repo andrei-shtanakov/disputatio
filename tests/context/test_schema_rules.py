@@ -175,10 +175,11 @@ def test_constant_is_a_plain_string_literal() -> None:
             and isinstance(node.targets[0], ast.Name)
         ):
             target = node.targets[0].id
-        if target is None or node.value is None:
+        if target is None or not isinstance(node, ast.AnnAssign | ast.Assign):
             continue
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            literals[target] = node.value.value
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            literals[target] = value.value
 
     assert CONSTANT_NAME in literals, (
         f"{CONSTANT_NAME} присвоен не строковым литералом верхнего уровня — "
