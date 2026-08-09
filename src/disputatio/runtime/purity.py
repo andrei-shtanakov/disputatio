@@ -134,8 +134,12 @@ def _scan_call(
         return
     argument = node.args[0] if node.args else None
     if isinstance(argument, ast.Constant):
-        if _is_forbidden(argument.value, forbidden):
-            yield PurityViolation(module, node.lineno, argument.value, KIND_DYNAMIC)
+        # `Constant.value` — любой литерал, а сверять с запрещёнными корнями
+        # осмысленно только строку: на нестроковом (`__import__(1)`)
+        # `_is_forbidden` уронил бы скан `AttributeError` на `.startswith`.
+        name = argument.value if isinstance(argument.value, str) else ""
+        if _is_forbidden(name, forbidden):
+            yield PurityViolation(module, node.lineno, name, KIND_DYNAMIC)
         return
     yield PurityViolation(module, node.lineno, ast.unparse(node), KIND_DYNAMIC)
 
