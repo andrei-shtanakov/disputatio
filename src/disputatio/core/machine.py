@@ -12,20 +12,29 @@
 обновляется, события нет. Отказ `EventSink.emit` (уже после успешного
 `save`) тоже распространяется — состояние впереди журнала безопасно для
 resume, но молчать о сломанном журнале нельзя; решает вызывающий.
+
+`apply_decision` материализует `Decision` и проводит FSM по детерминированной
+терминальной цепочке §5 [DESIGN-007]/[REQ-013] — каждый hop через
+`transition()`, т.е. с тем же write-ahead и событием. `Decision.round` берётся
+из `current_round` ДО первого hop'а: revise-петля `CONTINUE` увеличивает
+раунд, но решение принадлежит раунду N, не N+1 (I3 [REQ-015]).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from disputatio.contracts import (
+    Decision,
     Event,
     EventSink,
     EventSource,
     EventType,
+    Outcome,
     SessionPhase,
     SessionState,
     StateStore,
 )
+from disputatio.core.deciding import DecisionDraft
 from disputatio.core.transitions import check_transition
 
 # Единственные два ребра, двигающие счётчик раунда: старт сессии открывает
@@ -33,6 +42,27 @@ from disputatio.core.transitions import check_transition
 # внутри раунда и счётчик не трогают.
 _ROUND_START_EDGE = (SessionPhase.IDLE, SessionPhase.PROPOSING)
 _REVISE_EDGE = (SessionPhase.DECIDING, SessionPhase.PROPOSING)
+
+# Терминальные цепочки §5 [DESIGN-007]: outcome → hop'ы от DECIDING до
+# EXPORTING. CONTINUE не терминален (revise-петля) и в этой карте не
+# участвует — за него отвечает отдельная ветка `apply_decision`.
+_TERMINAL_CHAINS: Mapping[Outcome, tuple[SessionPhase, ...]] = {
+    Outcome.CONVERGED: (SessionPhase.CONVERGED, SessionPhase.EXPORTING),
+    Outcome.DEADLOCK: (
+        SessionPhase.DEADLOCK,
+        SessionPhase.ESCALATED,
+        SessionPhase.EXPORTING,
+    ),
+    Outcome.BUDGET_HIT: (
+        SessionPhase.BUDGET_HIT,
+        SessionPhase.ESCALATED,
+        SessionPhase.EXPORTING,
+    ),
+}
+
+_PARTIAL_OUTCOMES: frozenset[Outcome] = frozenset(
+    {Outcome.DEADLOCK, Outcome.BUDGET_HIT}
+)
 
 
 class SessionFsm:
@@ -88,6 +118,47 @@ class SessionFsm:
         )
         self._state = new_state
         return new_state
+
+    def apply_decision(self, draft: DecisionDraft) -> tuple[Decision, SessionState]:
+        """Материализует `Decision` и проходит цепочку переходов §5 [DESIGN-007].
+
+        `CONVERGED`/`DEADLOCK`/`BUDGET_HIT` идут по фиксированной терминальной
+        цепочке до `EXPORTING`. `CONTINUE` требует непустую
+        `next_round_directive` — иначе `ValueError` без единого hop'а
+        (ADR-W2-04): рассинхрон `decision.json`/`session.json` недопустим.
+        """
+        chain = _TERMINAL_CHAINS.get(draft.outcome)
+        if chain is None and not _has_directive(draft.next_round_directive):
+            raise ValueError(
+                "CONTINUE обязан нести непустую директиву next_round_directive "
+                "(ADR-W2-04)"
+            )
+
+        decision = Decision(
+            round=self._state.current_round,
+            outcome=draft.outcome,
+            reason=draft.reason,
+            open_issues_carried=list(draft.open_issues_carried),
+            next_round_directive=draft.next_round_directive,
+        )
+
+        if chain is not None:
+            for phase in chain:
+                self.transition(phase)
+            return decision, self._state
+
+        new_state = self.transition(SessionPhase.PROPOSING)
+        return decision, new_state
+
+
+def _has_directive(directive: str | None) -> bool:
+    """`True`, если директива непустая и не состоит только из пробелов."""
+    return directive is not None and directive.strip() != ""
+
+
+def is_partial(outcome: Outcome) -> bool:
+    """`True` для `DEADLOCK`/`BUDGET_HIT` — частичный результат [DESIGN-007]."""
+    return outcome in _PARTIAL_OUTCOMES
 
 
 def _next_round(
