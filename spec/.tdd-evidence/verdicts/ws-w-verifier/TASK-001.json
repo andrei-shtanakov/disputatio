@@ -3,10 +3,10 @@
   "task_id": "TASK-001",
   "claim_revision": 0,
   "red_sha": "",
-  "verified_head": "3dcca8317e4391da1d5bf16702c36bf39fecea7f",
+  "verified_head": "835ce0bcc44ee00d085b487054a25c836fa52c3d",
   "red_replay": "",
   "selector_at_head": "",
   "verdict": "WAIVED",
-  "checked_at": "2026-08-09T09:58:36.140513+00:00",
+  "checked_at": "2026-08-09T10:05:28.045943+00:00",
   "notes": "waiver: Коллизия общего тест-файла между задачами одного WS. TASK-001 честно прошла red->green и имеет PASS-вердикт (red b411bf09, verified e62076b5). Позже TASK-005 дописала свои тесты в ТОТ ЖЕ файл tests/verifier/test_gate_execution.py (декомпозиция назначила один файл нескольким задачам), из-за чего byte-lock TASK-001 сработал на чужих правках. Проверено: 20 тестов verifier зелёные, поведение TASK-001 не менялось. Находка о декомпозиции: задачи одного WS не должны делить тест-файл при byte-lock-семантике гейта."
 }
