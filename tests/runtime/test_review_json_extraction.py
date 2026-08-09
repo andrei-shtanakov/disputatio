@@ -12,6 +12,13 @@
 `extract_json_object` документирует «первый top-level объект» — не «самый
 длинный» и не «всё между крайними скобками», — и здесь это пиньётся тремя
 формами хвоста: скобки в прозе, второй объект и незакрытая `{`.
+
+Ревью-догон: те же скобки бывают и ПЕРЕД объектом, и там счётчик скобок сам
+по себе не спасает. Ревьюер цитирует код — `if (x) { return 1; }` — а этот
+кусок сбалансирован и годным кандидатом выглядит ничем не хуже настоящего
+`review.json`. Поэтому кандидат обязан быть ещё и разбираемым JSON-объектом:
+проверка well-formedness, не схемы. Без неё «текст без JSON» перестаёт быть
+`ReviewParseError` — цитата кода молча выдаётся за ревью.
 """
 
 import json
@@ -98,6 +105,43 @@ def test_fenced_object_with_a_trailing_fence_and_braces() -> None:
     assert json.loads(extracted) == _PAYLOAD
     assert "```" not in extracted
     assert "f-строки" not in extracted
+
+
+def test_a_quoted_code_snippet_before_the_object_is_not_the_object() -> None:
+    """Сбалансированная цитата кода ПЕРЕД ревью не перехватывает разбор.
+
+    Зеркало хвостового случая, и куда вероятнее его: цитировать код — это
+    ровно то, чем ревьюер занят. `{ return 1; }` балансируется, но JSON'ом
+    не является, и кандидатом быть не должен.
+    """
+    text = f"В `if (x) {{ return 1; }}` ошибка. Ревью:\n{_body()}"
+
+    extracted = _extract(text)
+
+    assert json.loads(extracted) == _PAYLOAD
+    assert "return 1" not in extracted
+
+
+def test_an_empty_object_in_the_prose_is_not_the_object() -> None:
+    """`{}` в прозе — разбираемый JSON, но не ревью: кандидатом не считается."""
+    text = f"Замечаний нет, issues будет {{}}. Ревью:\n{_body()}"
+
+    extracted = _extract(text)
+
+    assert json.loads(extracted) == _PAYLOAD
+
+
+def test_prose_with_balanced_braces_but_no_json_is_a_parse_error() -> None:
+    """Скобки без JSON — `ReviewParseError`, а не выданный за ревью мусор.
+
+    Без проверки well-formedness шаг получал бы `{ return 1; }` и падал
+    `ValidationError`'ом схемы — то есть тратил schema-retry на диагноз
+    «агент ответил прозой», который обязан звучать своими словами.
+    """
+    runtime = import_module("disputatio.runtime")
+
+    with pytest.raises(runtime.ReviewParseError):
+        _extract("В `if (x) { return 1; }` ошибка, JSON не приложил.")
 
 
 def test_reply_without_any_closing_brace_is_a_parse_error() -> None:
