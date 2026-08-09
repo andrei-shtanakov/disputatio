@@ -134,7 +134,7 @@ def test_deadlock_and_budget_hit_reach_exporting_via_escalated(
     assert decision.outcome is outcome
     assert final_state.state is P.EXPORTING
     assert calls == [
-        f"save(phase={outcome.value})",
+        f"save(phase={outcome.name})",
         "emit(state_change)",
         "save(phase=ESCALATED)",
         "emit(state_change)",
@@ -143,8 +143,8 @@ def test_deadlock_and_budget_hit_reach_exporting_via_escalated(
     ]
     payloads = [event.payload for event in sink.events]
     assert payloads == [
-        {"from": "DECIDING", "to": outcome.value},
-        {"from": outcome.value, "to": "ESCALATED"},
+        {"from": "DECIDING", "to": outcome.name},
+        {"from": outcome.name, "to": "ESCALATED"},
         {"from": "ESCALATED", "to": "EXPORTING"},
     ]
 
