@@ -1,8 +1,10 @@
 """Атомарная запись файла: temp-file + rename ([DESIGN-001], [REQ-001], [ADR-001]).
 
-Единственный примитив атомарности, на котором строятся все пишущие операции
-`disputatio.events` (`session.json`, `config.toml`, строки `events.jsonl`,
-`rounds/NNN/*`, `result/*`).
+Единственный примитив атомарности, на котором строятся пишущие операции
+`disputatio.events` (`session.json`, `config.toml`, `rounds/NNN/*`,
+`result/*`). Исключение — `events.jsonl`: `JsonlEventSink.emit` пишет
+чистым `O_APPEND` без перезаписи файла ([DESIGN-004], [ADR-003]), поэтому
+через `atomic_write` строки журнала НЕ идут.
 """
 
 import os
@@ -20,6 +22,9 @@ def atomic_write(path: Path, content: str | bytes, *, encoding: str = "utf-8") -
     либо прежнее — промежуточного состояния снаружи не видно. При
     исключении между `mkstemp` и `replace` временный файл остаётся рядом
     с `path`; вызывающая сторона его не подчищает ([ADR-001]).
+
+    Побочный эффект `mkstemp` + `os.replace`: итоговый файл наследует режим
+    `0600` временного, а не umask и не прежние права `path`.
     """
     data = content.encode(encoding) if isinstance(content, str) else content
     fd, tmp_name = tempfile.mkstemp(
