@@ -7,13 +7,24 @@
 вывода читается из пайпа самим раннером — никогда через `| tail`/`| tee`,
 чей «зелёный» код возврата мог бы замаскировать красный тест.
 
+Хвост ограничен построчно ([DESIGN-005], [REQ-005]): вывод читается по
+строке за раз в кольцевой буфер длиной `tail_lines`, поэтому полный вывод
+«болтливого» gate не удерживается в памяти целиком (NFR-004).
+
 Запускаются только команды, пришедшие из конфигурации gates ([REQ-010]).
 """
 
 import shlex
 import subprocess
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
+
+# Дефолтный лимит хвоста в строках ([DESIGN-005]): достаточно, чтобы
+# ревьюер увидел суть падения gate, и мало, чтобы артефакт раунда не рос
+# вместе с болтливостью команды ([REQ-005]).
+DEFAULT_TAIL_LINES: Final = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,8 +47,16 @@ class RunOutcome:
     error: str | None = None
 
 
-def run_gate_command(cmd: str, workdir: Path) -> RunOutcome:
+def run_gate_command(
+    cmd: str, workdir: Path, *, tail_lines: int = DEFAULT_TAIL_LINES
+) -> RunOutcome:
     """Выполняет `cmd` в `workdir` и возвращает исход запуска.
+
+    `tail` — не более `tail_lines` последних строк объединённого
+    stdout+stderr, без завершающего перевода строки; вывод короче лимита
+    попадает в хвост целиком, отсутствие вывода даёт `""` ([REQ-005]).
+    Строки читаются по одной в `deque(maxlen=tail_lines)`, поэтому дольше
+    одной строки за раз полный вывод в памяти не живёт (NFR-004).
 
     stdout и stderr объединяются в один поток — хвост сохраняет реальный
     порядок интерливинга; `errors="replace"` защищает захват от не-UTF-8
@@ -64,6 +83,9 @@ def run_gate_command(cmd: str, workdir: Path) -> RunOutcome:
         errors="replace",
     ) as proc:
         stream = proc.stdout
-        output = "" if stream is None else stream.read()
+        tail: deque[str] = deque(maxlen=tail_lines)
+        if stream is not None:
+            for line in stream:
+                tail.append(line.rstrip("\n"))
         exit_code = proc.wait()
-    return RunOutcome(exit_code=exit_code, tail=output)
+    return RunOutcome(exit_code=exit_code, tail="\n".join(tail))
