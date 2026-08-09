@@ -22,10 +22,14 @@ VERIFIER_NAME = "Verifier"
 """Имя протокола, которое пакету адаптеров запрещено втягивать."""
 
 VERIFIER_SOURCE_MODULES: tuple[str, ...] = (
-    "disputatio.contracts",
-    "disputatio.contracts.ports",
+    "contracts",
+    "contracts.ports",
 )
-"""`ports` и re-export пакета `contracts` — оба пути к `Verifier`."""
+"""`ports` и re-export пакета `contracts` — оба пути к `Verifier`.
+
+Хвосты, а не полные пути: у относительного импорта (`from ..contracts.ports
+import ...`) `node.module` не содержит префикса `disputatio`.
+"""
 
 GATE_BINARIES: tuple[str, ...] = ("pytest", "ruff")
 """Бинари детерминированных проверок; их запуск — зона `Verifier`/w-verifier."""
@@ -48,9 +52,10 @@ def find_verifier_usage(source: str) -> list[str]:
     """Ссылки на `Verifier` в исходнике: импорты и доступ через атрибут."""
     found: set[str] = set()
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.ImportFrom) and node.module in VERIFIER_SOURCE_MODULES:
-            if any(alias.name == VERIFIER_NAME for alias in node.names):
-                found.add(f"{node.module}.{VERIFIER_NAME}")
+        if isinstance(node, ast.ImportFrom):
+            imported = _verifier_import(node)
+            if imported is not None:
+                found.add(imported)
         elif isinstance(node, ast.Attribute) and node.attr == VERIFIER_NAME:
             found.add(ast.unparse(node))
     return sorted(found)
@@ -93,6 +98,27 @@ def _scan(directory: Path, finder: Callable[[str], list[str]]) -> dict[str, list
     return violations
 
 
+def _verifier_import(node: ast.ImportFrom) -> str | None:
+    """Ссылка, если импорт втягивает `Verifier` (в т.ч. через `*` из его модуля)."""
+    prefix = "." * node.level + (node.module or "")
+    if any(alias.name == VERIFIER_NAME for alias in node.names):
+        separator = "." if node.module else ""
+        return f"{prefix}{separator}{VERIFIER_NAME}"
+    if _is_verifier_source(node.module) and any(a.name == "*" for a in node.names):
+        return f"{prefix}.*"
+    return None
+
+
+def _is_verifier_source(module: str | None) -> bool:
+    """Модуль импорта (абсолютный или относительный) — один из путей к `Verifier`."""
+    if module is None:
+        return False
+    return any(
+        module == tail or module.endswith(f".{tail}")
+        for tail in VERIFIER_SOURCE_MODULES
+    )
+
+
 def _exempt_literal_ids(tree: ast.AST) -> set[int]:
     """`id()` литералов, присвоенных освобождённым константам-allowlist'ам."""
     exempt: set[int] = set()
@@ -113,7 +139,22 @@ def _exempt_literal_ids(tree: ast.AST) -> set[int]:
 
 def _gate_binary_name(node: ast.expr | None) -> str | None:
     """Имя гейта, если узел — строковый литерал вида `pytest`/`/usr/bin/ruff`."""
-    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+    literal = _literal_str(node)
+    if literal is None:
         return None
-    binary = PurePosixPath(node.value).name
+    binary = PurePosixPath(literal).name
     return binary if binary in GATE_BINARIES else None
+
+
+def _literal_str(node: ast.expr | None) -> str | None:
+    """Текст узла, если это строковый литерал или f-string без интерполяций."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    parts: list[str] = []
+    for value in node.values:
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            return None
+        parts.append(value.value)
+    return "".join(parts)
