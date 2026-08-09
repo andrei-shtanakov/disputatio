@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-008",
+  "selector": "tests/verifier/test_verifier_runner.py::test_gates_keep_config_order_and_identity",
+  "expected_behavior": "",
+  "baseline_sha": "daf9ccb13320566e2c87c368da71004ca7ed542e",
+  "red_sha": "5f1dbc4f6907ba22765062c599eda1725e536512",
+  "created_at": "2026-08-09T11:48:44.414426+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_verifier_runner.py"
+}

@@ -1,0 +1,12 @@
+{
+  "schema": "tdd-verdict/v1",
+  "task_id": "TASK-005",
+  "claim_revision": 1,
+  "red_sha": "97a4f622d2b1702e99d8b886d2f76403d60e55de",
+  "verified_head": "7674904fd783f133726900e32391501056cb98fb",
+  "red_replay": "EXPECTED_FAIL",
+  "selector_at_head": "PASS",
+  "verdict": "PASS",
+  "checked_at": "2026-08-09T10:11:18.199245+00:00",
+  "notes": "Operator-восстановление: verify не успел записать вердикт — процесс убит внешним watchdog-ом (collateral kill, maestro#166) между green и записью. Цепочка перепроверена вручную: red_sha в истории; test_robustness.py байт-неизменен с red-чекпоинта (git diff --quiet); replay на red_sha в отдельном worktree — селектор FAILED (EXPECTED_FAIL); на HEAD — 1 passed."
+}

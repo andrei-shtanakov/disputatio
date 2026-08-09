@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-004",
+  "selector": "tests/verifier/test_duration.py::test_duration_survives_a_backwards_jump_of_the_system_clock",
+  "expected_behavior": "",
+  "baseline_sha": "5790aaeb8ae4d36d0ed949f0723c8522db57dd20",
+  "red_sha": "6daa89021ff2edd72c5e682cc22891f0709e261f",
+  "created_at": "2026-08-09T11:37:34.190854+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_duration.py"
+}

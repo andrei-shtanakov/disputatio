@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-007",
+  "selector": "tests/verifier/test_aggregate.py::test_any_fail_gate_makes_overall_fail",
+  "expected_behavior": "",
+  "baseline_sha": "ab08ff22e740843d3e472814cb05b5617d9c47aa",
+  "red_sha": "77429b4a24bf55ec66ad582bf05b9c4bd89d4f9e",
+  "created_at": "2026-08-09T10:29:42.056744+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_aggregate.py"
+}
