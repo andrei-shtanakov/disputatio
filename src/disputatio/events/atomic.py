@@ -26,7 +26,9 @@ def atomic_write(path: Path, content: str | bytes, *, encoding: str = "utf-8") -
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
     try:
-        os.write(fd, data)
+        while data:
+            written = os.write(fd, data)
+            data = data[written:]
         os.fsync(fd)
     finally:
         os.close(fd)
