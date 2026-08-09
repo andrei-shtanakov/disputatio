@@ -44,8 +44,15 @@ def run_gate_command(cmd: str, workdir: Path) -> RunOutcome:
     вывода. Исключения запуска (`FileNotFoundError`, `ValueError` разбора
     и прочие) наружу не перехватываются — их отображение в skip-ветки
     остаётся зоной вызывающего кода ([DESIGN-006]).
+
+    Пустая (или пробельная) команда даёт пустой `argv` и отвергается
+    `ValueError` здесь же: `Popen([])` вместо этого роняет `IndexError`,
+    который вызывающему коду пришлось бы ловить отдельно от прочего
+    невалидного `cmd` ([DESIGN-006] трактует оба случая одинаково).
     """
     argv = shlex.split(cmd)
+    if not argv:
+        raise ValueError("empty command")
     with subprocess.Popen(
         argv,
         shell=False,
