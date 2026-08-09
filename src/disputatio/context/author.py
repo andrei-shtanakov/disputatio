@@ -17,9 +17,6 @@
    proposal выражены типами, а не комментарием: код в рабочей директории —
    источник истины, история чата — нет (§6.1).
 
-`task.attachments` в промпт не попадают сознательно: способ их доставки
-агентам — открытый вопрос §10.5 SPEC-001, и v1 его не фиксирует.
-
 Модуль чист: ни I/O, ни времени, ни случайности (NFR-001, NFR-002).
 """
 
@@ -27,18 +24,22 @@ from typing import Final
 
 from disputatio.context.sections import (
     OPEN_ISSUES_TITLE,
+    TASK_TITLE,
     render_directive_section,
     render_failed_gates_section,
     render_issues_section,
+    render_task_section,
     select_open_issues,
 )
-from disputatio.context.tags import wrap_artifact_data
 from disputatio.contracts.decision import Decision
 from disputatio.contracts.review import Review
 from disputatio.contracts.session import TaskSpec
 from disputatio.contracts.verification import VerificationReport
 
-TASK_TITLE: Final = "## Задача пользователя"
+# `TASK_TITLE` реэкспортируется: заголовок задачи общий с промптом ревьюера
+# и живёт в `sections.py`, но остаётся публичным атрибутом этого модуля —
+# вызывающей стороне незачем знать, в каком из двух мест собрана секция.
+__all__ = ["TASK_TITLE", "build_author_prompt"]
 
 _INTRO_TEMPLATE: Final = (
     "# Раунд {round}: работа автора\n"
@@ -82,7 +83,7 @@ def build_author_prompt(
 
     parts = [
         _INTRO_TEMPLATE.format(round=round),
-        _render_task_section(task),
+        render_task_section(task),
         render_directive_section(
             prior_decision.next_round_directive if prior_decision is not None else None
         ),
@@ -113,13 +114,6 @@ def _check_prior_round(
             f"{param}.round == {artifact.round}: ожидался раунд {expected} "
             f"(round - 1); полная история раундов в промпт не передаётся (§6.1)"
         )
-
-
-def _render_task_section(task: TaskSpec) -> str:
-    """Задача пользователя дословно; режим — сводка оркестратора вне меток."""
-    return "\n".join(
-        [TASK_TITLE, f"режим: {task.mode}", wrap_artifact_data(task.prompt)]
-    )
 
 
 def _render_open_issues_section(

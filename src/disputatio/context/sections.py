@@ -25,12 +25,14 @@ from typing import Final
 
 from disputatio.context.tags import wrap_artifact_data
 from disputatio.contracts.review import Issue, Severity
+from disputatio.contracts.session import TaskSpec
 from disputatio.contracts.verification import (
     GateResult,
     GateStatus,
     VerificationReport,
 )
 
+TASK_TITLE: Final = "## Задача пользователя"
 OPEN_ISSUES_TITLE: Final = "## Открытые замечания ревьюера прошлого раунда"
 RESOLVED_ISSUES_TITLE: Final = "## Замечания, заявленные автором как решённые"
 FAILED_GATES_TITLE: Final = "## Проваленные детерминированные проверки"
@@ -85,6 +87,21 @@ def select_failed_gates(gates: Iterable[GateResult]) -> list[GateResult]:
     тихо потеряла бы такой гейт и отдала бы автору неполный список.
     """
     return [gate for gate in gates if gate.status == GateStatus.FAIL]
+
+
+def render_task_section(task: TaskSpec) -> str:
+    """Задача пользователя — первая секция обоих промптов (§6.1, §6.2).
+
+    Единственная секция, которая есть всегда: без неё агент не знает, что
+    вообще делает. Текст задачи — данные, поэтому едет внутри меток; режим
+    вычислен оркестратором и стоит снаружи, рядом с заголовком.
+
+    `task.attachments` сюда не попадают сознательно: способ их доставки
+    агентам — открытый вопрос §10.5 SPEC-001, и v1 его не фиксирует.
+    """
+    return "\n".join(
+        [TASK_TITLE, f"режим: {task.mode}", wrap_artifact_data(task.prompt)]
+    )
 
 
 def render_issues_section(issues: Sequence[Issue], *, title: str) -> str:
