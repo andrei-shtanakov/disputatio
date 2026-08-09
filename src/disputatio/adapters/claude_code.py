@@ -116,6 +116,12 @@ class ClaudeCodeAdapter:
                     round_no=self.round_no,
                     ts=datetime.now(UTC),
                 )
+                # Отклонение от псевдокода DESIGN-008 (`and not
+                # payload.get("raw")`) — намеренное: §8 требует, чтобы ни
+                # одна строка не потерялась, и байт-залоченные тесты
+                # TASK-003/TASK-006 пиньят `turn.text` с сырыми строками.
+                # Поэтому `text: ""` у usage-события не косметика, а
+                # единственное, что удерживает буфер чистым.
                 if event.type is EventType.AGENT_TEXT_DELTA:
                     buffer += str(event.payload["text"])
                 usage = event.payload.get("usage")
@@ -153,6 +159,15 @@ class ClaudeCodeAdapter:
         return ReadOnlyWorkspace(self.session_dir, create=create, remove=remove)
 
     def _build_argv(self, prompt: str) -> list[str]:
+        # TODO: DESIGN-006 требует здесь ещё `--output-format stream-json` и
+        # `--resume <session_ref>`, но ни один чеклист TASK-003…007 их не
+        # добавил, поэтому `run(session_ref=...)` до argv не доходит. Без
+        # stream-json реальный `claude` печатает plain text: тогда
+        # `_parse_native_line` не распознаёт ничего, каждая строка уходит в
+        # raw-fallback, а `_parse_usage` не срабатывает никогда — то есть
+        # tokens_used/session_ref в проде остаются None структурно.
+        # Чинится отдельной задачей с честным red-циклом: TASK-007 уже
+        # заклеймлена, самовольная supersession в v1 запрещена.
         return ["claude", "-p", prompt, *build_role_argv(self.role, self.capabilities)]
 
     @staticmethod
