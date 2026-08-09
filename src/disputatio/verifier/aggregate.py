@@ -14,7 +14,14 @@ def compute_overall(gates: list[GateResult]) -> OverallStatus:
     доказывает, но и ничего не опровергает, поэтому пустой список и список
     из одних `skip` дают `pass` ([DESIGN-009]). Утечь на верхний уровень
     `skip` не может по типу: `OverallStatus` — enum из двух значений.
+
+    Сравнение через `==`, а не `is` — конвенция [REQ-015]/[DESIGN-013]:
+    `model_copy(update=...)` и `model_construct` кладут в поле сырую
+    строку без ревалидации, и `is`-сравнение молча пропустило бы такой
+    `fail`. `GateStatus` — `StrEnum`, поэтому `==` ловит оба представления.
+    Ошибка здесь однонаправленно опасна: ложный `pass` открывает дорогу
+    к `CONVERGED` ([REQ-008]).
     """
-    if any(gate.status is GateStatus.FAIL for gate in gates):
+    if any(gate.status == GateStatus.FAIL for gate in gates):
         return OverallStatus.FAIL
     return OverallStatus.PASS
