@@ -133,7 +133,7 @@ def _scan_call(
     if _called_name(node.func) not in DYNAMIC_IMPORT_CALLS:
         return
     argument = node.args[0] if node.args else None
-    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+    if isinstance(argument, ast.Constant):
         if _is_forbidden(argument.value, forbidden):
             yield PurityViolation(module, node.lineno, argument.value, KIND_DYNAMIC)
         return
