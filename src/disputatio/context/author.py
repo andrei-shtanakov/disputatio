@@ -84,11 +84,11 @@ def build_author_prompt(
         _INTRO_TEMPLATE.format(round=round),
         _render_task_section(task),
         render_directive_section(
-            prior_decision.next_round_directive if prior_decision else None
+            prior_decision.next_round_directive if prior_decision is not None else None
         ),
         _render_open_issues_section(prior_review, prior_decision),
         render_failed_gates_section(
-            prior_verification.gates if prior_verification else []
+            prior_verification.gates if prior_verification is not None else []
         ),
     ]
     return "\n\n".join(part for part in parts if part)
