@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-016",
+  "selector": "tests/runtime/test_resume_dispatch.py::test_resume_runs_the_saved_phase_and_does_not_rerun_proposing",
+  "expected_behavior": "resume поднимает сессию с фазы из session.json: VERIFYING раунда 2 продолжает с гейтов этого раунда, PROPOSING заново не запускается; конфиг берётся из снапшота config.toml",
+  "baseline_sha": "16e152a05ed1392832a633f10b98591edc3292ec",
+  "red_sha": "d9034361cfffca70dd3278e4f99238e3482d85e0",
+  "created_at": "2026-08-09T23:27:34.789678+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_resume_dispatch.py"
+}
