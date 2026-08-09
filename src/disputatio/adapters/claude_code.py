@@ -5,6 +5,11 @@ read-only fallback (TASK-005) — через `fallback.ReadOnlyWorkspace`, а
 трансляция `stdout` в `Event` (TASK-006) — через `events.translate_line`:
 каждая строка уходит в `event_sink` (если он задан) и попадает в текст
 `AgentTurn`, распознана она или нет.
+
+`tokens_used`/`session_ref` (TASK-006 → TASK-007, DESIGN-008) собираются
+честно: только из терминальной `result`-строки с `usage`. Нет такой
+строки — оба поля остаются `None`, потому что «неизвестно» и «ноль» для
+бюджета §5.2 — разные ответы.
 """
 
 import inspect
@@ -34,6 +39,7 @@ _EVENT_SOURCE_BY_ROLE = {
 }
 
 _TEXT_DELTA_TYPE = "content_block_delta"
+_RESULT_TYPE = "result"
 
 _MISSING_WORKTREE_OPS = (
     "Reviewer без granular-permissions требует worktree_create/"
@@ -91,6 +97,11 @@ class ClaudeCodeAdapter:
         process = await result if inspect.isawaitable(result) else result
 
         buffer = ""
+        # None ≠ 0: «CLI не сообщил расход» против «сообщил ноль» (REQ-011).
+        # Локали стартуют как None и присваиваются только из positively
+        # распознанной usage-строки — подстановки `0`/`""` здесь нет нигде.
+        tokens_used: int | None = None
+        session_ref_out: str | None = None
         stdout = cast(AsyncIterator[bytes], process.stdout)
         try:
             async for raw in stdout:
@@ -107,12 +118,18 @@ class ClaudeCodeAdapter:
                 )
                 if event.type is EventType.AGENT_TEXT_DELTA:
                     buffer += str(event.payload["text"])
+                usage = event.payload.get("usage")
+                if usage is not None:
+                    tokens_used = usage.get("output_tokens", tokens_used)
+                    session_ref_out = usage.get("session_id", session_ref_out)
                 if self.event_sink is not None:
                     self.event_sink.emit(event)
         finally:
             await process.wait()
 
-        return AgentTurn(text=buffer, session_ref=None, tokens_used=None)
+        return AgentTurn(
+            text=buffer, session_ref=session_ref_out, tokens_used=tokens_used
+        )
 
     def _needs_read_only_workspace(self) -> bool:
         """Read-only worktree нужен только ревьюеру без granular-permissions.
@@ -140,12 +157,13 @@ class ClaudeCodeAdapter:
 
     @staticmethod
     def _parse_native_line(line: str) -> tuple[EventType, dict[str, object]] | None:
-        """Распознаёт stream-json конверт `claude`; `None` — всё прочее.
+        """Распознаёт stream-json конверты `claude`; `None` — всё прочее.
 
         Best-effort отображение (DESIGN-005): реального вывода CLI под
-        рукой нет, поэтому распознаётся ровно один конверт — text-delta.
-        Любая другая форма, включая невалидный JSON, отдаётся общему
-        raw-fallback'у `translate_line`, а не теряется.
+        рукой нет, поэтому распознаются ровно два конверта — text-delta и
+        терминальный `result` с `usage` (DESIGN-008). Любая другая форма,
+        включая невалидный JSON, отдаётся общему raw-fallback'у
+        `translate_line`, а не теряется.
         """
         try:
             envelope = json.loads(line)
@@ -153,9 +171,39 @@ class ClaudeCodeAdapter:
             return None
         if not isinstance(envelope, dict):
             return None
+        if envelope.get("type") == _RESULT_TYPE:
+            return ClaudeCodeAdapter._parse_usage(envelope)
         if envelope.get("type") != _TEXT_DELTA_TYPE:
             return None
         text = envelope.get("text")
         if not isinstance(text, str):
             return None
         return EventType.AGENT_TEXT_DELTA, {"text": text, "raw": False}
+
+    @staticmethod
+    def _parse_usage(
+        envelope: dict[str, object],
+    ) -> tuple[EventType, dict[str, object]] | None:
+        """Терминальный `result` → delta с пустым текстом и `usage` в payload.
+
+        Своего типа под «CLI отчитался о расходе» в словаре §8 нет, а
+        расширять его адаптеру нельзя — UI знает ровно семь типов. Отсюда
+        `agent_text_delta` с `text: ""`: событие доезжает до `EventSink`
+        честно распознанным (`raw: false`), а буфер `AgentTurn.text` не
+        засоряет. Поля `usage` кладутся только правильно типизированными —
+        мусор из stdout не должен ломать `AgentTurn` при валидации.
+        """
+        raw_usage = envelope.get("usage")
+        if not isinstance(raw_usage, dict):
+            return None
+        usage: dict[str, object] = {}
+        output_tokens = raw_usage.get("output_tokens")
+        # bool — подкласс int, но «True токенов» смысла не имеет.
+        if isinstance(output_tokens, int) and not isinstance(output_tokens, bool):
+            usage["output_tokens"] = output_tokens
+        session_id = raw_usage.get("session_id")
+        if isinstance(session_id, str):
+            usage["session_id"] = session_id
+        if not usage:
+            return None
+        return EventType.AGENT_TEXT_DELTA, {"text": "", "raw": False, "usage": usage}
