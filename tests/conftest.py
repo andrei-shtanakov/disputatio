@@ -37,6 +37,26 @@ if TYPE_CHECKING:
 # первой git-команды, а не рядом с ней.
 _LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
 
+# Переменные подписи перебивают локальный `user.*`: экспортированные
+# `GIT_AUTHOR_NAME`/`GIT_COMMITTER_EMAIL` (шелл разработчика, CI, обёртки
+# `git commit`) подпишут коммит фикстуры чужим именем — `config` отработает,
+# а `%an`/`%cn` окажутся внешними. `GIT_*_DATE` делает коммит ещё и
+# недетерминированным по времени.
+_IDENTITY_VARS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
+
+# `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` — конфиг прямо из окружения, по
+# приоритету он выше локального `.git/config` и не отключается ни
+# `GIT_CONFIG_GLOBAL`, ни `GIT_CONFIG_NOSYSTEM`. Достаточно снять счётчик:
+# без него git не читает пары.
+_CONFIG_INJECTION_VAR = "GIT_CONFIG_COUNT"
+
 _FIXTURE_USER_NAME = "disputatio-tests"
 _FIXTURE_USER_EMAIL = "tests@disputatio.local"
 
@@ -49,9 +69,11 @@ def git_env(monkeypatch: pytest.MonkeyPatch) -> None:
     `core.hooksPath`, `commit.template`, `includeIf`) сорвал бы коммит
     фикстуры по причинам, не связанным с тестом; `GIT_CONFIG_NOSYSTEM`
     закрывает системный конфиг даже там, где `GIT_CONFIG_SYSTEM`
-    игнорируется сборкой git.
+    игнорируется сборкой git. Снимаются три группы переменных: расположение
+    репозитория, подпись коммита и конфиг из окружения — каждая перебивает
+    то, что фикстура настраивает локально.
     """
-    for var in _LOCATION_VARS:
+    for var in (*_LOCATION_VARS, *_IDENTITY_VARS, _CONFIG_INJECTION_VAR):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
