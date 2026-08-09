@@ -80,6 +80,17 @@ def load_review(root: Path, round_no: int) -> Review | None:
     return _load(root, round_no, REVIEW_NAME, Review)
 
 
+def load_decision(root: Path, round_no: int) -> Decision | None:
+    """Решение раунда `round_no`; нет файла — `None`.
+
+    Отдельно от `load_prior_round` по той же причине, что и остальные
+    одиночные читатели: решение ТЕКУЩЕГО раунда спрашивают, когда раунд уже
+    финализирован и переписать его нельзя, — а «взять решение прошлого»
+    выглядело бы там правдоподобно и молча.
+    """
+    return _load(root, round_no, DECISION_NAME, Decision)
+
+
 def load_patch(root: Path, round_no: int) -> str | None:
     """Текст `rounds/NNN/changes.patch`; нет раунда или файла — `None`.
 

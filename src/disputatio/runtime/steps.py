@@ -37,13 +37,18 @@ from disputatio.core import (
     decide,
     is_partial,
 )
-from disputatio.events import finalize_round, write_round_artifact
+from disputatio.events import (
+    RoundImmutableError,
+    finalize_round,
+    write_round_artifact,
+)
 from disputatio.runtime.composition import RuntimeDeps
 from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import (
     carried_issues,
     issue_history,
+    load_decision,
     load_patch,
     load_prior_round,
     load_review,
@@ -298,7 +303,9 @@ def decide_step(ctx: StepContext) -> None:
        закрывает раунд от правок (I3 [REQ-016]), `commit_round` даёт
        следующему раунду цель сброса ([REQ-011], [DESIGN-012]). Случись
        обрыв между переходом и коммитом — раунду N+1 не на что было бы
-       сбрасываться, и сессия встала бы намертво.
+       сбрасываться, и сессия встала бы намертво. Обратное окно — обрыв
+       между маркером и переходом — закрыто `_write_decision`: повтор
+       прерванного шага обязан дойти до конца ([REQ-015]).
 
     Частичный исход (`core.is_partial`) не финализируется и не коммитится:
     это эскалация пользователю (§2.5), и принять такую работу вправе
@@ -322,9 +329,7 @@ def decide_step(ctx: StepContext) -> None:
         open_issues_carried=list(draft.open_issues_carried),
         next_round_directive=draft.next_round_directive,
     )
-    write_round_artifact(
-        root, round_no, DECISION_NAME, decision.model_dump_json(by_alias=True)
-    )
+    _write_decision(root, round_no, decision)
 
     if not is_partial(draft.outcome):
         finalize_round(root, round_no)
@@ -360,6 +365,33 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
         budget_used=state.budget_used,
         limits=state.limits,
     )
+
+
+def _write_decision(root: Path, round_no: int, decision: Decision) -> None:
+    """Пишет `decision.json`; уже финализированный раунд — не ошибка шага.
+
+    Маркер I3 ставит сам шаг, и ставит его ДО перехода — значит между ним и
+    переходом есть окно (`commit_round`, обрыв процесса), после которого
+    resume поднимает сессию всё ещё в `DECIDING`, а раунд уже закрыт от
+    записи. Повтор шага упёрся бы в собственный маркер, и упирался бы в
+    него каждой следующей попыткой: фаза, из которой нет выхода. REQ-015
+    требует ровно обратного — повтор прерванного шага обязан дойти до
+    конца, и `commit_round` для этого сделан идемпотентным ([DESIGN-011]).
+
+    Терпимость держится на детерминизме: входы шага собраны с диска и из
+    сохранённого состояния, поэтому повтор выносит то же решение, что уже
+    лежит в раунде. Разойдись они — переписывать финализированный артефакт
+    шаг не вправе (I3, [REQ-016]) и молчать тоже: переход ушёл бы в фазу, о
+    которой `decision.json` рассказывает другое. Поэтому исходная ошибка
+    уходит наружу как есть.
+    """
+    try:
+        write_round_artifact(
+            root, round_no, DECISION_NAME, decision.model_dump_json(by_alias=True)
+        )
+    except RoundImmutableError:
+        if load_decision(root, round_no) != decision:
+            raise
 
 
 def _accepted_review(
