@@ -264,3 +264,69 @@ def test_unrecognized_native_line_emits_raw_delta(
     assert sink.events[0].payload["raw"] is True
     assert sink.events[0].payload["text"] == "не json вовсе\n"
     assert turn.text == "не json вовсе\n"
+
+
+_USAGE_LINE = (
+    '{"type": "result", "usage": {"output_tokens": 17, "session_id": "sess-abc"}}'
+)
+
+
+def test_tokens_used_and_session_ref_default_to_none_when_absent(
+    tmp_path: Path, make_fake_process
+) -> None:
+    """[REQ-011], [DESIGN-008]: `None` = «CLI не сообщил», не `0`/`""`.
+
+    Проверка идёт в обе стороны намеренно. Половина «без usage-строки →
+    `is None`» выполняется и захардкоженным `session_ref=None,
+    tokens_used=None` в `run()`, то есть сама по себе ничего не
+    доказывает: «по умолчанию None» — утверждение о дефолте, а дефолт
+    существует только там, где есть и недефолтная ветка. Поэтому тот же
+    адаптер прогоняется по usage-несущей строке — значения обязаны
+    доехать. `is None` (а не falsy-check) ловит регрессию к `0`/`""`.
+    """
+    without_usage, _ = _adapter_with_sink(
+        '{"type": "content_block_delta", "text": "hello"}', tmp_path, make_fake_process
+    )
+
+    silent = anyio.run(without_usage.run, "do the thing")
+
+    assert silent.tokens_used is None
+    assert silent.session_ref is None
+
+    with_usage, _ = _adapter_with_sink(_USAGE_LINE, tmp_path, make_fake_process)
+
+    reported = anyio.run(with_usage.run, "do the thing")
+
+    assert reported.tokens_used == 17
+    assert reported.session_ref == "sess-abc"
+
+
+def test_usage_line_populates_agent_turn_without_polluting_text(
+    tmp_path: Path, make_fake_process
+) -> None:
+    """Регрессия к DESIGN-008: usage-строка — метрика, а не текст ответа."""
+    from disputatio.adapters.claude_code import ClaudeCodeAdapter
+
+    sink = _SpySink()
+    adapter = ClaudeCodeAdapter(
+        role=Role.AUTHOR,
+        session_dir=tmp_path,
+        launcher=lambda *a, **kw: make_fake_process(
+            ['{"type": "content_block_delta", "text": "hello"}', _USAGE_LINE]
+        ),
+        event_sink=sink,
+        session="s-42",
+        round_no=2,
+    )
+
+    turn = anyio.run(adapter.run, "do the thing")
+
+    assert turn.text == "hello"
+    assert turn.tokens_used == 17
+    assert turn.session_ref == "sess-abc"
+    assert len(sink.events) == 2
+    assert sink.events[1].payload["usage"] == {
+        "output_tokens": 17,
+        "session_id": "sess-abc",
+    }
+    assert sink.events[1].payload["raw"] is False
