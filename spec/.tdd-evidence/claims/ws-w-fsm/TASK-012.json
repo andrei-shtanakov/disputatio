@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-012",
+  "selector": "tests/core/test_acceptance_w_fsm.py::test_w_fsm_evidence_complete",
+  "expected_behavior": "",
+  "baseline_sha": "8f30ba0fc9d20d95ae5bc11b32a7cdf02af6e9e4",
+  "red_sha": "ca9219cdd25ea48bc3ec3d21b62a4c34a2747605",
+  "created_at": "2026-08-09T09:22:13.028111+00:00",
+  "revision": 1,
+  "test_path": "tests/core/test_acceptance_w_fsm.py"
+}
