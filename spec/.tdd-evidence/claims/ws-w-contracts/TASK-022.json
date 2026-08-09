@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-022",
+  "selector": "tests/contracts/test_zero_width_hardening.py::test_blocker_with_zero_width_space_evidence_degraded_to_minor",
+  "expected_behavior": "",
+  "baseline_sha": "09c9232924b935b22d3c94b22dfd1d7f8ca0c4cd",
+  "red_sha": "8939b25eb541cb0c3d1dc736de53cdf08165c960",
+  "created_at": "2026-08-09T03:16:11.750888+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_zero_width_hardening.py"
+}

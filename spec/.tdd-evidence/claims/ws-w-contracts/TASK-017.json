@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-017",
+  "selector": "tests/contracts/test_pyrefly_config.py::test_sub_config_matches_exactly_two_legacy_test_files",
+  "expected_behavior": "",
+  "baseline_sha": "b4419e2404196b81d0e76ed4951f566a6c2b1f30",
+  "red_sha": "1e0451f4da8b46f7c59d1bc7da11f710a1205d75",
+  "created_at": "2026-08-08T21:33:12.589729+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_pyrefly_config.py"
+}

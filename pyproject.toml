@@ -11,6 +11,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "anyio>=4.14.2",
     "pyrefly>=1.2.0",
     "pytest>=9.1.1",
     "ruff>=0.16.2",

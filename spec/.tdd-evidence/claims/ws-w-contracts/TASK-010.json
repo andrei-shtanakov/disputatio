@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-010",
+  "selector": "tests/contracts/test_validation.py::test_degradation_removing_last_blocker_rejects_review",
+  "expected_behavior": "validate_review: деградация REQ-009 перед REQ-008, накопление всех причин",
+  "baseline_sha": "22902f97912a017bc5f6275c65e04d57e7b9ee43",
+  "red_sha": "ce0314406994a5a0041aebeba7b7c5553ca94bc8",
+  "created_at": "2026-08-08T19:58:05.912125+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_validation.py"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-013",
+  "selector": "tests/contracts/test_blank_evidence.py::test_blocker_with_spaces_only_evidence_degraded_to_minor",
+  "expected_behavior": "whitespace-only evidence деградируется до minor как пустой (REQ-013)",
+  "baseline_sha": "60ada11d334d2ed20b020f8f6f0a528c24cfe0ef",
+  "red_sha": "f900478952ccc690b3106132ed4afc37faecb42d",
+  "created_at": "2026-08-08T20:50:30.289425+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_blank_evidence.py"
+}

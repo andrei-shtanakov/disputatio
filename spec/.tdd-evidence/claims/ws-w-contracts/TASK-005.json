@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-005",
+  "selector": "tests/contracts/test_review.py::test_spec_4_4_example_validates",
+  "expected_behavior": "",
+  "baseline_sha": "b8b69c0adb4d9219cb187371b20e60a4fb1efb0d",
+  "red_sha": "bece0407cd57e89370f48a8c7d9d7e7aca3b3aeb",
+  "created_at": "2026-08-08T19:15:22.714744+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_review.py"
+}

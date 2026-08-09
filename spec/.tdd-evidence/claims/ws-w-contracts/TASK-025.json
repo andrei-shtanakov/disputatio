@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-025",
+  "selector": "tests/contracts/test_pyrefly_config_errors.py::test_base_errors_exactly_read_only",
+  "expected_behavior": "sub-config test_base.py в pyrefly.toml всё ещё содержит unexpected-keyword = false; после ужесточения errors должен состоять ровно из read-only = false",
+  "baseline_sha": "e669de7a16058e17f812f667ff39242663ce0ebe",
+  "red_sha": "a7b13f781324dcf7acb5ad834be3d669d178fc86",
+  "created_at": "2026-08-09T03:57:14.696148+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_pyrefly_config_errors.py"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/contracts/test_verification.py::test_overall_outside_pass_fail_rejected",
+  "expected_behavior": "overall вне {pass, fail} отклоняется ValidationError — закрытие бэклог-пункта отдельным red-циклом (TASK-005 follow-up)",
+  "baseline_sha": "aa0c2f9858a83ab3748bdfe96f91259ede1eac26",
+  "red_sha": "333f34543aa6bf5be8f49c26223d7b0a1b6410ae",
+  "created_at": "2026-08-08T18:56:21.684334+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_verification.py"
+}

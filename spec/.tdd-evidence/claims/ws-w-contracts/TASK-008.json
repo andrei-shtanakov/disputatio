@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-008",
+  "selector": "tests/contracts/test_validation.py::test_blocker_without_evidence_degraded_to_minor",
+  "expected_behavior": "",
+  "baseline_sha": "ba6ecd1acf7b4126cbd727203520a1fca8b77082",
+  "red_sha": "b641ffc2b7ef1a43a99bed984b84d20f817e5afb",
+  "created_at": "2026-08-08T19:40:08.637572+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_validation.py"
+}

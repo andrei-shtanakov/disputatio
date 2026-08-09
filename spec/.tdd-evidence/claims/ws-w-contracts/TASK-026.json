@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-026",
+  "selector": "tests/contracts/test_acceptance_revision3.py::test_revision3_evidence_complete",
+  "expected_behavior": "",
+  "baseline_sha": "18c4452622de94731c2dad57091ea57df5525ec5",
+  "red_sha": "205c7cbc79004d3bb3339c623bb2cc90f27e6976",
+  "created_at": "2026-08-09T04:05:31.114468+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_acceptance_revision3.py"
+}
