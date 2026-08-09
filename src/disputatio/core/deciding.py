@@ -117,7 +117,9 @@ def _anti_sycophancy_blocked(inputs: DecidingInputs) -> bool:
 
 
 def _budget_hit_reason(inputs: DecidingInputs) -> str | None:
-    """`REASON_BUDGET_TOKENS`/`REASON_BUDGET_WALL` при строгом превышении лимита [REQ-010]."""
+    """`REASON_BUDGET_TOKENS`/`REASON_BUDGET_WALL` при строгом превышении
+    лимита [REQ-010].
+    """
     if inputs.budget_used.tokens > inputs.limits.max_total_tokens:
         return REASON_BUDGET_TOKENS
     if inputs.budget_used.wall_seconds > inputs.limits.max_wall_seconds:
