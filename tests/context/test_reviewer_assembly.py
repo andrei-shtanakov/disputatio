@@ -2,7 +2,7 @@
 
 `test_reviewer.py` пинит содержимое секций — какие пути, гейты и замечания
 попадают в промпт. Мутационная проба показала, что мимо него проходит ровно
-то, что содержимым секций не описывается: три мутанта реализации пережили
+то, что содержимым секций не описывается: четыре мутанта реализации пережили
 весь `tests/context/`.
 
 * пути `proposal`/`patch` можно поменять местами — оба остаются в промпте,
@@ -10,7 +10,11 @@
 * номер раунда можно выкинуть из вводного абзаца — «7» всё равно найдётся
   в промпте, потому что в `diff_stats` попадаются те же цифры;
 * заголовок секции материалов можно склеить со строкой пути — заголовок
-  как таковой не проверялся нигде.
+  как таковой не проверялся нигде;
+* сверку раунда можно сделать односторонней (`artifact.round < expected`
+  вместо `!=`) — все проверки раунда в `test_reviewer.py` подставляют
+  артефакт из раунда РАНЬШЕ ожидаемого, поэтому вторая половина guard'а
+  ничем не доказана.
 
 Файл отдельный, а не дополнение к `test_reviewer.py`: тот байт-заморожен
 red-чекпоинтом TASK-005 и правке не подлежит.
@@ -22,6 +26,11 @@ red-чекпоинтом TASK-005 и правке не подлежит.
 import importlib
 from types import ModuleType
 
+import pytest
+
+from disputatio.contracts.base import Role
+from disputatio.contracts.decision import Decision, Outcome
+from disputatio.contracts.review import Review, Verdict
 from disputatio.contracts.session import Mode, TaskSpec
 from disputatio.contracts.verification import (
     DiffStats,
@@ -43,6 +52,40 @@ def _module(name: str) -> ModuleType:
         ) from exc
 
 
+def _verification(round_no: int) -> VerificationReport:
+    """Отчёт проверок раунда `round_no` без гейтов — минимум для промпта."""
+    return VerificationReport(
+        round=round_no,
+        gates=[],
+        overall=OverallStatus.PASS,
+        diff_stats=DiffStats(files=1, insertions=2, deletions=3),
+    )
+
+
+def _review(round_no: int) -> Review:
+    """`review.json` раунда `round_no`; содержимое здесь не важно — важен раунд."""
+    return Review(
+        round=round_no,
+        role=Role.REVIEWER,
+        verdict=Verdict.REQUEST_CHANGES,
+        confidence=0.5,
+        issues=[],
+        checked=["src/x.py"],
+        summary="нужны правки",
+    )
+
+
+def _decision(round_no: int) -> Decision:
+    """`decision.json` раунда `round_no`; содержимое здесь не важно — важен раунд."""
+    return Decision(
+        round=round_no,
+        outcome=Outcome.CONTINUE,
+        reason="continue_revise_cycle",
+        open_issues_carried=[],
+        next_round_directive=None,
+    )
+
+
 def _prompt(round_no: int = 9) -> str:
     """Минимальный промпт раунда `round_no`; цифры `diff_stats` — не раунд."""
     reviewer = _module("reviewer")
@@ -51,12 +94,7 @@ def _prompt(round_no: int = 9) -> str:
         round=round_no,
         proposal_path=PROPOSAL_PATH,
         patch_path=PATCH_PATH,
-        verification=VerificationReport(
-            round=round_no,
-            gates=[],
-            overall=OverallStatus.PASS,
-            diff_stats=DiffStats(files=1, insertions=2, deletions=3),
-        ),
+        verification=_verification(round_no),
     )
 
 
@@ -102,3 +140,43 @@ def test_materials_title_opens_its_own_section() -> None:
     # Заголовок и первый путь — соседние строки одной секции, без разрыва.
     materials = prompt[prompt.index(reviewer.MATERIALS_TITLE) :]
     assert "\n\n" not in materials[: materials.index(PROPOSAL_PATH)]
+
+
+@pytest.mark.parametrize(
+    ("param", "expected_round"),
+    [("verification", 3), ("prior_review", 2), ("prior_decision", 2)],
+)
+def test_artifact_from_a_later_round_is_rejected(
+    param: str, expected_round: int
+) -> None:
+    """Сверка раунда двусторонняя: артефакт из БУДУЩЕГО раунда — тоже `ValueError`.
+
+    `test_reviewer.py` подставляет во все три параметра артефакт раунда
+    более РАННЕГО, чем ожидаемый, поэтому `artifact.round < expected` вместо
+    `!=` переживает весь `tests/context/`. Между тем именно эта половина
+    guard'а ловит самый вероятный сбой оркестратора: resume, при котором в
+    промпт раунда N поехал `verification.json` уже начатого раунда N+1 —
+    ревьюер вынес бы вердикт по гейтам чужого кода и не узнал бы об этом.
+    """
+    reviewer = _module("reviewer")
+    later = {
+        "verification": _verification(expected_round + 1),
+        "prior_review": _review(expected_round + 1),
+        "prior_decision": _decision(expected_round + 1),
+    }
+
+    with pytest.raises(ValueError) as excinfo:
+        reviewer.build_reviewer_prompt(
+            task=TaskSpec(prompt="Почини ретраи клиента.", mode=Mode.DEVELOP),
+            round=3,
+            proposal_path=PROPOSAL_PATH,
+            patch_path=PATCH_PATH,
+            **{"verification": _verification(3), param: later[param]},
+        )
+
+    message = str(excinfo.value)
+    # Только диагностическая часть: в постоянном хвосте есть «§6.2», и на
+    # нём ассерт про ожидавшийся раунд 2 прошёл бы сам собой.
+    diagnostic = message.split(";")[0]
+    assert param in diagnostic
+    assert str(expected_round) in diagnostic
