@@ -28,7 +28,13 @@ from disputatio.runtime.errors import (
     SessionNotFound,
     UnknownAdapterError,
 )
-from disputatio.runtime.git import GitCli, GitOps, preflight
+from disputatio.runtime.git import (
+    ROUND_COMMIT_PATTERN,
+    ROUND_COMMIT_TEMPLATE,
+    GitCli,
+    GitOps,
+    preflight,
+)
 from disputatio.runtime.purity import (
     FORBIDDEN_ROOTS,
     PurityViolation,
@@ -38,6 +44,8 @@ from disputatio.runtime.purity import (
 __all__ = [
     "ADAPTER_FACTORIES",
     "FORBIDDEN_ROOTS",
+    "ROUND_COMMIT_PATTERN",
+    "ROUND_COMMIT_TEMPLATE",
     "AdapterFactory",
     "AgentConfig",
     "ConfigError",

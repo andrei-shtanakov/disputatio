@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/runtime/test_git_commit_round.py::test_accepted_round_yields_exactly_one_commit",
+  "expected_behavior": "",
+  "baseline_sha": "95747a10eb852e98157e874fca6765be25b32c56",
+  "red_sha": "88148516c89e42fe6f96f8874f949e035358c21a",
+  "created_at": "2026-08-09T17:55:00.389176+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_git_commit_round.py"
+}

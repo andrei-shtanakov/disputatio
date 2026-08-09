@@ -64,6 +64,22 @@ _DIFF_FLAGS: Final = (
     "--dst-prefix=b/",
 )
 
+# Формат сообщения коммита раунда — единственная константа, из которой
+# выводится и запись, и поиск ([DESIGN-011]). `:03d` держит `NNN` в том же
+# виде, что и имя каталога `rounds/NNN/`: разойдись padding — история и диск
+# назвали бы раунд по-разному, а `base_rev(N)` ([DESIGN-012]) искал бы
+# несуществующий коммит. Якоря в шаблоне поиска обязательны: без них
+# `disputatio: round 0031` и `fixup! disputatio: round 003` считались бы
+# коммитом раунда.
+ROUND_COMMIT_TEMPLATE: Final = "disputatio: round {round:03d}"
+ROUND_COMMIT_PATTERN: Final = r"^disputatio: round [0-9]{3}$"
+
+# Правило, скрывающее каталог сессии от git. Пишется в `.git/info/exclude` —
+# файл локальный, в дерево не входит и в чужой `.gitignore` не лезет: сессия
+# не вправе править версионируемые файлы пользователя. Без ведущего слэша
+# правило не привязано к toplevel: `root` не обязан быть корнем репозитория.
+_EXCLUDE_ENTRY: Final = f"{SESSION_DIR_NAME}/"
+
 _IDENTITY_ARGS: Final = (
     "-c",
     f"user.name={GIT_USER_NAME}",
@@ -181,8 +197,48 @@ class GitCli:
         return _checked(self.root, "diff", *_DIFF_FLAGS, "HEAD", "--", *_TREE_PATHSPEC)
 
     def commit_round(self, round_no: int) -> None:
-        """TODO: [TASK-006] — коммит `disputatio: round NNN` ([DESIGN-011])."""
-        raise NotImplementedError("GitCli.commit_round приходит с [DESIGN-011]")
+        """Коммитит принятый раунд сообщением шаблона ([REQ-011], [DESIGN-011]).
+
+        Ровно один коммит на принятый раунд: он же — цель `git reset`
+        следующего раунда ([DESIGN-012]), поэтому лишний коммит сдвинул бы
+        базу на состояние, работы автора не содержащее.
+
+        Пустой дифф коммита не создаёт и ошибкой не считается: analyze-раунд
+        правок не делает, а повторный вызов после прерывания обязан давать
+        то же состояние ([REQ-015]). Отсюда же порядок: сначала `git add`,
+        потом проверка индекса — «нечего коммитить» видно только по индексу,
+        а `git commit` в этом случае упал бы кодом 1.
+
+        `.disputatio/` из коммита исключена дважды: правилом в
+        `.git/info/exclude` и снятием каталога с индекса сразу после `add`.
+        Первого хватило бы, но оно живёт в файле, который пользователь вправе
+        отредактировать, а уже отслеживаемые артефакты игнор и вовсе не
+        скрывает. Исключающий pathspec на месте `add` не годится: он отбирает
+        файлы правильно, но сам факт совпадения `:/` с игнорируемым каталогом
+        git считает ошибкой и возвращает код 1.
+        """
+        _exclude_session_dir(self.root)
+        _checked(self.root, "add", "--all")
+        _checked(self.root, "reset", "--quiet", "--", SESSION_DIR_NAME)
+        staged = _checked(
+            self.root, "diff", "--cached", "--name-only", "HEAD", "--", *_TREE_PATHSPEC
+        )
+        if not staged.strip():
+            return
+        _checked(
+            self.root,
+            "commit",
+            "--quiet",
+            # Форма коммита не зависит от чужого конфига и чужих скриптов:
+            # `commit.gpgsign` в локальном `.git/config` сорвал бы неинтер-
+            # активную сессию запросом ключа, а pre-commit-хук пользователя
+            # либо отверг бы коммит раунда, либо переписал файлы уже ПОСЛЕ
+            # снятого `changes.patch` — ревью читало бы не то, что в истории.
+            "--no-gpg-sign",
+            "--no-verify",
+            "-m",
+            ROUND_COMMIT_TEMPLATE.format(round=round_no),
+        )
 
     def reset_hard(self, rev: str) -> None:
         """TODO: [TASK-007] — `git reset --hard <rev>` ([DESIGN-012])."""
@@ -191,6 +247,40 @@ class GitCli:
     def clean(self) -> None:
         """TODO: [TASK-007] — уборка untracked прерванной попытки ([DESIGN-012])."""
         raise NotImplementedError("GitCli.clean приходит с [DESIGN-012]")
+
+
+def _exclude_session_dir(root: Path) -> None:
+    """Прячет `.disputatio/` от git через `.git/info/exclude` ([DESIGN-011]).
+
+    Идемпотентна: правило дописывается только если его там ещё нет — иначе
+    каждый принятый раунд наращивал бы файл повторами. Существующее
+    содержимое сохраняется целиком: `info/exclude` принадлежит пользователю
+    не меньше, чем `.gitignore`, — сессия лишь дописывает свою строку.
+    """
+    exclude_file = _exclude_file_path(root)
+    existing = (
+        exclude_file.read_text(encoding="utf-8") if exclude_file.is_file() else ""
+    )
+    if any(line.strip() == _EXCLUDE_ENTRY for line in existing.splitlines()):
+        return
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    exclude_file.write_text(
+        f"{existing}{separator}{_EXCLUDE_ENTRY}\n", encoding="utf-8"
+    )
+
+
+def _exclude_file_path(root: Path) -> Path:
+    """Путь `info/exclude` репозитория; спрашивается у git, а не собирается.
+
+    Берётся именно `--git-common-dir`: `.git` бывает файлом-ссылкой (submodule,
+    `git worktree`), а `info/exclude` git читает из общего каталога, а не из
+    приватного каталога worktree. Относительный ответ (`.git` при `root` ==
+    toplevel) достраивается от `root`, абсолютный `Path.__truediv__`
+    поглощает сам.
+    """
+    common_dir = _checked(root, "rev-parse", "--git-common-dir").strip()
+    return root / common_dir / "info" / "exclude"
 
 
 def _checked(root: Path, *args: str) -> str:
