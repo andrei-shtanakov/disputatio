@@ -6,9 +6,9 @@
 здесь можно испортить, портится перестановкой строк, а не логикой, — поэтому
 порядок операций каждого шага зафиксирован тестом по общему spy-логу.
 
-Пока реализованы `propose` ([DESIGN-003]), `verify` ([DESIGN-004]) и
-`review` ([DESIGN-005]); остальные шаги приходят своими задачами и делят с
-ними `StepContext`.
+Пока реализованы `propose` ([DESIGN-003]), `verify` ([DESIGN-004]),
+`review` ([DESIGN-005]) и `decide_step` ([DESIGN-007]); остальные шаги
+приходят своими задачами и делят с ними `StepContext`.
 """
 
 from collections.abc import Sequence
@@ -18,6 +18,7 @@ from typing import Any
 
 from disputatio.context import build_author_prompt, build_reviewer_prompt
 from disputatio.contracts import (
+    Decision,
     Event,
     EventSource,
     EventType,
@@ -28,14 +29,29 @@ from disputatio.contracts import (
     parse_proposal,
     validate_review,
 )
-from disputatio.core import SessionFsm, Writer, active_writer
-from disputatio.events import write_round_artifact
+from disputatio.core import (
+    DecidingInputs,
+    SessionFsm,
+    Writer,
+    active_writer,
+    decide,
+    is_partial,
+)
+from disputatio.events import finalize_round, write_round_artifact
 from disputatio.runtime.composition import RuntimeDeps
 from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
-from disputatio.runtime.history import load_prior_round, load_verification
+from disputatio.runtime.history import (
+    carried_issues,
+    issue_history,
+    load_patch,
+    load_prior_round,
+    load_review,
+    load_verification,
+)
 from disputatio.runtime.layout import (
     CHANGES_PATCH_NAME,
+    DECISION_NAME,
     PROPOSAL_NAME,
     REVIEW_NAME,
     VERIFICATION_NAME,
@@ -263,6 +279,89 @@ async def review(ctx: StepContext) -> None:
     ctx.fsm.handle_step_success()
 
 
+def decide_step(ctx: StepContext) -> None:
+    """Шаг DECIDING раунда `ctx.round`: снимок → ядро → артефакт → переход.
+
+    Сам шаг ничего не решает. Порядок стоп-условий §5 целиком принадлежит
+    `core.decide`, терминальные цепочки §2 — `SessionFsm.apply_decision`, и
+    здесь нет ни одной ветки, повторяющей их: собственное мнение об исходе
+    разошлось бы с ядром ровно тогда, когда §5 поправят в одном из двух
+    мест. Runtime отвечает за три вещи, и все три — про порядок:
+
+    1. **Снимок собран с диска.** `DecidingInputs` — единственный вход
+       ядра, и читается он из артефактов, а не из памяти процесса: после
+       перезапуска оркестратора решение обязано получиться то же самое.
+    2. **`decision.json` записан ДО перехода.** Переход — точка, после
+       которой resume считает раунд решённым; артефакт, отставший от неё,
+       означал бы раунд без записанного исхода.
+    3. **Принятая работа зафиксирована ДО перехода.** `finalize_round`
+       закрывает раунд от правок (I3 [REQ-016]), `commit_round` даёт
+       следующему раунду цель сброса ([REQ-011], [DESIGN-012]). Случись
+       обрыв между переходом и коммитом — раунду N+1 не на что было бы
+       сбрасываться, и сессия встала бы намертво.
+
+    Частичный исход (`core.is_partial`) не финализируется и не коммитится:
+    это эскалация пользователю (§2.5), и принять такую работу вправе
+    только он. Какой исход частичен, знает ядро — собственной таблицы
+    исходов runtime не заводит.
+
+    `Decision` материализуется здесь же, а не берётся у `apply_decision`:
+    тот отдаёт её уже после переходов, то есть после точки, до которой
+    артефакт обязан лежать на диске. Обе материализации собираются из
+    одного `DecisionDraft` и одного номера раунда, и их равенство пинится
+    тестом шага.
+    """
+    round_no = ctx.round
+    root = ctx.root
+
+    draft = decide(_deciding_inputs(ctx))
+    decision = Decision(
+        round=round_no,
+        outcome=draft.outcome,
+        reason=draft.reason,
+        open_issues_carried=list(draft.open_issues_carried),
+        next_round_directive=draft.next_round_directive,
+    )
+    write_round_artifact(
+        root, round_no, DECISION_NAME, decision.model_dump_json(by_alias=True)
+    )
+
+    if not is_partial(draft.outcome):
+        finalize_round(root, round_no)
+        ctx.deps.git.commit_round(round_no)
+
+    ctx.fsm.apply_decision(draft)
+
+
+def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
+    """Снимок раунда N для ядра — четыре источника, ни одного вывода.
+
+    Ревью и отчёт берутся у раунда N, замечания и патч — у соседей по
+    истории, и каждый из них назван отдельной функцией `history`: единая
+    «загрузи всё» скрыла бы подмену раунда там, где она дороже всего.
+
+    `patch_current` — строка даже когда файла нет ([REQ-013]): раунд без
+    правок законен, и падать на нём шагу не на чем. `patch_two_back`
+    отсутствие сохраняет как `None` — для ядра «правок не было» и
+    «сравнивать не с чем» это разные входы.
+    """
+    root = ctx.root
+    round_no = ctx.round
+    state = ctx.fsm.state
+    return DecidingInputs(
+        round=round_no,
+        mode=state.task.mode,
+        review=_round_review(root, round_no),
+        verification=_round_verification(root, round_no),
+        carried_issues=carried_issues(root, round_no - 1),
+        patch_current=load_patch(root, round_no) or "",
+        patch_two_back=load_patch(root, round_no - 2),
+        issue_history=issue_history(root, round_no),
+        budget_used=state.budget_used,
+        limits=state.limits,
+    )
+
+
 def _accepted_review(
     text: str, verification: VerificationReport, round_no: int
 ) -> Review:
@@ -301,6 +400,24 @@ def _exhausted(failures: Sequence[Exception]) -> Exception:
             "валидации: счёт попыток разошёлся с их разбором"
         )
     return failures[-1]
+
+
+def _round_review(root: Path, round_no: int) -> Review:
+    """Ревью раунда `round_no`; его отсутствие — ошибка порядка.
+
+    `AssertionError` по той же причине, что и у отчёта проверок: войти в
+    DECIDING раньше, чем REVIEWING положил ревью на диск, write-ahead-
+    переход не даёт. Значит пустое место здесь означает сломанную
+    диспетчеризацию цикла, а не действие пользователя.
+    """
+    review_model = load_review(root, round_no)
+    if review_model is None:
+        raise AssertionError(
+            f"нет review.json раунда {round_no:03d}: шаг DECIDING вызван до "
+            "REVIEWING — решать раунд, по которому ревьюер не высказался, "
+            "не из чего"
+        )
+    return review_model
 
 
 def _round_verification(root: Path, round_no: int) -> VerificationReport:
