@@ -30,7 +30,7 @@ import fnmatch
 import json
 import sys
 import tomllib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from disputatio import context
@@ -71,27 +71,38 @@ ALLOWED_INTERNAL_PREFIXES: tuple[str, ...] = (
 зависимость в обратную сторону.
 """
 
-FORBIDDEN_MODULES: frozenset[str] = frozenset(
+PURE_STDLIB_MODULES: frozenset[str] = frozenset(
     {
-        "datetime",
-        "httpx",
-        "importlib",
-        "io",
-        "os",
-        "pathlib",
-        "random",
-        "requests",
-        "secrets",
-        "socket",
-        "subprocess",
-        "time",
+        "abc",
+        "collections",
+        "dataclasses",
+        "decimal",
+        "enum",
+        "fractions",
+        "functools",
+        "itertools",
+        "math",
+        "operator",
+        "re",
+        "string",
+        "textwrap",
+        "types",
+        "typing",
+        "unicodedata",
     }
 )
-"""Импорты, любой из которых ломает NFR-001/NFR-002.
+"""Единственные модули stdlib, которые пакету позволено импортировать.
 
-`importlib` в списке по той же причине, что и `__import__`: это второй
-способ втянуть запрещённый модуль так, чтобы проверка по именам импортов
-его не увидела.
+Список — белый, а не чёрный, и это принципиально: перечислять запрещённое
+значит держать проверку fail-open. Чёрный список этой же приёмки не знал
+про `uuid`, `tempfile`, `shutil` и `sys` — то есть про случайность и три
+способа сделать I/O, — и модуль с `uuid.uuid4()` на импорте проходил скан,
+обещающий «ни I/O, ни времени, ни случайности». Ровно этой дырой в
+TASK-001 уже прорастал недетерминированный тег.
+
+Расширять список можно, но только осознанно: каждое имя здесь — обещание,
+что модуль не трогает ни диск, ни сеть, ни часы, ни генератор случайных
+чисел. `importlib` не войдёт сюда никогда — это второй `__import__`.
 """
 
 FORBIDDEN_CALLS: frozenset[str] = frozenset({"open", "__import__"})
@@ -315,6 +326,35 @@ _NFR_COVERAGE: dict[str, tuple[tuple[str, str], ...]] = {
             "test_acceptance_w_context.py",
             "test_context_package_depends_only_on_stdlib_and_contracts",
         ),
+        (
+            "test_acceptance_hardening.py",
+            "test_import_of_an_impure_module_is_an_offence",
+        ),
+        (
+            "test_acceptance_hardening.py",
+            "test_pure_stdlib_and_internal_imports_stay_clean",
+        ),
+        ("test_acceptance_hardening.py", "test_dependency_boundary_ends_at_a_dot"),
+        (
+            "test_acceptance_hardening.py",
+            "test_allowed_internal_packages_are_not_violations",
+        ),
+        (
+            "test_acceptance_hardening.py",
+            "test_root_level_error_relaxation_covers_every_module",
+        ),
+        (
+            "test_acceptance_hardening.py",
+            "test_project_excludes_hides_the_package_from_the_typechecker",
+        ),
+        (
+            "test_acceptance_hardening.py",
+            "test_module_outside_project_includes_is_never_checked",
+        ),
+        (
+            "test_acceptance_hardening.py",
+            "test_real_config_leaves_the_package_strictly_checked",
+        ),
     ),
     "NFR-002": (
         ("test_tags.py", "test_wrap_is_deterministic"),
@@ -518,8 +558,18 @@ def collect_test_node_ids(directory: Path) -> set[str]:
 
 
 def test_modules_on_disk(directory: Path) -> set[str]:
-    """Имена файлов `test_*.py` в каталоге."""
-    return {path.name for path in directory.glob("test_*.py")}
+    """Пути файлов `test_*.py` в каталоге, включая вложенные.
+
+    Обход рекурсивный, а путь — относительный: плоский `glob` не заглядывал
+    в подкаталоги, и модуль уровнем ниже не числился ни в матрице, ни среди
+    сирот. Вложенный модуль детектор сирот теперь валит всегда — матрица
+    хранит имена файлов прямо в `tests/context/` (см. `outside_tests_dir`),
+    так что закрыть его строкой таблицы нельзя; это осознанный запрет на
+    подкаталоги тестов воркстрима, а не оплошность.
+    """
+    return {
+        path.relative_to(directory).as_posix() for path in directory.rglob("test_*.py")
+    }
 
 
 def imported_modules(source: str) -> set[str]:
@@ -537,16 +587,19 @@ def imported_modules(source: str) -> set[str]:
     return modules
 
 
-def find_forbidden_imports(source: str) -> list[str]:
-    """Импорты модулей из `FORBIDDEN_MODULES` — точечная и `from`-форма.
+def find_impure_imports(source: str) -> list[str]:
+    """Импорты за пределами `PURE_STDLIB_MODULES` — точечная и `from`-форма.
 
     Сравнивается корень dotted-имени, поэтому `import os.path` и
-    `import os.path as p` ловятся наравне с `import os`.
+    `import os.path as p` ловятся наравне с `import os`. Внутренние
+    импорты (`disputatio.*`) здесь не рассматриваются: их границу держит
+    `find_dependency_violations`.
     """
     return sorted(
         module
         for module in imported_modules(source)
-        if module.partition(".")[0] in FORBIDDEN_MODULES
+        if module.partition(".")[0] not in PURE_STDLIB_MODULES
+        and module.partition(".")[0] != PACKAGE_ROOT
     )
 
 
@@ -593,17 +646,29 @@ def find_dependency_violations(source: str) -> list[str]:
     for module in sorted(imported_modules(source)):
         root = module.partition(".")[0]
         if root == PACKAGE_ROOT:
-            if not module.startswith(ALLOWED_INTERNAL_PREFIXES):
+            if not _within(module, ALLOWED_INTERNAL_PREFIXES):
                 violations.append(module)
         elif root not in sys.stdlib_module_names:
             violations.append(module)
     return violations
 
 
+def _within(module: str, prefixes: Iterable[str]) -> bool:
+    """Принадлежит ли модуль одному из пакетов `prefixes`.
+
+    Граница проходит по точке, а не по символам: голый `startswith`
+    записал бы `disputatio.contextual` в «свои», хотя это чужой пакет,
+    просто начинающийся так же.
+    """
+    return any(
+        module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes
+    )
+
+
 def find_purity_offences(source: str) -> list[str]:
     """Все нарушения чистоты модуля разом, в стабильном порядке."""
     return [
-        *(f"import {name}" for name in find_forbidden_imports(source)),
+        *(f"import {name}" for name in find_impure_imports(source)),
         *(f"relative import {name}" for name in find_relative_imports(source)),
         *(f"star import {name}" for name in find_star_imports(source)),
         *(f"call {name}" for name in find_forbidden_calls(source)),
@@ -625,22 +690,78 @@ def pyrefly_config_path() -> Path:
     return repo_root() / "pyrefly.toml"
 
 
-def pyrefly_relaxed_globs() -> dict[str, list[str]]:
+def pyrefly_relaxed_globs(config: Mapping[str, object]) -> dict[str, list[str]]:
     """`{glob: отключённые классы ошибок}` из `[[sub-config]]` pyrefly.
 
     Учитываются только отключения (`false`): включение проверки обратно —
     не послабление.
     """
-    config = tomllib.loads(pyrefly_config_path().read_text(encoding="utf-8"))
-    sub_configs = config.get("sub-config", [])
     relaxed: dict[str, list[str]] = {}
-    for sub_config in sub_configs:
+    for sub_config in _mappings(config.get("sub-config")):
         matches = sub_config.get("matches")
-        errors = sub_config.get("errors", {})
-        disabled = sorted(name for name, value in errors.items() if value is False)
+        disabled = _disabled_errors(sub_config.get("errors"))
         if isinstance(matches, str) and disabled:
             relaxed[matches] = disabled
     return relaxed
+
+
+def typecheck_relaxations(
+    config: Mapping[str, object], modules: Iterable[str]
+) -> dict[str, list[str]]:
+    """`{модуль: почему pyrefly проверяет его не строго}`; пусто — строго.
+
+    Точечный `[[sub-config]]` — не единственный способ обезвредить
+    `pyrefly check`, и остальные три бьют сильнее: корневой `[errors]`
+    гасит класс ошибок во всём репозитории, `project-excludes` убирает
+    файл из проверки целиком, а файл, не попавший в `project-includes`,
+    не проверялся и не начинал. Каждый из трёх оставил бы «0 errors»
+    честной строкой в конфиге, поэтому все они считаются послаблением.
+    """
+    includes = _strings(config.get("project-includes"))
+    excludes = _strings(config.get("project-excludes"))
+    root_disabled = _disabled_errors(config.get("errors"))
+    sub_globs = pyrefly_relaxed_globs(config)
+
+    relaxed: dict[str, list[str]] = {}
+    for module in modules:
+        reasons: list[str] = [f"errors {name}" for name in root_disabled]
+        if includes and not any(fnmatch.fnmatch(module, glob) for glob in includes):
+            reasons.append("вне project-includes")
+        reasons += [
+            f"project-excludes {glob}"
+            for glob in excludes
+            if fnmatch.fnmatch(module, glob)
+        ]
+        reasons += [
+            f"sub-config {glob}: {name}"
+            for glob, names in sub_globs.items()
+            if fnmatch.fnmatch(module, glob)
+            for name in names
+        ]
+        if reasons:
+            relaxed[module] = sorted(reasons)
+    return relaxed
+
+
+def _strings(value: object) -> list[str]:
+    """Список строк из значения конфига; всё остальное — пустой список."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _mappings(value: object) -> list[Mapping[str, object]]:
+    """Список таблиц из значения конфига; всё остальное — пустой список."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _disabled_errors(errors: object) -> list[str]:
+    """Классы ошибок, выключенные (`false`) в секции `errors`."""
+    if not isinstance(errors, Mapping):
+        return []
+    return sorted(name for name, value in errors.items() if value is False)
 
 
 def relaxed_package_modules() -> dict[str, list[str]]:
@@ -652,17 +773,13 @@ def relaxed_package_modules() -> dict[str, list[str]]:
     сканер следит, чтобы ни одно из них не расползлось на
     `src/disputatio/context/**`.
     """
-    package_dir = context_package_dir()
     root = repo_root()
-    covered: dict[str, list[str]] = {}
-    for path in sorted(package_dir.rglob("*.py")):
-        relative = path.relative_to(root).as_posix()
-        globs = sorted(
-            glob for glob in pyrefly_relaxed_globs() if fnmatch.fnmatch(relative, glob)
-        )
-        if globs:
-            covered[relative] = globs
-    return covered
+    config = tomllib.loads(pyrefly_config_path().read_text(encoding="utf-8"))
+    modules = [
+        path.relative_to(root).as_posix()
+        for path in sorted(context_package_dir().rglob("*.py"))
+    ]
+    return typecheck_relaxations(config, modules)
 
 
 def _scan(directory: Path, finder: Callable[[str], list[str]]) -> dict[str, list[str]]:
