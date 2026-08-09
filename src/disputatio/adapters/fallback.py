@@ -55,9 +55,19 @@ class ReadOnlyWorkspace:
         Путь обнуляется ДО `remove`, поэтому повторный выход (или выход без
         успешного входа) не приводит ко второму удалению. Исключение из тела
         не подавляется: возвращаем `None`.
+
+        Падение самого `remove` не вытесняет исключение тела — иначе вызывающий
+        (оркестратор) поймал бы ошибку уборки вместо настоящей ошибки агента.
+        Уборочное исключение при этом не теряется: оно оседает заметкой на
+        исходном (`add_note`) и видно в traceback.
         """
         worktree = self._worktree
         if worktree is None:
             return
         self._worktree = None
-        await self._remove(worktree)
+        try:
+            await self._remove(worktree)
+        except Exception as cleanup_exc:
+            if exc is None:
+                raise
+            exc.add_note(f"cleanup: worktree {worktree} не снят: {cleanup_exc!r}")

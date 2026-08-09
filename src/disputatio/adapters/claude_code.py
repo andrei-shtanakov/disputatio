@@ -22,6 +22,11 @@ from disputatio.contracts.ports import AgentTurn
 
 _DEFAULT_CAPABILITIES = AdapterCapabilities(supports_granular_permissions=True)
 
+_MISSING_WORKTREE_OPS = (
+    "Reviewer без granular-permissions требует worktree_create/"
+    "worktree_remove: read-only (§7) иначе ничем не обеспечен"
+)
+
 
 class ClaudeCodeAdapter:
     """AgentAdapter over the `claude` CLI (SPEC-001 §7/§8)."""
@@ -42,6 +47,10 @@ class ClaudeCodeAdapter:
         self.launcher = launcher
         self.worktree_create = worktree_create
         self.worktree_remove = worktree_remove
+        if self._needs_read_only_workspace() and (
+            worktree_create is None or worktree_remove is None
+        ):
+            raise ValueError(_MISSING_WORKTREE_OPS)
 
     async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
         workspace = self._make_workspace()
@@ -66,27 +75,26 @@ class ClaudeCodeAdapter:
 
         return AgentTurn(text=buffer, session_ref=None, tokens_used=None)
 
-    def _make_workspace(self) -> ReadOnlyWorkspace | None:
-        """Read-only worktree — только ревьюеру без granular-permissions.
+    def _needs_read_only_workspace(self) -> bool:
+        """Read-only worktree нужен только ревьюеру без granular-permissions.
 
         Во всех остальных сочетаниях (`Role.AUTHOR`, либо ревьюер, чей CLI
-        умеет `--allowedTools`) возвращает `None`: ограничение уже наложено
-        `build_role_argv`, лишний worktree создавать нечего.
+        умеет `--allowedTools`) ограничение уже наложено `build_role_argv`,
+        лишний worktree создавать нечего.
         """
-        if self.role is not Role.REVIEWER:
-            return None
-        if self.capabilities.supports_granular_permissions:
-            return None
-        if self.worktree_create is None or self.worktree_remove is None:
-            raise ValueError(
-                "Reviewer без granular-permissions требует worktree_create/"
-                "worktree_remove: read-only (§7) иначе ничем не обеспечен"
-            )
-        return ReadOnlyWorkspace(
-            self.session_dir,
-            create=self.worktree_create,
-            remove=self.worktree_remove,
+        return (
+            self.role is Role.REVIEWER
+            and not self.capabilities.supports_granular_permissions
         )
+
+    def _make_workspace(self) -> ReadOnlyWorkspace | None:
+        """Строит workspace или `None`; конфигурацию проверил `__init__`."""
+        if not self._needs_read_only_workspace():
+            return None
+        create, remove = self.worktree_create, self.worktree_remove
+        if create is None or remove is None:  # атрибуты обнулили после __init__
+            raise ValueError(_MISSING_WORKTREE_OPS)
+        return ReadOnlyWorkspace(self.session_dir, create=create, remove=remove)
 
     def _build_argv(self, prompt: str) -> list[str]:
         return ["claude", "-p", prompt, *build_role_argv(self.role, self.capabilities)]
