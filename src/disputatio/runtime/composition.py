@@ -32,7 +32,7 @@ from disputatio.adapters import ClaudeCodeAdapter, CodexAdapter
 from disputatio.contracts import AgentAdapter, EventSink, Role, StateStore, Verifier
 from disputatio.events import FileStateStore, JsonlEventSink
 from disputatio.runtime.config import RuntimeConfig
-from disputatio.runtime.errors import UnknownAdapterError
+from disputatio.runtime.errors import ConfigError, UnknownAdapterError
 from disputatio.runtime.git import GitOps
 from disputatio.verifier import VerifierRunner
 
@@ -132,6 +132,13 @@ def _build_adapter(
     Фабрике передаются ровно четыре аргумента: всё остальное — дефолты
     пакета адаптеров. Любой пятый (права, флаги CLI) означал бы, что runtime
     завёл второе мнение о §7 (NFR-003).
+
+    Фабрика вправе отказаться собирать пару «адаптер + роль»: `codex`
+    ревьюером требует read-only worktree (ADR-004), которого на дефолтах нет.
+    Имя зарегистрировано в реестре, то есть легально в `config.toml`, —
+    значит отказ обязан прийти в иерархии [DESIGN-020], а не голым
+    `ValueError` из чужого пакета. Причина не переписывается, а цитируется:
+    почему именно роль не собирается, знает пакет адаптеров, не runtime.
     """
     factory = ADAPTER_FACTORIES.get(name)
     if factory is None:
@@ -139,9 +146,14 @@ def _build_adapter(
         raise UnknownAdapterError(
             f"неизвестный адаптер {name!r} для роли {role.value}; известны: {known}"
         )
-    return factory(
-        role=role,
-        session_dir=root,
-        event_sink=sink,
-        session=session_id,
-    )
+    try:
+        return factory(
+            role=role,
+            session_dir=root,
+            event_sink=sink,
+            session=session_id,
+        )
+    except ValueError as exc:
+        raise ConfigError(
+            f"адаптер {name!r} не собирается для роли {role.value}: {exc}"
+        ) from exc
