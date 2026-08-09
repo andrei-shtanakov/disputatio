@@ -9,6 +9,8 @@ SPEC-001. Схемная валидация (pydantic, review.py) и прото�
 сравнивают по константам, без строкового дублирования.
 """
 
+import unicodedata
+
 from pydantic import Field
 
 from disputatio.contracts.base import ArtifactChild
@@ -21,6 +23,17 @@ REASON_EMPTY_CHECKED = "empty_checked"
 
 _NEGATIVE_VERDICTS = (Verdict.REQUEST_CHANGES, Verdict.REJECT)
 _SUBSTANTIVE_SEVERITIES = (Severity.BLOCKER, Severity.MAJOR)
+
+
+def _semantic_text(text: str) -> str:
+    """Семантическое содержимое строки: без Cf-символов и краевых пробелов.
+
+    Удаляет все символы Unicode-категории Cf (U+200B, U+FEFF и др.)
+    ДО strip: строка из одних невидимых и/или пробельных символов
+    нормализуется в "".
+    """
+    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return visible.strip()
 
 
 class ReviewAcceptance(ArtifactChild):
@@ -77,19 +90,21 @@ def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
     """REQ-009: blocker|major с пустым evidence → НОВЫЙ Review с minor.
 
     Голословный блокер не крутит цикл: issue деградируется до `minor`
-    вместо отклонения ревью. Evidence из одних пробельных символов
-    эквивалентен пустому — критерий `not evidence.strip()` (REQ-013).
+    вместо отклонения ревью. Evidence из одних пробельных и/или
+    невидимых Cf-символов (U+200B, U+FEFF) эквивалентен пустому —
+    критерий `not _semantic_text(evidence)` (REQ-013 + Cf-hardening).
     Возвращает новый объект (`model_copy`) и список id деградированных
     issues в исходном порядке; сам `review`, его вердикт и issues с
-    содержательным `evidence` не затрагиваются.
+    содержательным `evidence` не затрагиваются — нормализация только
+    для критерия, текст evidence в копии хранится как пришёл.
     """
     degraded_ids: list[str] = []
     issues: list[Issue] = []
     for issue in review.issues:
-        unevidenced = (
-            issue.severity in (Severity.BLOCKER, Severity.MAJOR)
-            and not issue.evidence.strip()
-        )
+        unevidenced = issue.severity in (
+            Severity.BLOCKER,
+            Severity.MAJOR,
+        ) and not _semantic_text(issue.evidence)
         if unevidenced:
             issues.append(issue.model_copy(update={"severity": Severity.MINOR}))
             degraded_ids.append(issue.id)
@@ -134,9 +149,10 @@ def check_checked_nonempty(review: Review) -> str | None:
 
     Пустой список схемно валиден (review.py), но ревью без единого
     осмотренного объекта не принимается — дешёвый прокси верифицируемости.
-    Элементы из одних пробельных символов не считаются: `checked` принят,
-    только если хотя бы один элемент проходит `item.strip()` (REQ-013);
-    `[]` и `["   ", "\\t"]` дают один и тот же код причины.
+    Элементы из одних пробельных и/или невидимых Cf-символов не
+    считаются: `checked` принят, только если хотя бы один элемент
+    проходит `_semantic_text(item)` (REQ-013 + Cf-hardening); `[]`,
+    `["   ", "\\t"]` и `["\\u200b"]` дают один и тот же код причины.
     """
-    substantive = any(item.strip() for item in review.checked)
+    substantive = any(_semantic_text(item) for item in review.checked)
     return None if substantive else REASON_EMPTY_CHECKED
