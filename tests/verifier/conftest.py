@@ -27,11 +27,29 @@ _HERMETIC_GIT_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
 }
 
+# Унаследованные `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` перебивают `cwd`:
+# при абсолютном `GIT_DIR` в окружении (обёртки git-хуков, экспорт в шелле
+# разработчика) все команды фикстуры отрабатывают успешно, но `.git` в
+# `tmp_path` не появляется — `config` переписывает `user.*` ВНЕШНЕГО репо, а
+# `add`/`commit` кладут туда настоящий коммит. Отказ при этом не громкий:
+# падает уже снимок в тесте, когда чужое дерево изменено. Тот же список
+# чистит `mutation_probe._git_env` — фикстура обязана быть герметичной не
+# только по конфигу, но и по расположению репозитория.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+
+
+def _git_env() -> dict[str, str]:
+    """Окружение git-команд фикстуры: герметичный конфиг, без чужого репозитория."""
+    env = dict(os.environ)
+    for key in _GIT_LOCATION_VARS:
+        env.pop(key, None)
+    return {**env, **_HERMETIC_GIT_ENV}
+
 
 def _git(workdir: Path, *args: str) -> None:
     """Запускает `git *args` в `workdir`; ненулевой код возврата — ошибка.
 
-    Окружение герметично (`_HERMETIC_GIT_ENV`), а сбой пересобирается в
+    Окружение герметично (`_git_env`), а сбой пересобирается в
     `RuntimeError` с stderr: `CalledProcessError.__str__` печатает только
     код возврата, и причина падения фикстуры иначе не видна в отчёте.
     """
@@ -42,7 +60,7 @@ def _git(workdir: Path, *args: str) -> None:
             check=True,
             capture_output=True,
             text=True,
-            env={**os.environ, **_HERMETIC_GIT_ENV},
+            env=_git_env(),
         )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
