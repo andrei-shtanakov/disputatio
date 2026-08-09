@@ -27,15 +27,22 @@
 
 Отдельной «логики восстановления» в модуле тоже нет ([REQ-014]): `drive`
 начинает с фазы сохранённого состояния, поэтому холодный старт и resume
-отличаются только тем, откуда пришло начальное `SessionState`.
+отличаются только тем, откуда пришло начальное `SessionState`. Всё, что
+добавляет `resume_session`, — это подготовка: снапшот `config.toml` вместо
+конфига окружения и `store.load` вместо `config.to_session_state`.
 """
 
 from collections.abc import Awaitable, Callable, Mapping
 from inspect import isawaitable
+from pathlib import Path
+from typing import Any
 
 from disputatio.contracts import SessionPhase, SessionState
-from disputatio.core import TERMINAL_PHASES
+from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import steps
+from disputatio.runtime.composition import build_runtime
+from disputatio.runtime.config import load_config
+from disputatio.runtime.errors import SessionNotFound
 from disputatio.runtime.steps import StepContext
 
 StepFn = Callable[[StepContext], Awaitable[None] | None]
@@ -61,6 +68,56 @@ NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
     SessionPhase.REVIEWING: SessionPhase.DECIDING,
 }
 """Безусловные рёбра раунда. `DECIDING`/`EXPORTING` отсутствуют намеренно."""
+
+
+async def resume_session(root: Path, session_id: str, **overrides: Any) -> SessionState:
+    """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
+
+    Собственной «логики восстановления» здесь нет и быть не должно — есть
+    четыре строки подготовки и тот же `drive`, что крутит холодный старт.
+    Отличие ровно одно: начальное `SessionState` приходит из `session.json`,
+    а не из `config.to_session_state`. Заведись у resume хоть один свой шаг
+    («пропустить фазу», «переиграть раунд», «подтянуть конфиг»), и
+    восстановленная сессия перестала бы быть той же самой сессией.
+
+    Порядок подготовки значим дважды:
+
+    1. **Конфиг — из снапшота сессии**, а не из текущего окружения
+       ([DESIGN-014]). Внешний `config.toml` мог измениться между запусками,
+       и сессия, продолженная с другими лимитами, гейтами или `base_commit`,
+       противоречила бы уже записанным раундам — в частности, цель сброса
+       раунда 1 восстановима только из снапшота.
+    2. **Состояние — после сборки портов**: `store` берётся у собранных
+       зависимостей, чтобы resume читал сессию тем же хранилищем, которым
+       цикл будет её писать. Второй источник состояния разошёлся бы с
+       первым молча.
+
+    `KeyError` от `store.load` переводится в `SessionNotFound`: отсутствие
+    сессии — ошибка пользователя, и CLI обязан напечатать её строкой, а не
+    repr'ом ключа в кавычках ([DESIGN-020]). Нечитаемый снапшот приходит
+    `ConfigError` оттуда же, из `load_config`.
+
+    `overrides` передаются в `build_runtime` как есть: подмена любого порта
+    фейком не требует ни отдельного пути, ни правок цикла ([REQ-001]).
+    """
+    config = load_config(root)
+    deps = build_runtime(config, root, **overrides)
+    try:
+        state = deps.store.load(session_id)
+    except KeyError as exc:
+        raise SessionNotFound(
+            f"сессии {session_id!r} нет в {root}: session.json отсутствует "
+            "либо принадлежит другой сессии"
+        ) from exc
+    fsm = SessionFsm(state, store=deps.store, sink=deps.sink, now=deps.now)
+    return await drive(
+        StepContext(
+            deps=deps,
+            fsm=fsm,
+            base_commit=config.base_commit,
+            gates=config.gates,
+        )
+    )
 
 
 async def drive(ctx: StepContext) -> SessionState:

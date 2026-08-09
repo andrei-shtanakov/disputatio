@@ -21,6 +21,7 @@ from typing import Final
 
 SESSION_DIR_NAME: Final = ".disputatio"
 ROUNDS_DIR_NAME: Final = "rounds"
+CONFIG_TOML_NAME: Final = "config.toml"
 
 PROPOSAL_NAME: Final = "proposal.md"
 CHANGES_PATCH_NAME: Final = "changes.patch"
@@ -32,6 +33,16 @@ DECISION_NAME: Final = "decision.json"
 def session_dir(root: Path) -> Path:
     """Корневая директория сессии: `root/.disputatio`."""
     return root / SESSION_DIR_NAME
+
+
+def config_toml(root: Path) -> Path:
+    """Путь к снапшоту конфига сессии `config.toml` ([DESIGN-014]).
+
+    Read-side зеркало `events.paths.config_toml_path`: писатель снапшота
+    (`write_config_snapshot`) текст только принимает, а resume обязан его
+    прочитать — и прочитать оттуда же, куда он записан ([REQ-014]).
+    """
+    return session_dir(root) / CONFIG_TOML_NAME
 
 
 def rounds_dir(root: Path) -> Path:

@@ -16,7 +16,12 @@ from disputatio.runtime.composition import (
     RuntimeDeps,
     build_runtime,
 )
-from disputatio.runtime.config import AgentConfig, LimitsConfig, RuntimeConfig
+from disputatio.runtime.config import (
+    AgentConfig,
+    LimitsConfig,
+    RuntimeConfig,
+    load_config,
+)
 from disputatio.runtime.errors import (
     BaseRevisionNotFound,
     ConfigError,
@@ -70,6 +75,7 @@ __all__ = [
     "UnknownAdapterError",
     "base_rev",
     "build_runtime",
+    "load_config",
     "preflight",
     "scan_package_purity",
 ]
