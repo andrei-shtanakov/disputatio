@@ -244,7 +244,8 @@ def test_isinstance_alone_does_not_reject_a_sync_run() -> None:
         def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
             return AgentTurn(text=prompt)
 
-    assert isinstance(SyncStub(), AgentAdapter)
+    sync_stub: object = SyncStub()
+    assert isinstance(sync_stub, AgentAdapter)
     assert not inspect.iscoroutinefunction(SyncStub.run)
 
 

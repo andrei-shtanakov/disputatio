@@ -213,7 +213,7 @@ class SpyAuthor:
     log: list[str]
     reply: str
     fsm: SessionFsm | None = None
-    on_run: Callable[[], None] | None = None
+    on_run: Callable[[], object] | None = None
     prompts: list[str] = field(default_factory=list)
     session_refs: list[str | None] = field(default_factory=list)
     writers: list[Writer | None] = field(default_factory=list)
@@ -439,7 +439,7 @@ def _make_harness(
     base_commit: str,
     reply: str,
     phase: SessionPhase = SessionPhase.PROPOSING,
-    on_run: Callable[[], None] | None = None,
+    on_run: Callable[[], object] | None = None,
 ) -> Harness:
     """Собирает `StepContext` со спаями на всех наблюдаемых границах шага."""
     log: list[str] = []
