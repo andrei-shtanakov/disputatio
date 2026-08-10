@@ -161,8 +161,8 @@ def test_abandon_frees_the_task_for_an_honest_new_red(repo: Path) -> None:
     assert tdd_gate.load_claim(repo, "TASK-001", "default") is None, "claim снят"
     record = tdd_gate.load_abandon(repo, "TASK-001", "default")
     assert record is not None
-    assert record["red_sha"] == first_red
-    assert "TASK-009" in record["reason"], "причина сохранена дословно"
+    assert record["red_shas"] == [first_red]
+    assert "TASK-009" in str(record["reason"]), "причина сохранена дословно"
     assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "default") is None, (
         "recovery больше не подхватывает отвергнутый чекпоинт"
     )
@@ -198,6 +198,63 @@ def test_abandon_is_idempotent(repo: Path) -> None:
     assert tdd_gate.cmd_abandon(repo, "причина") == 0
 
     assert tdd_gate.head_sha(repo) == head_after_first
+
+
+def test_a_second_abandon_does_not_revive_the_first_rejected_red(repo: Path) -> None:
+    """Copilot, PR #15: отказы накапливаются, а не затирают друг друга.
+
+    Цикл «abandon → новый red → abandon» законен: второй тест тоже может
+    оказаться негодным. Если запись хранит только последний `red_sha`, recovery
+    находит предыдущий — уже отвергнутый — чекпоинт и восстанавливает claim из
+    него. Круг disputatio#12 замыкается заново, причём тише прежнего: запись об
+    отказе на диске есть, и выглядит она исправной.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_failing(repo)
+    assert _red(repo) == 0
+    first = tdd_gate.load_claim(repo, "TASK-001", "default")
+    assert first is not None
+    assert tdd_gate.cmd_abandon(repo, "первый assertion негоден") == 0
+
+    # Второй честный red — другой файл, поэтому и другой red-коммит.
+    _write_failing(repo, OTHER_PATH, "test_y")
+    assert _red(repo, OTHER_SELECTOR) == 0
+    second = tdd_gate.load_claim(repo, "TASK-001", "default")
+    assert second is not None and second.red_sha != first.red_sha
+    assert tdd_gate.cmd_abandon(repo, "и второй тоже") == 0
+
+    assert tdd_gate.abandoned_red_shas(repo, "TASK-001", "default") == (
+        first.red_sha,
+        second.red_sha,
+    ), "оба отказа обязаны остаться в силе"
+    assert tdd_gate.find_red_commit_by_trailer(repo, "TASK-001", "default") is None, (
+        "recovery не должен воскрешать первый отвергнутый чекпоинт"
+    )
+
+
+def test_abandon_keeps_the_reason_of_every_rejection(repo: Path) -> None:
+    """Причина каждого отказа сохраняется, а не только последнего.
+
+    Верхнеуровневый `reason` описывает свежий отказ; без истории мотив
+    предыдущих терялся бы, а именно он объясняет, почему задача переигрывалась
+    дважды.
+    """
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    _write_failing(repo)
+    assert _red(repo) == 0
+    assert tdd_gate.cmd_abandon(repo, "причина номер один") == 0
+    _write_failing(repo, OTHER_PATH, "test_y")
+    assert _red(repo, OTHER_SELECTOR) == 0
+    assert tdd_gate.cmd_abandon(repo, "причина номер два") == 0
+
+    record = tdd_gate.load_abandon(repo, "TASK-001", "default")
+    assert record is not None
+    history = record["history"]
+    assert isinstance(history, list) and len(history) == 2
+    assert [entry["reason"] for entry in history] == [
+        "причина номер один",
+        "причина номер два",
+    ]
 
 
 def test_abandon_refuses_a_claim_closed_by_a_verdict(repo: Path) -> None:
@@ -346,6 +403,47 @@ def test_repair_of_a_further_edit_keeps_the_earlier_blob_legal(repo: Path) -> No
 
     assert first in accepted
     assert tdd_gate._blob_now(repo, TEST_PATH) in accepted
+
+
+def test_repair_records_of_slug_colliding_paths_do_not_overwrite(
+    repo: Path,
+) -> None:
+    """Copilot, PR #15: два пути с одинаковым slug не делят одну запись.
+
+    `tests/a-b.py` и `tests/a/b.py` при наивном slug дают одно имя файла, и
+    запись второго затирала бы первую: принятые blob'ы первого исчезали бы, а
+    его законная правка снова становилась находкой. Для operator-evidence это
+    потеря provenance, поэтому имя записи обязано быть инъективным.
+    """
+    flat, nested = "tests/a-b.py", "tests/a/b.py"
+    assert tdd_gate._repair_slug(flat) != tdd_gate._repair_slug(nested), (
+        "slug обязан различать пути, схлопывающиеся при замене разделителей"
+    )
+
+    write_tasks(repo, "tasks.md", ONE_RUNNING)
+    (repo / "tests" / "a").mkdir()
+    for path, name in ((flat, "test_flat"), (nested, "test_nested")):
+        _write_failing(repo, path, name)
+    # Один claim владеет flat, другой — nested; ремонт объявляется для обоих.
+    assert _red(repo, f"{flat}::test_flat") == 0
+    _implement(repo, "test_flat")
+    assert tdd_gate.cmd_verify(repo) == 0
+    _runner_auto_commit(repo)
+    write_tasks(repo, "tasks.md", TWO_TASKS_SECOND_RUNNING)
+    assert _red(repo, f"{nested}::test_nested") == 0
+    _implement(repo, "test_nested")
+
+    _annotate(repo, flat, "test_flat")
+    assert tdd_gate.cmd_repair(repo, flat, "аннотация в flat") == 0
+    _annotate(repo, nested, "test_nested")
+    assert tdd_gate.cmd_repair(repo, nested, "аннотация в nested") == 0
+
+    accepted = tdd_gate.load_repairs(repo, "default")
+    assert tdd_gate._blob_now(repo, flat) in accepted.get(flat, []), (
+        "запись первого файла обязана уцелеть после ремонта второго"
+    )
+    assert tdd_gate._blob_now(repo, nested) in accepted.get(nested, [])
+    assert tdd_gate.locked_test_drift(repo, "default") == []
 
 
 def test_repair_refuses_a_file_no_claim_owns(repo: Path) -> None:

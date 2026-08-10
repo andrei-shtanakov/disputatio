@@ -196,6 +196,10 @@ def _base_rev_available() -> bool:
     нарушены, а потому, что сравнивать больше не с чем. Раньше это давало
     вечно красный `CalledProcessError` на `master`: приёмочный тест
     workstream'а пережил сам workstream и требовал ссылку, которой нет.
+
+    `OSError` перехватывается наравне с `CalledProcessError` (Copilot, PR #15):
+    функция вызывается на импорте модуля, поэтому отсутствующий `git` уронил бы
+    не проверку, а сбор тестов целиком. «git недоступен» — это тоже «базы нет».
     """
     try:
         subprocess.run(
@@ -204,7 +208,7 @@ def _base_rev_available() -> bool:
             capture_output=True,
             check=True,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         return False
     return True
 

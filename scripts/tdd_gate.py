@@ -29,6 +29,7 @@ collection error.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -341,23 +342,56 @@ def _abandon_path(root: Path, task_id: str, ns: str) -> Path:
 
 def load_abandon(
     root: Path, task_id: str, ns: str = "default"
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     """Читает запись `abandoned/<ns>/<task>.json`; `None`, если её нет.
 
-    Запись означает: red-чекпоинт с этим `red_sha` признан оператором
-    негодным. Она НЕ отменяет прошлое — коммит остаётся в истории, — а
-    снимает его с recovery, чтобы `red` мог начать честный цикл заново
-    (disputatio#12). Именно поэтому в записи хранится конкретный `red_sha`,
-    а не только `task_id`: отказ относится к одной попытке, а не к задаче.
+    Запись означает: перечисленные red-чекпоинты признаны оператором негодными.
+    Она НЕ отменяет прошлое — коммиты остаются в истории, — а снимает их с
+    recovery, чтобы `red` мог начать честный цикл заново (disputatio#12).
+    Поэтому хранится конкретный `red_sha`, а не только `task_id`: отказ
+    относится к попытке, а не к задаче.
+
+    `red_shas` — СПИСОК, а не одно значение (Copilot, PR #15). Одна задача
+    может пройти цикл «abandon → новый red → abandon» не раз, и хранение
+    последнего отказа затирало бы предыдущий: recovery снова подхватил бы
+    более старый уже отвергнутый чекпоинт, то есть круг #12 замкнулся бы
+    заново.
     """
     data = _read_evidence_json(root, "abandoned", ns, task_id)
     if data is None:
         return None
     _check_schema(data, _ABANDON_SCHEMA, "abandon")
-    for field in ("task_id", "red_sha", "reason"):
-        if not isinstance(data.get(field), str) or not data[field]:
+    for field in ("task_id", "reason"):
+        value = data.get(field)
+        if not isinstance(value, str) or not value:
             raise GateError(f"abandon {task_id}: поле {field!r} пусто или не строка")
-    return {str(k): str(v) for k, v in data.items()}
+    shas = data.get("red_shas")
+    if not isinstance(shas, list) or not shas:
+        raise GateError(f"abandon {task_id}: 'red_shas' — не непустой список")
+    if not all(isinstance(sha, str) and sha for sha in shas):
+        raise GateError(f"abandon {task_id}: 'red_shas' содержит не-строку")
+    return dict(data)
+
+
+def _abandon_history(root: Path, task_id: str, ns: str) -> list[dict[str, str]]:
+    """Прошлые записи отказов задачи; пустой список, если их не было."""
+    record = load_abandon(root, task_id, ns)
+    if record is None:
+        return []
+    history = record.get("history")
+    if not isinstance(history, list):
+        return []
+    return [dict(entry) for entry in history if isinstance(entry, dict)]
+
+
+def abandoned_red_shas(root: Path, task_id: str, ns: str) -> tuple[str, ...]:
+    """Все отвергнутые оператором red_sha задачи; пустой кортеж, если записи нет."""
+    record = load_abandon(root, task_id, ns)
+    if record is None:
+        return ()
+    shas = record["red_shas"]
+    assert isinstance(shas, list)  # проверено в load_abandon
+    return tuple(str(sha) for sha in shas)
 
 
 def _repairs_dir(root: Path, ns: str) -> Path:
@@ -366,12 +400,20 @@ def _repairs_dir(root: Path, ns: str) -> Path:
 
 
 def _repair_slug(test_path: str) -> str:
-    """Имя файла записи ремонта: путь теста с `/` и `.` → `-`.
+    """Имя файла записи ремонта: читаемый slug ПЛЮС хэш полного пути.
 
-    Slug, а не хэш: запись читает человек, и `tests-runtime-test_x-py` он
-    сопоставит с файлом глазами, а `a3f9c1…` — нет.
+    Голый slug не инъективен (Copilot, PR #15): `tests/a-b.py` и
+    `tests/a/b.py` дают один и тот же `tests-a-b-py`, и запись одного файла
+    затёрла бы запись другого — то есть принятые blob'ы первого исчезли бы, а
+    его правка снова стала бы находкой. Для operator-evidence терять
+    provenance нельзя.
+
+    Хэш решает коллизию, slug оставлен ради человека: `tests-runtime-test_x-py`
+    он сопоставит с файлом глазами, а один `a3f9c1…` — нет.
     """
-    return re.sub(r"[^A-Za-z0-9]+", "-", test_path).strip("-")
+    readable = re.sub(r"[^A-Za-z0-9]+", "-", test_path).strip("-")
+    digest = hashlib.sha256(test_path.encode("utf-8")).hexdigest()[:12]
+    return f"{readable}-{digest}"
 
 
 def load_repairs(root: Path, ns: str) -> dict[str, list[str]]:
@@ -726,14 +768,13 @@ def find_red_commit_by_trailer(root: Path, task_id: str, ns: str) -> str | None:
     значения трейлера, не подстроки) — grep только сужает круг кандидатов,
     не заменяет точную проверку.
     """
-    abandoned = load_abandon(root, task_id, ns)
-    abandoned_sha = abandoned["red_sha"] if abandoned is not None else None
+    abandoned = abandoned_red_shas(root, task_id, ns)
     for sha in _red_commits_by_trailer(root, task_id, ns):
         # disputatio#12: red, от которого оператор отказался явно, recovery не
         # подхватывает — иначе удаление claim'а не работает как remedy (гейт
         # восстановил бы его из коммита и снова запер тот же тест), и
         # единственным выходом оставалось бы переписывание истории.
-        if abandoned_sha is not None and sha.startswith(abandoned_sha):
+        if any(sha.startswith(rejected) for rejected in abandoned):
             continue
         return sha
     return None
@@ -1713,17 +1754,30 @@ def _cmd_abandon(root: Path, reason: str) -> int:
     if not _commit_exists(root, red_sha):
         raise GateError(f"{task_id}: red_sha {red_sha} отсутствует в истории")
 
-    existing = load_abandon(root, task_id, ns)
-    if existing is not None and red_sha.startswith(existing["red_sha"]):
+    already = abandoned_red_shas(root, task_id, ns)
+    if any(red_sha.startswith(rejected) for rejected in already):
         return 0  # идемпотентный повтор — второй коммит не создаётся
 
+    # Накопление, а не замена: прошлые отказы обязаны остаться в силе, иначе
+    # recovery подхватит более старый отвергнутый чекпоинт (Copilot, PR #15).
     record = {
         "schema": _ABANDON_SCHEMA,
         "task_id": task_id,
-        "red_sha": red_sha,
+        "red_shas": [*already, red_sha],
         "namespace": ns,
         "reason": reason,
         "abandoned_at": datetime.now(UTC).isoformat(),
+        # История отказов: причина каждого сохраняется отдельно — при накоплении
+        # верхнеуровневый `reason` описывает последний, и без истории мотив
+        # предыдущих терялся бы.
+        "history": [
+            *_abandon_history(root, task_id, ns),
+            {
+                "red_sha": red_sha,
+                "reason": reason,
+                "abandoned_at": datetime.now(UTC).isoformat(),
+            },
+        ],
     }
     abandon_path = _abandon_path(root, task_id, ns)
     write_json_atomic(abandon_path, record)
@@ -1801,8 +1855,16 @@ def _cmd_repair(root: Path, test_path: str, reason: str) -> int:
     path = _repairs_dir(root, ns) / f"{_repair_slug(test_path)}.json"
     accepted: list[str] = []
     if path.exists():
-        previous = load_repairs(root, ns).get(test_path, [])
-        accepted = list(previous)
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        # Хэш в имени делает коллизию практически невозможной, но запись
+        # operator-evidence не то место, где «практически» достаточно: чужой
+        # путь под нашим именем — отказ, а не молчаливая перезапись.
+        if existing.get("test_path") != test_path:
+            raise GateError(
+                f"{path}: запись принадлежит {existing.get('test_path')!r}, "
+                f"а не {test_path!r} — коллизия имени, перезапись отклонена"
+            )
+        accepted = list(load_repairs(root, ns).get(test_path, []))
     if blob in accepted:
         return 0  # идемпотентный повтор
     accepted.append(blob)
