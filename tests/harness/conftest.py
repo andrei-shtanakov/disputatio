@@ -1,9 +1,28 @@
 """Фикстура: временный git-репо со скелетом под тесты гейта."""
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+
+import tdd_gate
+
+
+@pytest.fixture(autouse=True)
+def _local_ruff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Локальный ruff для всех тестов гейта.
+
+    `red` с disputatio#7 проверяет lint фиксируемого файла, а tmp-репо фикстур
+    не uv-проект: `uv run ruff` внутри него не работает. Подмена автоиспользуемая
+    и на весь пакет — иначе каждый тест, вызывающий `red`, падал бы «ruff не
+    запускается», то есть fail-closed сработал бы на самом приборе.
+    """
+    import sys
+
+    monkeypatch.setattr(tdd_gate, "RUFF_CMD", (sys.executable, "-m", "ruff"))
 
 
 @pytest.fixture

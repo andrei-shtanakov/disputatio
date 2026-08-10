@@ -29,6 +29,8 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
+import pytest
+
 from disputatio.runtime import scan_package_purity
 
 #: Корень репозитория: tests/runtime/<файл> → parents[2].
@@ -184,6 +186,36 @@ def _git(*args: str) -> str:
         check=True,
     )
     return completed.stdout
+
+
+def _base_rev_available() -> bool:
+    """Существует ли ещё база workstream'а в этом репозитории.
+
+    После интеграции ветка `pilot/wave-1` удаляется по правилу полирепо, и
+    проверки границ scope теряют базу для сравнения — не потому, что границы
+    нарушены, а потому, что сравнивать больше не с чем. Раньше это давало
+    вечно красный `CalledProcessError` на `master`: приёмочный тест
+    workstream'а пережил сам workstream и требовал ссылку, которой нет.
+    """
+    try:
+        subprocess.run(
+            ("git", "rev-parse", "--verify", f"{BASE_REV}^{{commit}}"),
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+requires_base_rev = pytest.mark.skipif(
+    not _base_rev_available(),
+    reason=(
+        f"база workstream'а {BASE_REV!r} удалена после интеграции — "
+        "границы scope проверять не с чем"
+    ),
+)
 
 
 def _changed_paths() -> tuple[str, ...]:
@@ -373,6 +405,7 @@ def test_runtime_and_cli_import_wave_packages_only_through_public_init() -> None
     )
 
 
+@requires_base_rev
 def test_wave_packages_are_edited_only_under_operator_sanction() -> None:
     """Правки в чужих пакетах существуют только там, где есть санкция."""
     wave_prefixes = tuple(f"src/disputatio/{name}/" for name in WAVE_PACKAGES)
@@ -386,6 +419,7 @@ def test_wave_packages_are_edited_only_under_operator_sanction() -> None:
     )
 
 
+@requires_base_rev
 def test_workstream_diff_stays_inside_the_declared_scope() -> None:
     """`git diff pilot/wave-1..HEAD` не выходит за §4.3 без санкции."""
     authorized = _authorized_exceptions()

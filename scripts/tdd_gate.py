@@ -47,6 +47,10 @@ EVIDENCE = Path("spec/.tdd-evidence")
 # uv-проект, `uv run pytest` внутри него не работает).
 PYTEST_CMD: tuple[str, ...] = ("uv", "run", "pytest", "-q")
 
+# Линтер, которым `red` проверяет фиксируемый тест-файл (disputatio#7). Тоже
+# константа модуля и по той же причине: tmp-репо тестов не uv-проект.
+RUFF_CMD: tuple[str, ...] = ("uv", "run", "ruff")
+
 _TASK_HEADING_RE = re.compile(r"^#{2,6}\s+([A-Z][A-Z0-9]*-\d+)\b")
 # Кандидат в meta-строку: list-item (буллет `-`/`*` после отступа),
 # содержащий `|`. Строки markdown-таблиц (начинаются с `|`, без буллета) —
@@ -88,6 +92,8 @@ CATEGORIES = {
 _CLAIM_SCHEMA = "tdd-claim/v1"
 _VERDICT_SCHEMA = "tdd-verdict/v1"
 _WAIVER_SCHEMA = "tdd-waiver/v1"
+_ABANDON_SCHEMA = "tdd-abandon/v1"
+_REPAIR_SCHEMA = "tdd-repair/v1"
 
 # Максимальная длина `notes` в verdict-файле — хвост вывода pytest, а не
 # весь лог; ограничение защищает evidence от разрастания.
@@ -326,6 +332,75 @@ def load_waiver(root: Path, task_id: str, ns: str = "default") -> Waiver | None:
     if data is None:
         return None
     return Waiver.from_json(data)
+
+
+def _abandon_path(root: Path, task_id: str, ns: str) -> Path:
+    """Путь к записи об отказе от red-чекпоинта задачи `task_id`."""
+    return root / EVIDENCE / "abandoned" / ns / f"{task_id}.json"
+
+
+def load_abandon(
+    root: Path, task_id: str, ns: str = "default"
+) -> dict[str, str] | None:
+    """Читает запись `abandoned/<ns>/<task>.json`; `None`, если её нет.
+
+    Запись означает: red-чекпоинт с этим `red_sha` признан оператором
+    негодным. Она НЕ отменяет прошлое — коммит остаётся в истории, — а
+    снимает его с recovery, чтобы `red` мог начать честный цикл заново
+    (disputatio#12). Именно поэтому в записи хранится конкретный `red_sha`,
+    а не только `task_id`: отказ относится к одной попытке, а не к задаче.
+    """
+    data = _read_evidence_json(root, "abandoned", ns, task_id)
+    if data is None:
+        return None
+    _check_schema(data, _ABANDON_SCHEMA, "abandon")
+    for field in ("task_id", "red_sha", "reason"):
+        if not isinstance(data.get(field), str) or not data[field]:
+            raise GateError(f"abandon {task_id}: поле {field!r} пусто или не строка")
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _repairs_dir(root: Path, ns: str) -> Path:
+    """Каталог операторских ремонтов тест-файлов namespace'а `ns`."""
+    return root / EVIDENCE / "repairs" / ns
+
+
+def _repair_slug(test_path: str) -> str:
+    """Имя файла записи ремонта: путь теста с `/` и `.` → `-`.
+
+    Slug, а не хэш: запись читает человек, и `tests-runtime-test_x-py` он
+    сопоставит с файлом глазами, а `a3f9c1…` — нет.
+    """
+    return re.sub(r"[^A-Za-z0-9]+", "-", test_path).strip("-")
+
+
+def load_repairs(root: Path, ns: str) -> dict[str, list[str]]:
+    """`{test_path: [принятые blob-хэши]}` по всем записям ремонта в `ns`.
+
+    Список, а не одно значение: файл может ремонтироваться не один раз, и
+    каждый принятый оператором blob остаётся легальным — иначе второй ремонт
+    объявлял бы первый нарушением.
+    """
+    directory = _repairs_dir(root, ns)
+    if not directory.exists():
+        return {}
+    accepted: dict[str, list[str]] = {}
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise GateError(f"{path}: битый JSON записи ремонта ({exc})") from exc
+        if not isinstance(data, dict):
+            raise GateError(f"{path}: ожидался JSON-объект")
+        _check_schema(data, _REPAIR_SCHEMA, "repair")
+        test_path = data.get("test_path")
+        blobs = data.get("blobs_accepted")
+        if not isinstance(test_path, str) or not test_path:
+            raise GateError(f"{path}: поле 'test_path' пусто или не строка")
+        if not isinstance(blobs, list) or not all(isinstance(b, str) for b in blobs):
+            raise GateError(f"{path}: поле 'blobs_accepted' — не список строк")
+        accepted.setdefault(test_path, []).extend(blobs)
+    return accepted
 
 
 def _meta_line_status(line: str) -> str | None:
@@ -651,16 +726,35 @@ def find_red_commit_by_trailer(root: Path, task_id: str, ns: str) -> str | None:
     значения трейлера, не подстроки) — grep только сужает круг кандидатов,
     не заменяет точную проверку.
     """
+    abandoned = load_abandon(root, task_id, ns)
+    abandoned_sha = abandoned["red_sha"] if abandoned is not None else None
+    for sha in _red_commits_by_trailer(root, task_id, ns):
+        # disputatio#12: red, от которого оператор отказался явно, recovery не
+        # подхватывает — иначе удаление claim'а не работает как remedy (гейт
+        # восстановил бы его из коммита и снова запер тот же тест), и
+        # единственным выходом оставалось бы переписывание истории.
+        if abandoned_sha is not None and sha.startswith(abandoned_sha):
+            continue
+        return sha
+    return None
+
+
+def _red_commits_by_trailer(root: Path, task_id: str, ns: str) -> list[str]:
+    """Все red-коммиты задачи в namespace, от новых к старым, без фильтров.
+
+    Отделено от `find_red_commit_by_trailer`, потому что `abandon` обязан
+    видеть и уже отвергнутый коммит: иначе повторный вызов не смог бы
+    подтвердить идемпотентность, а первый — найти то, от чего отказываются.
+    """
     output = git(root, "log", "-F", f"--grep=TDD-Red-Task: {task_id}", "--format=%H")
     if not output:
-        return None
-    for sha in output.split("\n"):
-        if (
-            _trailer_value(root, sha, "TDD-Red-Task") == task_id
-            and _trailer_value(root, sha, "TDD-Namespace") == ns
-        ):
-            return sha
-    return None
+        return []
+    return [
+        sha
+        for sha in output.split("\n")
+        if _trailer_value(root, sha, "TDD-Red-Task") == task_id
+        and _trailer_value(root, sha, "TDD-Namespace") == ns
+    ]
 
 
 def _claim_path(root: Path, task_id: str, ns: str = "default") -> Path:
@@ -786,6 +880,35 @@ def _run_selector(root: Path, selector: str) -> tuple[str, str]:
     return "error", output
 
 
+def test_path_of(selector: str) -> str:
+    """Путь тест-файла из pytest node-id — единственный способ его получить."""
+    return selector.split("::")[0]
+
+
+def _lint_problem(root: Path, test_path: str) -> str | None:
+    """Вывод линтера, если файл не чист; `None`, если чист.
+
+    Fail-closed относительно самого прибора: если `ruff` не запускается,
+    это не «претензий нет», а невозможность проверить — и red не проходит.
+    Молчаливый пропуск здесь вернул бы disputatio#7 в полном объёме, только
+    теперь ещё и с зелёным гейтом в качестве оправдания.
+    """
+    for args in (("format", "--check", "--", test_path), ("check", "--", test_path)):
+        try:
+            result = subprocess.run(
+                [*RUFF_CMD, *args],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return f"ruff не запускается ({exc}) — проверить чистоту нечем"
+        if result.returncode != 0:
+            return (result.stdout + result.stderr).strip()[:_NOTES_MAX_LEN]
+    return None
+
+
 def cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     """Команда `red`: фиксирует red-чекпоинт для текущей задачи.
 
@@ -881,6 +1004,20 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
             f"(ни зелёный, ни AssertionError)\n{output}"
         )
 
+    # Шаг 5b (disputatio#7): фиксируемый тест обязан быть lint-чистым ДО
+    # замка. После red-чекпоинта файл байт-неизменяем, поэтому попавший в
+    # него lint-долг становится неисправимым без операторского вмешательства
+    # и бьёт по каждой следующей задаче, трогающей тот же suite. За волну 1
+    # эта ловушка сработала трижды на одном и том же I001.
+    lint_problem = _lint_problem(root, test_path_of(selector))
+    if lint_problem is not None:
+        print(
+            f"red: {test_path_of(selector)} не проходит lint — замок "
+            f"законсервировал бы долг:\n{lint_problem}",
+            file=sys.stderr,
+        )
+        return 1
+
     # Шаг 6: red-коммит.
     red_sha = commit_red(root, task_id, baseline, selector, ns)
 
@@ -898,6 +1035,73 @@ def _cmd_red(root: Path, selector: str, expected_behavior: str) -> int:
     )
     write_json_atomic(_claim_path(root, task_id, ns), claim.to_json())
     return 0
+
+
+def _blob_now(root: Path, path: str) -> str | None:
+    """Хэш содержимого файла в РАБОЧЕМ дереве; `None`, если файла нет.
+
+    Рабочее дерево, а не HEAD: незакоммиченная подмена теста — такая же
+    подмена, и проверка, смотрящая только в индекс, её бы не увидела.
+    """
+    target = root / path
+    if not target.is_file():
+        return None
+    return git(root, "hash-object", "--", path)
+
+
+def _blob_at(root: Path, rev: str, path: str) -> str | None:
+    """Хэш содержимого `path` в ревизии `rev`; `None`, если файла там нет."""
+    try:
+        return git(root, "rev-parse", f"{rev}:{path}")
+    except subprocess.CalledProcessError:
+        return None
+
+
+def _claim_ids(root: Path, ns: str) -> list[str]:
+    """ID задач, у которых в namespace `ns` есть claim-файл."""
+    claims_dir = root / EVIDENCE / "claims" / ns
+    if not claims_dir.exists():
+        return []
+    return [path.stem for path in sorted(claims_dir.glob("*.json"))]
+
+
+def locked_test_drift(root: Path, ns: str, skip_task: str | None = None) -> list[str]:
+    """Заклеймленные тест-файлы, чьи байты разошлись с red-чекпоинтом.
+
+    disputatio#13: до этой проверки `verify` смотрел ТОЛЬКО файл текущего
+    селектора, поэтому byte-lock чужих тест-файлов держался конституцией
+    агента, а не прибором — правку соседнего залоченного файла гейт не
+    замечал вовсе.
+
+    Расхождение легально ровно в одном случае: текущий blob назван принятым
+    в записи ремонта (`repairs/<ns>/`), то есть у правки есть операторская
+    санкция с provenance. Всё прочее — находка.
+
+    `skip_task` исключает задачу, чей файл проверяется отдельной, более
+    строгой цепочкой (`_test_path_unchanged` для текущего селектора).
+    """
+    accepted = load_repairs(root, ns)
+    drift: list[str] = []
+    for task_id in _claim_ids(root, ns):
+        if task_id == skip_task:
+            continue
+        claim = load_claim(root, task_id, ns)
+        if claim is None or not _commit_exists(root, claim.red_sha):
+            continue
+        test_path = claim.test_path
+        now = _blob_now(root, test_path)
+        if now is None:
+            drift.append(f"{task_id}: {test_path} удалён после red-чекпоинта")
+            continue
+        if now == _blob_at(root, claim.red_sha, test_path):
+            continue
+        if now in accepted.get(test_path, []):
+            continue
+        drift.append(
+            f"{task_id}: {test_path} изменён после red-чекпоинта "
+            f"({now[:12]}), санкции на этот blob нет"
+        )
+    return drift
 
 
 def _verdict_path(root: Path, task_id: str, ns: str = "default") -> Path:
@@ -1084,13 +1288,27 @@ def _test_path_changed_remedy(task_id: str, test_path: str, ns: str) -> str:
     claim/verdict, которые оператору нужно убрать (или заменить waiver'ом),
     чтобы разрешить агенту новый честный red-цикл.
     """
-    claim_path = f"spec/.tdd-evidence/claims/{ns}/{task_id}.json"
-    verdict_path = f"spec/.tdd-evidence/verdicts/{ns}/{task_id}.json"
     return (
         f"{task_id}: {test_path} изменён после red-чекпоинта — green обязан "
-        "достигаться только продуктовым кодом. Выход: оператор удаляет "
-        f"{claim_path} и {verdict_path} (или выдаёт waiver), затем агент "
-        "начинает red заново."
+        "достигаться только продуктовым кодом. Выходов два, оба операторские: "
+        "`tdd_gate.py abandon --reason ...` — если этот red негоден и нужен "
+        "честный новый цикл (claim снимается, коммит остаётся в истории); "
+        "`tdd_gate.py repair --path "
+        f"{test_path} --reason ...` — если правка законна и байты принимаются. "
+        "Удаление claim'а руками remedy НЕ является: recovery восстановит его "
+        "из red-коммита по трейлерам (disputatio#12)."
+    )
+
+
+def _locked_drift_remedy(drift: list[str], ns: str) -> str:
+    """Сообщение о разъехавшихся байтах ЧУЖИХ залоченных тестов (disputatio#13)."""
+    listed = "; ".join(drift)
+    return (
+        f"залоченные тесты namespace'а {ns} разошлись с red-чекпоинтами: "
+        f"{listed}. Байт-лок распространяется на ВСЕ заклеймленные файлы, а не "
+        "только на файл текущей задачи. Законная правка объявляется "
+        "`tdd_gate.py repair --path <файл> --reason ...`; отказ от негодного "
+        "чекпоинта — `tdd_gate.py abandon --reason ...`."
     )
 
 
@@ -1315,6 +1533,9 @@ def _cmd_verify(root: Path) -> int:
     test_path = _resolve_test_path(claim, task_id)
     if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(_test_path_changed_remedy(task_id, test_path, ns))
+    drift = locked_test_drift(root, ns, skip_task=task_id)
+    if drift:
+        raise GateError(_locked_drift_remedy(drift, ns))
 
     # Шаг 6: replay red_sha в отдельном worktree.
     replay_category, replay_output = _replay_red(root, claim.red_sha, claim.selector)
@@ -1381,6 +1602,9 @@ def _verify_idempotent_pass(root: Path, task_id: str, claim: Claim, ns: str) -> 
     test_path = _resolve_test_path(claim, task_id)
     if not _test_path_unchanged(root, claim.red_sha, test_path):
         raise GateError(_test_path_changed_remedy(task_id, test_path, ns))
+    drift = locked_test_drift(root, ns, skip_task=task_id)
+    if drift:
+        raise GateError(_locked_drift_remedy(drift, ns))
     category, _output = _run_selector(root, claim.selector)
     if category != "green":
         print(
@@ -1437,6 +1661,204 @@ def _cmd_audit(root: Path) -> int:
     return 0
 
 
+def cmd_abandon(root: Path, reason: str) -> int:
+    """Команда `abandon`: оператор отказывается от red-чекпоинта текущей задачи.
+
+    Существует ради дыры disputatio#12: удаление claim'а само по себе НЕ
+    работало как remedy — `red` шёл в recovery, находил red-коммит по
+    трейлерам и восстанавливал claim из него, снова запирая тот же негодный
+    тест. Единственным выходом оставался `git reset --hard`, то есть
+    переписывание истории ветки ради снятия одного файла; за фазу w-runtime
+    это пришлось делать дважды, каждый раз с заморозкой и второй подписью.
+
+    `abandon` разрывает круг, ничего не разрушая: коммит остаётся в истории,
+    claim снимается, а запись `abandoned/<ns>/<task>.json` навсегда фиксирует
+    отказ вместе с причиной. Дальше `red` начинает честный цикл — селектор
+    прогоняется заново, а не подтверждается по памяти.
+
+    Отказ от ЗАКРЫТОГО claim'а (PASS/WAIVED) запрещён: это supersession, и v1
+    её не допускает — иначе зелёный вердикт можно было бы стереть постфактум.
+    """
+    try:
+        return _cmd_abandon(root, reason)
+    except GateError as exc:
+        print(f"abandon: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except subprocess.CalledProcessError as exc:
+        print(f"abandon: git-команда упала: {exc.stderr}", file=sys.stderr)
+        return 3
+
+
+def _cmd_abandon(root: Path, reason: str) -> int:
+    """Логика `cmd_abandon`; `GateError` пробрасывается наружу."""
+    if not reason.strip():
+        raise GateError("нужна причина отказа (--reason) — запись без неё бесполезна")
+    ns = resolve_namespace(root)
+    task_id = resolve_current_task(root)
+
+    claim = load_claim(root, task_id, ns)
+    verdict = load_verdict(root, task_id, ns)
+    if verdict is not None and verdict.verdict in (CAT_PASS, CAT_WAIVED):
+        raise GateError(
+            f"{task_id}: claim закрыт вердиктом {verdict.verdict} — отказ от "
+            "закрытого чекпоинта это supersession, в v1 запрещена"
+        )
+
+    candidates = _red_commits_by_trailer(root, task_id, ns)
+    red_sha = (
+        claim.red_sha if claim is not None else (candidates[0] if candidates else None)
+    )
+    if red_sha is None:
+        raise GateError(f"{task_id}: red-чекпоинта нет ни в claim'е, ни в истории")
+    if not _commit_exists(root, red_sha):
+        raise GateError(f"{task_id}: red_sha {red_sha} отсутствует в истории")
+
+    existing = load_abandon(root, task_id, ns)
+    if existing is not None and red_sha.startswith(existing["red_sha"]):
+        return 0  # идемпотентный повтор — второй коммит не создаётся
+
+    record = {
+        "schema": _ABANDON_SCHEMA,
+        "task_id": task_id,
+        "red_sha": red_sha,
+        "namespace": ns,
+        "reason": reason,
+        "abandoned_at": datetime.now(UTC).isoformat(),
+    }
+    abandon_path = _abandon_path(root, task_id, ns)
+    write_json_atomic(abandon_path, record)
+
+    paths = [str(abandon_path.relative_to(root))]
+    claim_path = _claim_path(root, task_id, ns)
+    if claim_path.exists():
+        # Отслеживается ли claim — зависит от того, успел ли раннер сделать
+        # свой auto-commit: сам гейт claim'ы не коммитит (`commit_red` пишет
+        # только `tests/`). Untracked-файл в pathspec коммита превратил бы
+        # `git add` в exit 128, поэтому в коммит идёт только tracked-удаление.
+        tracked = _is_tracked(root, str(claim_path.relative_to(root)))
+        claim_path.unlink()
+        if tracked:
+            paths.append(str(claim_path.relative_to(root)))
+
+    _commit_evidence(
+        root,
+        paths,
+        f"tdd-gate: abandon red checkpoint {task_id}\n\n"
+        f"{reason}\n\n"
+        f"TDD-Abandon-Task: {task_id}\n"
+        f"TDD-Abandon-Red: {red_sha}\n"
+        f"TDD-Namespace: {ns}\n",
+    )
+    print(f"abandon: {task_id} red {red_sha[:12]} отвергнут — новый red разрешён")
+    return 0
+
+
+def cmd_repair(root: Path, test_path: str, reason: str) -> int:
+    """Команда `repair`: оператор санкционирует правку залоченного тест-файла.
+
+    Парная к `abandon` (disputatio#13). `abandon` says «этот red негоден,
+    начнём заново»; `repair` — «файл остаётся тем же по смыслу, но его байты
+    законно изменились». Записывает принятый blob, поэтому проверка
+    `locked_test_drift` перестаёт считать эти байты нарушением, а provenance
+    (кто, когда, почему, какой хэш) остаётся в истории.
+
+    Заменяет практику «оператор правит и объясняет в теле коммита»: объяснение
+    в коммите прибор не читает, а запись — читает.
+    """
+    try:
+        return _cmd_repair(root, test_path, reason)
+    except GateError as exc:
+        print(f"repair: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except subprocess.CalledProcessError as exc:
+        print(f"repair: git-команда упала: {exc.stderr}", file=sys.stderr)
+        return 3
+
+
+def _cmd_repair(root: Path, test_path: str, reason: str) -> int:
+    """Логика `cmd_repair`; `GateError` пробрасывается наружу."""
+    if not reason.strip():
+        raise GateError("нужна причина ремонта (--reason)")
+    if not test_path.startswith("tests/"):
+        raise GateError(f"{test_path}: ремонт объявляется только для tests/**")
+    ns = resolve_namespace(root)
+    blob = _blob_now(root, test_path)
+    if blob is None:
+        raise GateError(f"{test_path}: файла нет в рабочем дереве")
+
+    owners = [
+        task_id
+        for task_id in _claim_ids(root, ns)
+        if (claim := load_claim(root, task_id, ns)) is not None
+        and claim.test_path == test_path
+    ]
+    if not owners:
+        raise GateError(
+            f"{test_path}: ни один claim namespace'а {ns} им не владеет — "
+            "ремонт нужен только для залоченного файла"
+        )
+
+    path = _repairs_dir(root, ns) / f"{_repair_slug(test_path)}.json"
+    accepted: list[str] = []
+    if path.exists():
+        previous = load_repairs(root, ns).get(test_path, [])
+        accepted = list(previous)
+    if blob in accepted:
+        return 0  # идемпотентный повтор
+    accepted.append(blob)
+
+    record = {
+        "schema": _REPAIR_SCHEMA,
+        "test_path": test_path,
+        "namespace": ns,
+        "owner_tasks": owners,
+        "blobs_accepted": accepted,
+        "reason": reason,
+        "repaired_at": datetime.now(UTC).isoformat(),
+    }
+    write_json_atomic(path, record)
+    _commit_evidence(
+        root,
+        [str(path.relative_to(root)), test_path],
+        f"tdd-gate: operator repair {test_path}\n\n"
+        f"{reason}\n\n"
+        f"TDD-Repair-Path: {test_path}\n"
+        f"TDD-Repair-Blob: {blob}\n"
+        f"TDD-Repair-Owners: {','.join(owners)}\n"
+        f"TDD-Namespace: {ns}\n",
+    )
+    print(
+        f"repair: {test_path} blob {blob[:12]} принят (владельцы: {','.join(owners)})"
+    )
+    return 0
+
+
+def _is_tracked(root: Path, path: str) -> bool:
+    """Отслеживается ли `path` git'ом в этом репозитории."""
+    try:
+        git(root, "ls-files", "--error-unmatch", "--", path)
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def _commit_evidence(root: Path, paths: list[str], message: str) -> None:
+    """Коммитит ровно перечисленные пути; ничего больше в коммит не попадает.
+
+    Явный pathspec и в `add`, и в `commit` — по той же причине, что в
+    `commit_red`: посторонние staged-правки не должны уезжать в
+    операторский коммит, у которого своё юридическое значение.
+    """
+    git(root, "add", "--", *paths)
+    try:
+        git(root, "commit", "-m", message, "--", *paths)
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stdout or "") + (exc.stderr or "")
+        if "nothing to commit" in output or "nothing added to commit" in output:
+            raise GateError(f"нечего коммитить: {', '.join(paths)}") from exc
+        raise GateError(f"коммит операторской записи упал: {output}") from exc
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Строит argparse-парсер для подкоманд `red`/`verify`/`audit`."""
     parser = argparse.ArgumentParser(prog="tdd_gate")
@@ -1456,6 +1878,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("verify", help="реиграть red-чекпоинт текущей задачи")
     subparsers.add_parser("audit", help="проверить verdict для DONE-задач")
+
+    abandon_parser = subparsers.add_parser(
+        "abandon", help="оператор: отказаться от негодного red-чекпоинта"
+    )
+    abandon_parser.add_argument(
+        "--reason", required=True, help="почему чекпоинт признан негодным"
+    )
+
+    repair_parser = subparsers.add_parser(
+        "repair", help="оператор: санкционировать правку залоченного теста"
+    )
+    repair_parser.add_argument("--path", required=True, help="путь тест-файла")
+    repair_parser.add_argument(
+        "--reason", required=True, help="основание правки и её характер"
+    )
 
     return parser
 
@@ -1480,6 +1917,10 @@ def main(argv: list[str] | None = None) -> int:
             code = cmd_red(root, args.selector, args.message)
         elif args.command == "verify":
             code = cmd_verify(root)
+        elif args.command == "abandon":
+            code = cmd_abandon(root, args.reason)
+        elif args.command == "repair":
+            code = cmd_repair(root, args.path, args.reason)
         else:
             code = cmd_audit(root)
     except GateError as exc:

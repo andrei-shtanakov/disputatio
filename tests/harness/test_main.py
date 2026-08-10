@@ -38,7 +38,7 @@ def test_main_red_happy_path_prints_ok_summary(
     monkeypatch.chdir(repo)
     write_tasks(repo, "tasks.md", ONE_RUNNING)
     (repo / "tests" / "test_new.py").write_text(
-        "def test_x():\n    assert False, 'not implemented'\n"
+        'def test_x():\n    assert False, "not implemented"\n'
     )
 
     code = tdd_gate.main(["red", "-k", SELECTOR, "-m", "новая фича"])
@@ -56,7 +56,7 @@ def test_main_red_node_id_flag_is_equivalent_to_k(
     monkeypatch.chdir(repo)
     write_tasks(repo, "tasks.md", ONE_RUNNING)
     (repo / "tests" / "test_new.py").write_text(
-        "def test_x():\n    assert False, 'not implemented'\n"
+        'def test_x():\n    assert False, "not implemented"\n'
     )
 
     code = tdd_gate.main(["red", "--node-id", SELECTOR, "-m", "новая фича"])

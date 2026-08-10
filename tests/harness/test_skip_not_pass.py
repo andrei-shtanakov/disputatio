@@ -26,9 +26,7 @@ def _seed_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_skipped_selector_is_not_green(
-    tmp_path: Path, monkeypatch: object
-) -> None:
+def test_skipped_selector_is_not_green(tmp_path: Path, monkeypatch: object) -> None:
     repo = _seed_repo(tmp_path)
     (repo / "tests" / "test_skip.py").write_text(
         "import pytest\n\n"
@@ -40,16 +38,12 @@ def test_skipped_selector_is_not_green(
     monkeypatch.setattr(  # type: ignore[attr-defined]
         tdd_gate, "PYTEST_CMD", (sys.executable, "-m", "pytest", "-q")
     )
-    category, output = tdd_gate._run_selector(
-        repo, "tests/test_skip.py::test_answer"
-    )
+    category, output = tdd_gate._run_selector(repo, "tests/test_skip.py::test_answer")
     assert category != "green", output
     assert "skip" in category or category == "error"
 
 
-def test_passing_selector_still_green(
-    tmp_path: Path, monkeypatch: object
-) -> None:
+def test_passing_selector_still_green(tmp_path: Path, monkeypatch: object) -> None:
     repo = _seed_repo(tmp_path)
     (repo / "tests" / "test_ok.py").write_text(
         "def test_answer() -> None:\n    assert True\n", encoding="utf-8"

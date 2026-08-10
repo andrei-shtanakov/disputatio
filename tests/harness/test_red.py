@@ -35,7 +35,7 @@ def _use_local_pytest(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _write_expected_fail_test(repo: Path) -> None:
     (repo / "tests" / "test_new.py").write_text(
-        "def test_x():\n    assert False, 'not implemented'\n"
+        'def test_x():\n    assert False, "not implemented"\n'
     )
 
 
