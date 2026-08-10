@@ -18,7 +18,8 @@
 
 * `STEP_BY_PHASE` — чем занята фаза. `IDLE` шага не имеет: её работа и есть
   переход, и работа до `save(PROPOSING)` была бы работой, о которой
-  `session.json` не знает.
+  `session.json` не знает. Остальные фазы, включая `EXPORTING`, свой шаг
+  здесь имеют — фаза без шага и без ребра останавливает сессию на полпути.
 * `NEXT_PHASE` — куда идти после шага. Записей `DECIDING` и `EXPORTING` тут
   нет, и это часть контракта: следующую фазу после решения выбирает
   `SessionFsm.apply_decision` по §5, после экспорта — сам `export`. Заведи
@@ -39,7 +40,7 @@ from typing import Any
 
 from disputatio.contracts import AgentTurn, SessionPhase, SessionState
 from disputatio.core import TERMINAL_PHASES, SessionFsm
-from disputatio.runtime import steps
+from disputatio.runtime import exporting, steps
 from disputatio.runtime.budget import charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
@@ -64,8 +65,17 @@ STEP_BY_PHASE: Mapping[SessionPhase, StepFn] = {
     SessionPhase.VERIFYING: steps.verify,
     SessionPhase.REVIEWING: steps.review,
     SessionPhase.DECIDING: steps.decide_step,
+    SessionPhase.EXPORTING: exporting.export,
 }
-"""Фаза → её шаг. `EXPORTING` появится здесь вместе с `exporting.export`."""
+"""Фаза → её шаг; последняя запись закрывает цикл ([REQ-024], [DESIGN-024]).
+
+`EXPORTING` — единственная фаза, чей шаг сам называет следующую (`DONE`),
+поэтому в `NEXT_PHASE` её нет и быть не должно. Пока записи не было,
+терминальная цепочка §5 приводила сессию в фазу без шага и без ребра, и
+`drive` честно падал на дыре диспетчера: сессия, вынесшая решение, не
+оставляла ни `result/`, ни `manifest.json`. Регистрация здесь — весь объём
+интеграции: сам экспорт живёт в `runtime/exporting.py` и о цикле не знает.
+"""
 
 NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
     SessionPhase.IDLE: SessionPhase.PROPOSING,
