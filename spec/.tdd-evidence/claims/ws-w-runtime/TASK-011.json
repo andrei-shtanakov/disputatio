@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-011",
+  "selector": "tests/runtime/test_schema_retry.py::test_always_invalid_agent_is_called_exactly_k_plus_one_times[2]",
+  "expected_behavior": "schema_retries=K и всегда невалидный агент → адаптер вызван ровно K+1 раз (REQ-006, I4)",
+  "baseline_sha": "9e9400a27e6637d94fc0b21abc26b39e69a5e00d",
+  "red_sha": "230600e953cfe75ead76fd10d875e688cb2706d6",
+  "created_at": "2026-08-09T20:16:39.565619+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_schema_retry.py"
+}

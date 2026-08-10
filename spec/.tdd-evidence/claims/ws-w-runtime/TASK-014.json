@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-014",
+  "selector": "tests/runtime/test_budget.py::test_unknown_tokens_neither_grow_the_counter_nor_pass_for_zero",
+  "expected_behavior": "accumulate различает сообщённый ноль и неизвестность: tokens_used=None не растит счётчик и не выдаётся за 0",
+  "baseline_sha": "346f990d86060db77f1b68cb976b7c6287184079",
+  "red_sha": "1c161aa74e058b9c617c3cb015b0976aacf7fc2b",
+  "created_at": "2026-08-10T05:16:09.828049+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_budget.py"
+}

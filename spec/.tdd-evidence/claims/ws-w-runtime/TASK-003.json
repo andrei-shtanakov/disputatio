@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/runtime/test_composition.py::test_runtime_deps_fields_satisfy_ports",
+  "expected_behavior": "build_runtime собирает RuntimeDeps: поля проходят isinstance портов contracts.ports",
+  "baseline_sha": "b9373a31646ffd7660643738cf7993fa6bdec7a7",
+  "red_sha": "781e06d6e933f882796c095821c923488b4b6dee",
+  "created_at": "2026-08-09T16:58:18.351162+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_composition.py"
+}

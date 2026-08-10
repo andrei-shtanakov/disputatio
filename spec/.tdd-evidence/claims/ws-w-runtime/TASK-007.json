@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-007",
+  "selector": "tests/runtime/test_git_reset.py::test_later_round_targets_the_previous_round_commit",
+  "expected_behavior": "base_rev(4) возвращает коммит с сообщением 'disputatio: round 003', а не HEAD и не двойника",
+  "baseline_sha": "7a4bb4f46ec2c277f51bc6f1dfb31fdd3b11967c",
+  "red_sha": "e9e11e1e6b624efdd593fcb167828b49fa4d0d88",
+  "created_at": "2026-08-09T18:16:06.818248+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_git_reset.py"
+}

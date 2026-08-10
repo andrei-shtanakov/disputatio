@@ -40,6 +40,9 @@ REASON_OSCILLATION_ISSUE: Final = "oscillation: repeated issue"
 REASON_MAX_ROUNDS: Final = "max_rounds"
 REASON_CONTINUE: Final = "continue_revise_cycle"
 
+_OPEN_SEVERITIES: Final = frozenset({Severity.BLOCKER, Severity.MAJOR})
+"""Severity, при которой замечание объявляется открытым (порог §4.4)."""
+
 _ANTI_SYCOPHANCY_DIRECTIVE: Final = (
     "Раунд 1 принят только для analyze без правок кода; требуется один "
     "содержательный цикл ревью: минимум 3 замечания любой severity либо "
@@ -159,8 +162,35 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
 
     Строгий top-down порядок [REQ-006] — линейная цепочка ранних `return`,
     первое сработавшее условие терминально.
+
+    `open_issues_carried` перечисляет открытое ПОСЛЕ раунда N, а не до него:
+    §4.5 показывает у решения раунда 3 идентификатор `R3-2` — id его
+    собственного ревью, — и оба читателя поля ждут того же (манифест §3.2
+    пересекает список с ревью раунда-источника, снимок следующего `DECIDING`
+    — с ревью того же раунда). Один вход сюда переписан бы в выход: возьмись
+    список целиком у `inputs.carried_issues`, поле сошлось бы в неподвижную
+    точку — раунд 1 приходит без прошлого, значит пусто, и дальше пусто на
+    каждом раунде, то есть «открытых замечаний не осталось» у сессии, которая
+    как раз из-за них и не сошлась.
+
+    Поэтому список — пришедшее открытым ПЛЮС существенное, названное ревью
+    этого раунда. Порог существенности — `blocker|major` §4.4: ровно он
+    заставляет ревьюера просить правок, и ровно до `minor` §4.4 деградирует
+    голословное замечание, чтобы оно не крутило цикл. Свежий `nit` не
+    объявляется открытым по той же причине: замечание, которого никто не
+    обязан закрывать, не должно попадать ни в манифест, ни в промпт автора.
+    Порядок — пришедшие первыми, в порядке прошлого решения: он уходит в
+    следующий снимок, и перестановка сделала бы историю раундов
+    невоспроизводимой. Устаревшее пропадёт само — `carried_issues` пересекает
+    список с ревью, и id, который ревьюер больше не называет, дальше не идёт.
     """
-    open_issues_carried = tuple(issue.id for issue in inputs.carried_issues)
+    carried_ids = tuple(issue.id for issue in inputs.carried_issues)
+    known = set(carried_ids)
+    open_issues_carried = carried_ids + tuple(
+        issue.id
+        for issue in inputs.review.issues
+        if issue.severity in _OPEN_SEVERITIES and issue.id not in known
+    )
 
     if is_converged(inputs):
         return DecisionDraft(
