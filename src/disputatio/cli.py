@@ -195,7 +195,15 @@ def cmd_run(
         """Тело запуска: цикл от `IDLE` до терминальной фазы."""
         return await drive(context)
 
-    return _exit_code(_drive_to_terminal(call, outcome=lambda: context.fsm.state))
+    # Исход оборвавшейся сессии спрашивается у ДИСКА, а не у `context.fsm`:
+    # начисление бюджета пересаживает цикл на новый `SessionFsm`
+    # ([DESIGN-009]), и собранный здесь остался бы в фазе, из которой сессия
+    # ушла, — то есть не назвал бы `FAILED`, уже записанный ядром.
+    return _exit_code(
+        _drive_to_terminal(
+            call, outcome=lambda: _saved_state(deps.store, config.session_id)
+        )
+    )
 
 
 def cmd_resume(

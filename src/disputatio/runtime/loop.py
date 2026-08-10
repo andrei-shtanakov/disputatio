@@ -37,20 +37,26 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from disputatio.contracts import SessionPhase, SessionState
+from disputatio.contracts import AgentTurn, SessionPhase, SessionState
 from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import steps
+from disputatio.runtime.budget import charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
 from disputatio.runtime.steps import StepContext
 
-StepFn = Callable[[StepContext], Awaitable[None] | None]
+StepFn = Callable[[StepContext], Awaitable[AgentTurn | None] | AgentTurn | None]
 """Тело шага: синхронное (`verify`, `decide_step`) либо ожидаемое.
 
 Разговор с агентом асинхронен, прогон гейтов и решение — нет, и обёртывать
 синхронный шаг в корутину ради единообразия значило бы делать вид, что у
 него есть точка отмены, которой нет.
+
+Возвращает шаг ровно то, что нужно для учёта бюджета ([DESIGN-009]): свой
+`AgentTurn`, если агента звал, и `None`, если не звал. Расход считает не шаг,
+а граница шага — иначе `store.save` бюджета оказался бы внутри шага, то есть
+внутри retry-петли, где новый FSM обнулил бы лимит I4 (ADR-004).
 """
 
 STEP_BY_PHASE: Mapping[SessionPhase, StepFn] = {
@@ -137,6 +143,11 @@ async def drive(ctx: StepContext) -> SessionState:
        следующая итерация исполняет шаг НОВОЙ фазы — раунд N+1 начинается с
        предложения автора, а не с гейтов по патчу раунда N.
 
+    Контекст переприсваивается результатом шага: начисление бюджета
+    пересаживает сессию на новый `SessionFsm` ([DESIGN-009]), и держать
+    после этого прежний означало бы продолжать цикл состоянием без расхода —
+    молча и с виду успешно, до первого стоп-условия §5.2.
+
     Возвращается состояние терминальной фазы (`DONE`/`FAILED`); терминальный
     вход — законный: `drive` на уже завершённой сессии не делает ничего.
 
@@ -151,7 +162,7 @@ async def drive(ctx: StepContext) -> SessionState:
 
         step = STEP_BY_PHASE.get(phase)
         if step is not None:
-            await _run_step(step, ctx)
+            ctx = await _run_step(step, ctx)
 
         next_phase = NEXT_PHASE.get(phase)
         if next_phase is not None:
@@ -166,13 +177,27 @@ async def drive(ctx: StepContext) -> SessionState:
     return ctx.fsm.state
 
 
-async def _run_step(step: StepFn, ctx: StepContext) -> None:
-    """Исполняет шаг, дожидаясь его, если он корутина.
+async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:
+    """Исполняет шаг, замеряет его время и начисляет бюджет ([DESIGN-009]).
 
-    Проверка идёт по результату, а не по таблице «этот шаг асинхронный»:
-    вторая таблица разошлась бы с первой молча, и молча же потеряла бы
-    `await` — то есть выполнила бы шаг наполовину, отчитавшись об успехе.
+    Проверка «корутина ли» идёт по результату, а не по таблице «этот шаг
+    асинхронный»: вторая таблица разошлась бы с первой молча, и молча же
+    потеряла бы `await` — то есть выполнила бы шаг наполовину, отчитавшись об
+    успехе.
+
+    Замер обнимает всё тело шага, а не только разговор с агентом: `wall_seconds`
+    — это стена сессии (§5.2), и гейты с записью артефактов идут в неё наравне.
+    Оба отсчёта берутся у ОДНИХ инжектированных часов `deps.monotonic`, поэтому
+    разница неотрицательна и не зависит ни от системного времени, ни от того,
+    как долго шаг ждал ввода-вывода.
+
+    Начисление идёт ПОСЛЕ шага — то есть после `handle_step_success` внутри
+    него: сюда управление приходит только у шага, дошедшего до конца, и
+    обнулить лимит I4 посреди retry-петли эта граница не может по построению
+    (ADR-004). Упавший шаг бюджета не начисляет вовсе: исключение уходит
+    наружу мимо этой строки.
     """
+    started = ctx.deps.monotonic()
     outcome = step(ctx)
-    if isawaitable(outcome):
-        await outcome
+    turn = await outcome if isawaitable(outcome) else outcome
+    return charge_step(ctx, turn=turn, elapsed_s=ctx.deps.monotonic() - started)

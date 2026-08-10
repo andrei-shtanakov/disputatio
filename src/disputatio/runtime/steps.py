@@ -10,6 +10,12 @@
 [DESIGN-015]), поэтому первым делом он убирает огрызки прерванной попытки
 (`_purge_partial_artifacts`), а не пытается их доиспользовать.
 
+Общее у всех четырёх и окончание: шаг отдаёт наружу свой `AgentTurn`, если
+агента звал, и `None`, если не звал. Расход этого turn'а начисляет граница
+шага ([DESIGN-009]) — сам шаг бюджета не считает и `session.json` из-за него
+не переписывает: запись изнутри шага попала бы в retry-петлю, где пересадка
+FSM обнулила бы лимит schema-повторов (ADR-004).
+
 Пока реализованы `propose` ([DESIGN-003]), `verify` ([DESIGN-004]),
 `review` ([DESIGN-005]) и `decide_step` ([DESIGN-007]); остальные шаги
 приходят своими задачами и делят с ними `StepContext`.
@@ -22,6 +28,7 @@ from typing import Any, Final
 
 from disputatio.context import build_author_prompt, build_reviewer_prompt
 from disputatio.contracts import (
+    AgentTurn,
     Decision,
     Event,
     EventSource,
@@ -120,8 +127,29 @@ class StepContext:
         """Номер текущего раунда — из состояния, а не из копии."""
         return self.fsm.state.current_round
 
+    def with_fsm(self, fsm: SessionFsm) -> "StepContext":
+        """Тот же контекст с другим `SessionFsm` — пересадка [DESIGN-009].
 
-async def propose(ctx: StepContext) -> None:
+        Бюджет обновляется не мутацией, а сменой FSM: `SessionState` frozen,
+        публичного мутатора у ядра нет. Копия живёт здесь, рядом со списком
+        полей, а не у того, кто пересаживает: поля перечислены руками, и
+        забыть новое проще всего именно вдалеке от их объявления.
+
+        Руками, а не `dataclasses.replace`, по внешней причине: имя `replace`
+        в runtime занято сканером append-only ([DESIGN-016]) — отличить
+        копию dataclass'а от `Path.replace` он не может и обязан замечать
+        каждый вызов, а исключение в разрешающем списке писателей ради копии
+        контекста было бы худшей сделкой, чем четыре имени поля.
+        """
+        return StepContext(
+            deps=self.deps,
+            fsm=fsm,
+            base_commit=self.base_commit,
+            gates=self.gates,
+        )
+
+
+async def propose(ctx: StepContext) -> AgentTurn:
     """Шаг PROPOSING раунда `ctx.round`: reset → prompt → author → артефакты.
 
     Порядок операций — само поведение шага, а не его деталь:
@@ -144,6 +172,11 @@ async def propose(ctx: StepContext) -> None:
        различает их только наличие файла. `diff_head` идёт ПОСЛЕ записи
        `proposal.md`: каталог сессии из диффа исключён, поэтому порядок
        безопасен, а обратный лишил бы патч правок, сделанных автором позже.
+
+    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
+    шага ([DESIGN-009]). Считать бюджет здесь значило бы поставить
+    `store.save` внутрь шага, то есть внутрь retry-петли, где новый FSM
+    обнулил бы лимит I4 (ADR-004).
     """
     _require_author(ctx)
     round_no = ctx.round
@@ -179,6 +212,7 @@ async def propose(ctx: StepContext) -> None:
     write_round_artifact(root, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
+    return turn
 
 
 def verify(ctx: StepContext) -> None:
@@ -233,7 +267,7 @@ def verify(ctx: StepContext) -> None:
     )
 
 
-async def review(ctx: StepContext) -> None:
+async def review(ctx: StepContext) -> AgentTurn:
     """Шаг REVIEWING раунда `ctx.round`: промпт → ревьюер → `review.json`.
 
     Правила §4.4 здесь не переписываются ни одной строкой: деградация
@@ -267,6 +301,10 @@ async def review(ctx: StepContext) -> None:
     Все три исхода отказа (нет JSON, не та схема, не приняли §4.4) идут
     через schema-retry ([DESIGN-006]): ревьюера переспрашивают с текстом
     ошибки, и только исчерпание лимита делает раунд `FAILED`.
+
+    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
+    шага ([DESIGN-009]), по той же причине, что и у автора: внутри шага
+    начисление попало бы в retry-петлю и обнулило бы лимит I4 (ADR-004).
     """
     round_no = ctx.round
     root = ctx.root
@@ -294,7 +332,7 @@ async def review(ctx: StepContext) -> None:
     )
     if outcome is None:
         raise _exhausted(failures)
-    review_model, _turn = outcome
+    review_model, turn = outcome
 
     write_round_artifact(
         root,
@@ -304,6 +342,7 @@ async def review(ctx: StepContext) -> None:
     )
 
     ctx.fsm.handle_step_success()
+    return turn
 
 
 def decide_step(ctx: StepContext) -> None:
