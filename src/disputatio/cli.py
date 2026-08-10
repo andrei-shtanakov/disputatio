@@ -3,8 +3,10 @@
 Один модуль на весь CLI, stdlib `argparse` и ни одной новой зависимости, а
 `main(argv) -> int` делает вход обычной функцией — тест вызывает её
 напрямую, не порождая процесса и не завися от того, установлен ли пакет.
-Подкоманда пока одна (`run`); `resume` приходит с [TASK-021] и садится
-рядом, не трогая ни порядок ниже, ни коды возврата.
+Подкоманд две: `run` заводит сессию, `resume` продолжает прерванную
+([REQ-020], [DESIGN-020]). Обе выбираются `set_defaults(handler=…)`, и обе
+объявляют `--root` сами: глобальный флаг заставлял бы пользователя помнить,
+что часть аргументов идёт до имени команды, а часть после.
 
 Единственное, что этот модуль решает сам, — **порядок** и **коды возврата**.
 Ни одного правила сессии здесь нет: pre-flight принадлежит `runtime.git`,
@@ -33,22 +35,42 @@
 следующей, а читатель и писатель остаются в одном экземпляре. Всё остальное
 — агенты, лимиты, гейты — приходит из профиля нетронутым: подкрути их CLI, и
 снапшот перестал бы описывать сессию, которая по нему пошла.
+
+Диагностика подчинена одному правилу (NFR-003): пользователь получает одну
+строку `.args[0]` в stderr и код `2`, а полный traceback уходит событием
+`error` в `events.jsonl` — не проглатывается и не показывается. Журнал молчит
+ровно до тех пор, пока `.disputatio/` не создан: запись «ошибки старта» в
+чужой репозиторий создала бы каталог сессии, которой не было ([REQ-010]).
 """
 
 import argparse
 import secrets
 import sys
-from collections.abc import Callable, Sequence
-from dataclasses import replace
+import traceback
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 import anyio
 
-from disputatio.contracts import Mode, SessionPhase, SessionState
+from disputatio.contracts import (
+    Event,
+    EventSource,
+    EventType,
+    Mode,
+    SessionPhase,
+    SessionState,
+    StateStore,
+)
 from disputatio.core import SessionFsm
-from disputatio.events import bootstrap_session, write_config_snapshot
+from disputatio.events import (
+    FileStateStore,
+    JsonlEventSink,
+    bootstrap_session,
+    write_config_snapshot,
+)
 from disputatio.runtime import (
     DisputatioError,
     GitCli,
@@ -57,7 +79,8 @@ from disputatio.runtime import (
     load_config_file,
     preflight,
 )
-from disputatio.runtime.loop import drive
+from disputatio.runtime.layout import session_dir
+from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.steps import StepContext
 
 EXIT_OK: Final = 0
@@ -95,17 +118,26 @@ def main(
 
     `now` инжектируется теми же соображениями, что и `RuntimeDeps.now`: часы
     сессии обязаны быть одни на весь запуск, а тест — детерминированным.
+
+    Подкоманду выбирает не `if` по имени, а `handler`, положенный в разбор
+    самим подпарсером: второе место, где перечислены команды, разошлось бы с
+    первым молча — ровно тогда, когда команду добавят.
     """
     args = _build_parser().parse_args(argv)
     clock = now if now is not None else _utcnow
+    journal = _ErrorJournal(root=Path(args.root), now=clock)
+    handler: Callable[..., int] = args.handler
     try:
-        return cmd_run(args, now=clock)
+        return handler(args, now=clock, journal=journal)
     except DisputatioError as exc:
+        journal.record(exc)
         print(exc.args[0], file=sys.stderr)
         return EXIT_ERROR
 
 
-def cmd_run(args: argparse.Namespace, *, now: Callable[[], datetime]) -> int:
+def cmd_run(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
     """Новая сессия: pre-flight → bootstrap → drive ([REQ-019], [DESIGN-019]).
 
     Порядок обязателен: pre-flight git ([DESIGN-010]) и сборка портов
@@ -138,6 +170,9 @@ def cmd_run(args: argparse.Namespace, *, now: Callable[[], datetime]) -> int:
         task_prompt=args.task,
     )
     deps = build_runtime(config, root, git=GitCli(root), now=now)
+    # Имя сессии известно только теперь: всё, что упадёт дальше, журналируется
+    # её именем, а не пустым — иначе событие `error` не привязать к сессии.
+    journal.session = config.session_id
 
     # `flush` обязателен: за печатью идёт цикл, который живёт минутами, а в
     # конвейере stdout буферизуется — имя сессии дошло бы до пользователя
@@ -155,7 +190,50 @@ def cmd_run(args: argparse.Namespace, *, now: Callable[[], datetime]) -> int:
         base_commit=config.base_commit,
         gates=config.gates,
     )
-    return _exit_code(_drive_to_terminal(context))
+
+    async def call() -> SessionState:
+        """Тело запуска: цикл от `IDLE` до терминальной фазы."""
+        return await drive(context)
+
+    return _exit_code(_drive_to_terminal(call, outcome=lambda: context.fsm.state))
+
+
+def cmd_resume(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """Продолжение прерванной сессии ([REQ-020], [DESIGN-020]).
+
+    Своей логики восстановления здесь нет и быть не должно — она вся в
+    `resume_session` ([REQ-014]): конфиг берётся из снапшота сессии, а не из
+    профиля окружения, состояние — из `session.json`, дальше крутится тот же
+    `drive`. CLI добавляет ровно то же, что и к `run`: `anyio.run` и перевод
+    терминальной фазы в код возврата.
+
+    Ни pre-flight, ни `bootstrap_session` тут не зовутся, и это не экономия:
+    сессия уже начата, а дерево после обрыва законно содержит правки убитого
+    автора — раунд сбрасывает их сам, перед тем как звать агента
+    ([DESIGN-012]). Отказ «дерево грязное» на этом месте сделал бы
+    невозобновляемой ровно ту сессию, ради которой подкоманда и заведена.
+
+    `store` создаётся здесь и передаётся в `resume_session` override'ом,
+    чтобы исход сессии, оборвавшей цикл исключением, читался тем же
+    хранилищем, которым он записан. Второй экземпляр читал бы то же самое, но
+    молчаливо разошёлся бы с первым, стоит хранилищу завести кэш.
+    """
+    root = Path(args.root)
+    session_id: str = args.session_id
+    journal.session = session_id
+    store = FileStateStore(root)
+
+    async def call() -> SessionState:
+        """Тело продолжения: подготовка resume и тот же цикл, что у `run`."""
+        return await resume_session(
+            root, session_id, git=GitCli(root), store=store, now=now
+        )
+
+    return _exit_code(
+        _drive_to_terminal(call, outcome=lambda: _saved_state(store, session_id))
+    )
 
 
 def new_session_id(moment: datetime) -> str:
@@ -172,12 +250,21 @@ def new_session_id(moment: datetime) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Разбор аргументов `disp`; подкоманда обязательна ([DESIGN-020])."""
+    """Разбор аргументов `disp`; подкоманда обязательна ([DESIGN-020]).
+
+    `required=True` — не строгость ради строгости: без него пустой argv
+    разбирается молча, и `main` ушёл бы не в usage, а в `AttributeError` на
+    несуществующем `handler`. Неизвестное имя команды argparse отвергает сам,
+    печатая usage в stderr и завершая процесс кодом `2`, — тем же, каким
+    отвечает CLI на негодный ввод.
+    """
     parser = argparse.ArgumentParser(
         prog="disp", description="Оркестратор author↔reviewer debate loop"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+
     run = commands.add_parser("run", help="запустить новую сессию")
+    run.set_defaults(handler=cmd_run)
     run.add_argument("task", help="текст задачи для автора")
     run.add_argument(
         "--mode",
@@ -190,10 +277,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"профиль запуска (по умолчанию <root>/{DEFAULT_CONFIG_NAME})",
     )
-    run.add_argument(
+    _add_root(run)
+
+    resume = commands.add_parser("resume", help="продолжить прерванную сессию")
+    resume.set_defaults(handler=cmd_resume)
+    resume.add_argument("session_id", help="имя сессии, напечатанное `disp run`")
+    _add_root(resume)
+    return parser
+
+
+def _add_root(command: argparse.ArgumentParser) -> None:
+    """Добавляет команде `--root`: у каждой свой, общего флага нет."""
+    command.add_argument(
         "--root", default=".", help="рабочий git-репозиторий (по умолчанию текущий)"
     )
-    return parser
 
 
 def _config_path(args: argparse.Namespace, root: Path) -> Path:
@@ -203,7 +300,11 @@ def _config_path(args: argparse.Namespace, root: Path) -> Path:
     return root / DEFAULT_CONFIG_NAME
 
 
-def _drive_to_terminal(context: StepContext) -> SessionState:
+def _drive_to_terminal(
+    call: Callable[[], Awaitable[SessionState]],
+    *,
+    outcome: Callable[[], SessionState | None],
+) -> SessionState:
     """Крутит цикл под `anyio.run`, отличая провал сессии от поломки CLI.
 
     Шаг, исчерпавший schema-повторы, поднимает ошибку последней попытки
@@ -212,22 +313,80 @@ def _drive_to_terminal(context: StepContext) -> SessionState:
     причину. Любое другое исключение — не исход, а сбой, и оно уходит выше:
     проглоти его CLI, и сломанный оркестратор отчитывался бы «сессия не
     сошлась» вместо падения.
+
+    Исход спрашивается функцией, а не берётся из контекста: у `run` контекст
+    собран до цикла, у `resume` он живёт внутри `resume_session`, и
+    единственное, что у них общее, — состояние, записанное на диск. `None`
+    означает «исхода нет вовсе» (сессия не найдена, цикл не начинался), и
+    тогда исключение — единственная правда о запуске.
     """
-
-    async def call() -> SessionState:
-        return await drive(context)
-
     try:
         return anyio.run(call)
     except Exception:
-        if context.fsm.state.state is SessionPhase.FAILED:
-            return context.fsm.state
+        state = outcome()
+        if state is not None and state.state is SessionPhase.FAILED:
+            return state
         raise
+
+
+def _saved_state(store: StateStore, session_id: str) -> SessionState | None:
+    """Состояние сессии на диске; отсутствие — `None`, а не исключение.
+
+    Спрашивается уже на пути обработки другой ошибки, и `KeyError` отсюда
+    подменил бы собой причину, ради которой состояние и понадобилось.
+    """
+    try:
+        return store.load(session_id)
+    except KeyError:
+        return None
 
 
 def _exit_code(state: SessionState) -> int:
     """`0` для `DONE`, `1` для всего остального терминального ([REQ-019])."""
     return EXIT_OK if state.state is SessionPhase.DONE else EXIT_FAILED
+
+
+@dataclass
+class _ErrorJournal:
+    """Приёмник traceback'ов доменных ошибок ([DESIGN-020], NFR-003).
+
+    Пользователю уходит одна строка, полный traceback — событием `error` в
+    `events.jsonl`: «не показывать» и «не сохранять» — разные обещания, и
+    выполнено должно быть только первое.
+
+    Имя сессии заполняется тем, кто его узнаёт: `run` — после генерации,
+    `resume` — из argv. До этого журнал молчит по другой причине: пока
+    `bootstrap_session` не создал `.disputatio/`, любая запись завела бы
+    каталог сессии в чужом репозитории ([REQ-010]) — а отказы старта
+    случаются именно там.
+    """
+
+    root: Path
+    now: Callable[[], datetime]
+    session: str = field(default="")
+
+    def record(self, exc: DisputatioError) -> None:
+        """Дописывает traceback событием `error`, если сессия уже начата."""
+        if not session_dir(self.root).exists():
+            return
+        event = Event(
+            ts=self.now(),
+            session=self.session,
+            source=EventSource.ORCHESTRATOR,
+            type=EventType.ERROR,
+            payload={
+                "error": type(exc).__name__,
+                "message": str(exc.args[0]),
+                "traceback": "".join(traceback.format_exception(exc)),
+            },
+        )
+        try:
+            JsonlEventSink(self.root).emit(event)
+        except OSError:
+            # Журнал — не единственный получатель диагностики: строка в
+            # stderr уйдёт в любом случае, и сорвать её сбоем записи значило
+            # бы обменять внятный отказ на traceback, запрещённый NFR-003.
+            return
 
 
 def _utcnow() -> datetime:
