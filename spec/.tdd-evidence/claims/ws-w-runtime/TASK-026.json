@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-026",
+  "selector": "tests/runtime/test_acceptance.py::test_workstream_evidence_is_complete",
+  "expected_behavior": "evidence-цепочка workstream'а сомкнута для задач TASK-001…TASK-026: у каждой есть claim, а вердикт сцеплен с ним по ревизии и red_sha (red_replay=EXPECTED_FAIL, selector_at_head=PASS)",
+  "baseline_sha": "898a9168680753943204905288a3a5d0392acc7c",
+  "red_sha": "33e140eb462e1e43ebbe4f5c8cdc8b1e95f07738",
+  "created_at": "2026-08-10T07:28:13.095589+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_acceptance.py"
+}

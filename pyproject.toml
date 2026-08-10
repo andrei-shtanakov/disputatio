@@ -4,13 +4,21 @@ version = "0.1.0"
 description = "Headless author↔reviewer debate-loop orchestrator"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+disp = "disputatio.cli:main"
 
 [dependency-groups]
 dev = [
+    "anyio>=4.14.2",
     "pyrefly>=1.2.0",
     "pytest>=9.1.1",
     "ruff>=0.16.2",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]

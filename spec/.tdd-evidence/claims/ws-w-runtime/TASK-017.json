@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-017",
+  "selector": "tests/runtime/test_resume_append_only.py::test_runtime_has_no_writer_of_the_journal_besides_the_sink",
+  "expected_behavior": "AST-скан runtime/append_only.py: в runtime нет писателя events.jsonl мимо JsonlEventSink и нет except, поглощающего RoundImmutableError",
+  "baseline_sha": "ceebaea8dc7dc5e1e2492ec32d0fae2f4fc5a661",
+  "red_sha": "7d1a16ba0ceaf6cf71d3f3a4357ef262182ef680",
+  "created_at": "2026-08-10T00:05:01.527110+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_resume_append_only.py"
+}

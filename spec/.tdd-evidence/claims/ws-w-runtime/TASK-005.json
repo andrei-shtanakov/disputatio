@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-005",
+  "selector": "tests/runtime/test_changes_patch.py::test_modified_tracked_file_appears_in_unified_diff",
+  "expected_behavior": "",
+  "baseline_sha": "74d9a70726fd002c868baf23fb50422a2f82ca92",
+  "red_sha": "7c8271059d2ae5588e25d0e55d66570e0202b915",
+  "created_at": "2026-08-09T17:35:50.745193+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_changes_patch.py"
+}

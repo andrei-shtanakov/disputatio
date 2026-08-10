@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/verifier/test_diffstats.py::test_uncommitted_changes_report_actual_counts",
+  "expected_behavior": "collect_diff_stats: git diff --numstat HEAD -> DiffStats(files, insertions, deletions); бинарные файлы учтены в files, но не в строках; репозиторий без HEAD -> (0, 0, 0) без исключения",
+  "baseline_sha": "0151e93a1587363baba7ab8708c855f17384c2ef",
+  "red_sha": "07346a303c88de9c262677ff059fd64b44acad6b",
+  "created_at": "2026-08-09T10:13:42.660120+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_diffstats.py"
+}

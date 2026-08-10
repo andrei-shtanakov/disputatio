@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-003",
+  "selector": "tests/context/test_schema_rules.py::test_constant_exists_and_is_non_empty_text",
+  "expected_behavior": "REVIEW_SCHEMA_REQUIREMENTS импортируется из disputatio.context.schema_rules и содержит непустой текст правил review.json (§4.4)",
+  "baseline_sha": "5597847c2f6357164189ec7d05429a8998dd4882",
+  "red_sha": "6a47118aadd214c33841220e9e542e15ca463a47",
+  "created_at": "2026-08-09T13:30:48.370863+00:00",
+  "revision": 1,
+  "test_path": "tests/context/test_schema_rules.py"
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-018",
+  "selector": "tests/contracts/test_numeric_bounds.py::test_negative_round_rejected_in_round_artifacts",
+  "expected_behavior": "",
+  "baseline_sha": "20e60a679159c82c3bc8e4b8090f8bb71e7d7669",
+  "red_sha": "3f1da8eaf273e63489cb6d8fe7150a6b88abd4bf",
+  "created_at": "2026-08-08T21:41:10.645864+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_numeric_bounds.py"
+}

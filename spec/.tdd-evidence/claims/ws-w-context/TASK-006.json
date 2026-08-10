@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/context/test_init.py::test_public_functions_are_submodule_objects",
+  "expected_behavior": "публичный API пакета: build_author_prompt/build_reviewer_prompt реэкспортированы и тождественны оригиналам в author/reviewer",
+  "baseline_sha": "bbc726b4961078b624d2f7b4e235ce030116b3b0",
+  "red_sha": "c14a65b728292504ed0a55766e57d0902a75bee8",
+  "created_at": "2026-08-09T14:33:56.063050+00:00",
+  "revision": 1,
+  "test_path": "tests/context/test_init.py"
+}

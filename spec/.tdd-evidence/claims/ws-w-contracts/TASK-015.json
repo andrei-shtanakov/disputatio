@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-015",
+  "selector": "tests/contracts/test_enum_comparisons.py::test_string_verdict_approve_on_failed_gates_rejected",
+  "expected_behavior": "строковый verdict approve через model_copy при overall=fail должен давать REASON_APPROVE_ON_FAILED_GATES; is-сравнение молча пропускает",
+  "baseline_sha": "0019d6b01f9d68c8ed74874fbe079a2e1eef4453",
+  "red_sha": "f46468061bb94c14964f0d01e0cd0a9c2ce967ac",
+  "created_at": "2026-08-08T21:12:37.264770+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_enum_comparisons.py"
+}

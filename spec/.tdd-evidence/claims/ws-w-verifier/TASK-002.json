@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-002",
+  "selector": "tests/verifier/test_capture.py::test_exit_code_is_the_checked_process_code",
+  "expected_behavior": "",
+  "baseline_sha": "aa3a912c1f96de580532867ca4c57352591f7057",
+  "red_sha": "3f869df686b764a763d660e39cf013678e3331a6",
+  "created_at": "2026-08-09T04:47:03.616776+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_capture.py"
+}

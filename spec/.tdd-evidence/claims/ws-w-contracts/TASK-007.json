@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-007",
+  "selector": "tests/contracts/test_events.py::test_spec_8_json_line_validates",
+  "expected_behavior": "",
+  "baseline_sha": "cc5828ef719956459d03ee1754b486dedffabfe5",
+  "red_sha": "a151ece28a5dabd9ff03540ee1e55015a6c9b5a3",
+  "created_at": "2026-08-08T19:29:48.744944+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_events.py"
+}

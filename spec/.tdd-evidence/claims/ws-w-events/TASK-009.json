@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-009",
+  "selector": "tests/events/test_acceptance_w_events.py::test_workstream_evidence_is_complete",
+  "expected_behavior": "",
+  "baseline_sha": "c14f7197015aa62f9d74472bbcf9209060d39e9f",
+  "red_sha": "7aee0211055b2ac38e08007a95a9c65e8fe9dcf6",
+  "created_at": "2026-08-09T12:19:42.959860+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_acceptance_w_events.py"
+}

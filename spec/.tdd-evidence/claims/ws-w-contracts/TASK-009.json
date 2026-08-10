@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-009",
+  "selector": "tests/contracts/test_validation.py::test_request_changes_without_issues_rejected",
+  "expected_behavior": "",
+  "baseline_sha": "3281c684d3b6c75bf204a296a50f887da4062302",
+  "red_sha": "a630c64a465aada27c774163f7f03a31e1f9b2b0",
+  "created_at": "2026-08-08T19:49:29.505533+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_validation.py"
+}

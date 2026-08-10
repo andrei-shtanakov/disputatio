@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-024",
+  "selector": "tests/runtime/test_e2e_converged.py::test_converged_session_survives_a_crash_and_resumes_to_done",
+  "expected_behavior": "Сквозной цикл с обрывом в раунде 2 и resume доводит сессию до DONE с честным manifest.json",
+  "baseline_sha": "b020674d80c33932a506f1a5288b22c23272f315",
+  "red_sha": "6300113ac98546add32be48b395dbf1a9b78a0c8",
+  "created_at": "2026-08-10T05:53:26.287747+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_e2e_converged.py"
+}

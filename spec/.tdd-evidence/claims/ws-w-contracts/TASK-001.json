@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/contracts/test_base.py::test_serialization_contains_schema_key",
+  "expected_behavior": "сериализация ArtifactBase по алиасам содержит ключ schema == disputatio/v1",
+  "baseline_sha": "840f2851d422064e13cb65edce65fae184a250eb",
+  "red_sha": "45981a80f0a64617719afbf8d81f69ca5a1f9b27",
+  "created_at": "2026-08-08T18:36:38.414195+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_base.py"
+}

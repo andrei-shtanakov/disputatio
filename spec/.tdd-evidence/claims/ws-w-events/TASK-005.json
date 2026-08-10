@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-005",
+  "selector": "tests/events/test_event_sink.py::test_emit_appends_single_line",
+  "expected_behavior": "",
+  "baseline_sha": "c40a0bfb38cc6e84e9a32b93f61debe0eb34cd9a",
+  "red_sha": "4e1ae1f86c4c6201ab82e87989f2c8ff735f7654",
+  "created_at": "2026-08-09T11:39:13.522886+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_event_sink.py"
+}

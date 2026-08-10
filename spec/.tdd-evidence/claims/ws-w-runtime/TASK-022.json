@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-022",
+  "selector": "tests/cli/test_entrypoint.py::test_pyproject_declares_disp_pointing_at_a_callable_in_disputatio_cli",
+  "expected_behavior": "",
+  "baseline_sha": "7aebc383fb5d4fbf4514c9b2245ccc3dc8f96ab9",
+  "red_sha": "ad50bd06f10e52768590010eb97b0009d2a1302d",
+  "created_at": "2026-08-10T04:40:32.168757+00:00",
+  "revision": 1,
+  "test_path": "tests/cli/test_entrypoint.py"
+}

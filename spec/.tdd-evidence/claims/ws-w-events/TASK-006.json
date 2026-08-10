@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-006",
+  "selector": "tests/events/test_round_artifacts.py::test_write_creates_round_dir_and_file",
+  "expected_behavior": "",
+  "baseline_sha": "64f1d3feaf59c15d1b0c57f2402bb62c3c8b8aef",
+  "red_sha": "fcf4baf94a1cf8dab76ebb8e8e0ec1584e93230e",
+  "created_at": "2026-08-09T11:49:43.250536+00:00",
+  "revision": 1,
+  "test_path": "tests/events/test_round_artifacts.py"
+}

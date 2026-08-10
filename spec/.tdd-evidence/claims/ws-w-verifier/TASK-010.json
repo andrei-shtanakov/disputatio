@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-010",
+  "selector": "tests/verifier/test_no_agent_cli.py::test_check_no_agent_cli_discovers_rogue_module_in_subpackage",
+  "expected_behavior": "check_no_agent_cli рекурсивно обходит каталог пакета и репортит упоминания агентских CLI по относительному пути модуля",
+  "baseline_sha": "d0fe5c0940a5e0e66db71a73587799d83a4e2263",
+  "red_sha": "66ed640d39a2bc9d6f63db56c3af1b9c4c0aec82",
+  "created_at": "2026-08-09T11:25:55.308207+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_no_agent_cli.py"
+}

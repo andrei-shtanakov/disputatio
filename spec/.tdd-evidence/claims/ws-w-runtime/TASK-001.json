@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-001",
+  "selector": "tests/runtime/test_core_purity.py::test_plain_import_of_forbidden_root_is_reported",
+  "expected_behavior": "скан дерева core находит import disputatio.events: module/lineno/imported/kind",
+  "baseline_sha": "e218bd49be132d7902a179639305aabd504b1863",
+  "red_sha": "2fa09837f31b66fb509525f43aeccf16ae0c7d58",
+  "created_at": "2026-08-09T16:07:19.769781+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_core_purity.py"
+}

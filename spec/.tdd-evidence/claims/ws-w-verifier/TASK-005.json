@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-005",
+  "selector": "tests/verifier/test_robustness.py::test_missing_binary_becomes_skip_without_raising",
+  "expected_behavior": "run_gate: rc/enabled/сбой запуска → GateStatus pass|fail|skip с непустым reason, без исключений наружу",
+  "baseline_sha": "36feaf18b7d5ad277789f935813a671131464e9c",
+  "red_sha": "97a4f622d2b1702e99d8b886d2f76403d60e55de",
+  "created_at": "2026-08-09T05:04:56.151641+00:00",
+  "revision": 1,
+  "test_path": "tests/verifier/test_robustness.py"
+}

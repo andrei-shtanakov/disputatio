@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-007",
+  "selector": "tests/context/test_hygiene.py::test_close_tag_in_task_prompt_keeps_author_boundary_intact",
+  "expected_behavior": "Собранный промпт автора: буквальная закрывающая метка в task.prompt не рвёт границу данные/инструкции — метки чередуются, payload остаётся внутри блока",
+  "baseline_sha": "621ad71a7ff6f0bda72086320b041785a9ee18f4",
+  "red_sha": "5563a5c514180df27d2a32ef7a458532f697e08c",
+  "created_at": "2026-08-09T14:14:44.482409+00:00",
+  "revision": 1,
+  "test_path": "tests/context/test_hygiene.py"
+}

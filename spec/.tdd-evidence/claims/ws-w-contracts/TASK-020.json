@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-020",
+  "selector": "tests/contracts/test_parse_robustness.py::test_crlf_spec_example_matches_lf",
+  "expected_behavior": "CRLF-версия spec-примера §4.2 нормализуется и даёт тот же фронтматтер и LF-тело, что LF-версия",
+  "baseline_sha": "b114721842ea83cda76a6fd57dd92a865c9cde2d",
+  "red_sha": "f19bd18bad1fa859c16a22d31d711c1e7f6b7d0f",
+  "created_at": "2026-08-08T21:56:22.854995+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_parse_robustness.py"
+}

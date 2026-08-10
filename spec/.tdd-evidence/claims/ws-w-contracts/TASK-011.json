@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-011",
+  "selector": "tests/contracts/test_ports.py::test_fakes_pass_isinstance_checks",
+  "expected_behavior": "runtime_checkable Protocol-порты: структурный фейк каждого порта проходит isinstance",
+  "baseline_sha": "67edc6619901629cbfad1540d2c5cf211cc2eb05",
+  "red_sha": "9f9f331f89e57efcfde6685dc8f9a334d365b2a3",
+  "created_at": "2026-08-08T20:07:16.699247+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_ports.py"
+}

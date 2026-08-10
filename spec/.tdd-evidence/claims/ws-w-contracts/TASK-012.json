@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-012",
+  "selector": "tests/contracts/test_init.py::test_public_names_importable_from_package",
+  "expected_behavior": "",
+  "baseline_sha": "1231d30c06e41f0b047a634e2c51c39b574d2114",
+  "red_sha": "9c47f069fbaf584bdfe1a988456c85242b283164",
+  "created_at": "2026-08-08T20:16:22.493949+00:00",
+  "revision": 1,
+  "test_path": "tests/contracts/test_init.py"
+}

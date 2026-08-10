@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-018",
+  "selector": "tests/runtime/test_export_converged.py::test_manifest_records_the_converged_export",
+  "expected_behavior": "EXPORTING собирает result/ раунда-источника и честный manifest.json, затем переводит сессию в DONE",
+  "baseline_sha": "030c46ccd456a20979a022dd6d97e14b3cf4cd77",
+  "red_sha": "a1f9e5d841d216dca6a90d21f61eea40f5af40af",
+  "created_at": "2026-08-10T00:24:05.731608+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_export_converged.py"
+}

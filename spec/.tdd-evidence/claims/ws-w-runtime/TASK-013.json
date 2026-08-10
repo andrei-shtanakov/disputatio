@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-013",
+  "selector": "tests/runtime/test_write_ahead.py::test_proposing_is_saved_before_the_author_is_called",
+  "expected_behavior": "",
+  "baseline_sha": "45ba138e17aae3d8cd52c19efe930f5f0965394f",
+  "red_sha": "4744dbd4e453a817d1e9de184225adf85835978b",
+  "created_at": "2026-08-09T21:27:49.768149+00:00",
+  "revision": 1,
+  "test_path": "tests/runtime/test_write_ahead.py"
+}
