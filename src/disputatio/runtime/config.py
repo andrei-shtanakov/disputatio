@@ -234,6 +234,21 @@ def load_config(root: Path) -> RuntimeConfig:
     обязана продолжиться тем, чем была запущена, даже если внешний файл с
     тех пор переписали.
 
+    Путь к снапшоту — единственное, что эта функция добавляет к чтению файла
+    ([DESIGN-014]): сам разбор живёт в `load_config_file`, потому что тем же
+    форматом пользуется профиль запуска `disp run` ([DESIGN-019]), а вторая
+    пара «читатель + перевод ошибок» разошлась бы с первой молча.
+    """
+    return load_config_file(config_toml(root))
+
+
+def load_config_file(path: Path) -> RuntimeConfig:
+    """Читает конфиг из файла `path`; любая негодность — `ConfigError`.
+
+    Отсутствие файла — та же `ConfigError`, что и битое содержимое: для
+    вызывающего «конфига нет» и «конфиг не читается» — один исход, и голый
+    `FileNotFoundError` на этом месте увёл бы CLI мимо [DESIGN-020].
+
     Байты, не декодируемые как UTF-8, — тоже `ConfigError`, и отдельным
     `except`: `UnicodeDecodeError` наследуется от `ValueError`, а не от
     `OSError`, и один только перехват ошибок ввода-вывода выпустил бы его
@@ -241,7 +256,6 @@ def load_config(root: Path) -> RuntimeConfig:
     файл ровно затем, чтобы его правили руками, а редактор, сохранивший
     русский `task.prompt` в однобайтовой кодировке, даёт именно эти байты.
     """
-    path = config_toml(root)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:

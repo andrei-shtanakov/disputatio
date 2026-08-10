@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-020",
+  "selector": "tests/cli/test_cli_run.py::test_run_on_a_clean_repo_creates_the_session_and_prints_its_id",
+  "expected_behavior": "disp run: preflight до bootstrap, session_id первой строкой stdout, коды возврата 0/1/2, флаги --mode/--config/--root",
+  "baseline_sha": "c88f974b968ce00420178f077952a0e25edbaf30",
+  "red_sha": "cf874756a52cca957ab86f7cfb0f12bdb090d894",
+  "created_at": "2026-08-10T01:22:00.963504+00:00",
+  "revision": 1,
+  "test_path": "tests/cli/test_cli_run.py"
+}

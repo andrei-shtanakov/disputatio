@@ -21,6 +21,7 @@ from disputatio.runtime.config import (
     LimitsConfig,
     RuntimeConfig,
     load_config,
+    load_config_file,
 )
 from disputatio.runtime.errors import (
     BaseRevisionNotFound,
@@ -76,6 +77,7 @@ __all__ = [
     "base_rev",
     "build_runtime",
     "load_config",
+    "load_config_file",
     "preflight",
     "scan_package_purity",
 ]
