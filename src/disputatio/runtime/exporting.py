@@ -1,9 +1,9 @@
-"""Шаг `EXPORTING`: `result/*` + `manifest.json` ([DESIGN-017], [REQ-017]).
+"""Шаг `EXPORTING`: `result/*` + `manifest.json` ([DESIGN-017], [DESIGN-018]).
 
 Экспорт — последний шаг сессии и самый простой: он ничего не решает и почти
 ничего не пишет. Всё, что он делает, — называет раунд-источник, переносит
 его артефакты в `result/` и записывает манифест о том, чем сессия кончилась.
-Три обязательства, и все три про то, откуда берётся ответ:
+Четыре обязательства, и все четыре про то, откуда берётся ответ:
 
 1. **Раунд-источник назван состоянием, а не найден на диске.** Источник —
    `state.current_round` на входе в терминальную фазу: терминальная цепочка
@@ -24,19 +24,34 @@
    подставляет: checksum, посчитанный до записи, описывал бы намерение, а не
    результат. Оттуда же берётся и «манифест пишется последним» — весь
    экспорт уходит в ОДИН вызов, и другого писателя у шага нет.
+4. **`open_issues` — пересечение двух артефактов раунда** ([DESIGN-018]):
+   замечания его ревью, отфильтрованные `open_issues_carried` его решения.
+   Считает пересечение `history.carried_issues` — тот же читатель, которым
+   собирается снимок `DECIDING`, и второй его копией здесь манифест
+   рассказывал бы об открытых замечаниях не то, что читало ядро. Записи
+   уходят полными (§3.2): человек, читающий манифест, по одному `id` не
+   узнает, что осталось несделанным.
 
 Переход в `DONE` — после записи: фаза, за которой не стоит `result/`,
 объявила бы законченной сессию без артефакта, а resume переигрывать её уже
-не стал бы.
+не стал бы. `DONE`, а не `FAILED`, и для эскалации тоже ([REQ-018]):
+остановка по деадлоку или бюджету — штатный исход протокола, и терминал у
+неё общий с сошедшейся сессией, как общ и сам этот шаг.
 """
 
 from pathlib import Path
 from typing import Any, Final
 
-from disputatio.contracts import SCHEMA_V1, Decision, SessionPhase, SessionState
+from disputatio.contracts import (
+    SCHEMA_V1,
+    Decision,
+    Issue,
+    SessionPhase,
+    SessionState,
+)
 from disputatio.core import is_partial
 from disputatio.events import write_result
-from disputatio.runtime.history import load_decision, load_patch
+from disputatio.runtime.history import carried_issues, load_decision, load_patch
 from disputatio.runtime.layout import PROPOSAL_NAME, round_artifact
 from disputatio.runtime.steps import StepContext
 
@@ -65,13 +80,18 @@ def export(ctx: StepContext) -> None:
             RESULT_MD_NAME: _source_proposal(root, round_no),
             RESULT_PATCH_NAME: load_patch(root, round_no) or "",
         },
-        _manifest(ctx.fsm.state, decision, round_no),
+        _manifest(ctx.fsm.state, decision, carried_issues(root, round_no), round_no),
     )
 
     ctx.fsm.transition(SessionPhase.DONE)
 
 
-def _manifest(state: SessionState, decision: Decision, round_no: int) -> dict[str, Any]:
+def _manifest(
+    state: SessionState,
+    decision: Decision,
+    open_issues: tuple[Issue, ...],
+    round_no: int,
+) -> dict[str, Any]:
     """Манифест §3.2 без ключа `files` — его дописывает `write_result`.
 
     Исход и причина остановки берутся у решения раунда-источника, а не
@@ -87,6 +107,11 @@ def _manifest(state: SessionState, decision: Decision, round_no: int) -> dict[st
     `budget_used` сведён к двум счётчикам §3.2: `cost_usd_est` — оценка
     LiteLLM-прокси, которой в v1 нет, и печатать её нулём значило бы
     утверждать, что сессия ничего не стоила.
+
+    `open_issues` печатается всегда, в том числе пустым списком: ключ,
+    появляющийся только у частичного исхода, сделал бы «замечаний не
+    осталось» и «манифест собран другой веткой» неразличимыми — а вся
+    разница двух исходов по [DESIGN-018] и есть содержимое этого документа.
     """
     return {
         "schema": SCHEMA_V1,
@@ -100,6 +125,23 @@ def _manifest(state: SessionState, decision: Decision, round_no: int) -> dict[st
             "tokens": state.budget_used.tokens,
             "wall_seconds": state.budget_used.wall_seconds,
         },
+        "open_issues": [_issue_entry(issue) for issue in open_issues],
+    }
+
+
+def _issue_entry(issue: Issue) -> dict[str, str]:
+    """Открытое замечание в манифесте — четыре поля §3.2, не весь артефакт.
+
+    Сериализовать `Issue` целиком было бы короче, но манифест — документ для
+    человека, а не копия `review.json`: `evidence` и `suggestion` относятся к
+    разбору раунда и живут в его артефактах, где их не перепутать с тем, что
+    сессия оставила несделанным.
+    """
+    return {
+        "id": issue.id,
+        "severity": issue.severity.value,
+        "file": issue.file,
+        "claim": issue.claim,
     }
 
 
