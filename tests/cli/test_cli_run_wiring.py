@@ -4,7 +4,7 @@
 red-чекпоинтом задачи побайтово, и дыры, найденные пробой уже после него,
 закрываются рядом, а не правкой залоченного набора.
 
-Три дыры, каждая со своим мутантом, пережившим основной набор:
+Четыре дыры, каждая со своим мутантом либо со своим наблюдаемым отказом:
 
 * **`except Exception: return state`** — CLI, глушащий любое исключение,
   отчитался бы кодом `1` о сессии, которая не провалилась, а сломала
@@ -17,11 +17,16 @@ red-чекпоинтом задачи побайтово, и дыры, найд�
   поэтому пустой кортеж на этом месте выживал: `gate_started` эмитит шаг из
   `ctx.gates`, а не верификатор ([DESIGN-004]), и потерянный список молча
   лишил бы UI половины §8.
+* **Сборка портов до первой записи** — грязным деревом пиньется только
+  `preflight`, а негодный агент в профиле отказывает позже, уже из
+  `build_runtime`. Пока сборка шла после `bootstrap_session`, такой отказ
+  оставлял в чужом репозитории `.disputatio/` без `session.json` и печатал
+  id несуществующей сессии ([REQ-010], [DESIGN-019]).
 """
 
 import json
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
@@ -49,6 +54,9 @@ _FROZEN_NOW = datetime(2026, 8, 10, 15, 34, 56, tzinfo=timezone(timedelta(hours=
 
 _TASK_TEXT = "Разбери экспорт CSV"
 _ADAPTER_NAME = "claude_code"
+# Имени нет в реестре `ADAPTER_FACTORIES` — самая обычная опечатка в профиле,
+# и единственный отказ старта, который наступает уже ПОСЛЕ pre-flight.
+_UNKNOWN_ADAPTER = "клод-код"
 _AUTHORED_FILE = "feature.py"
 _REVIEWER_FLAG = "--allowedTools"
 
@@ -318,6 +326,39 @@ def test_initial_state_is_on_disk_before_the_loop_starts(
     assert state.state is SessionPhase.IDLE
     assert state.current_round == 0
     assert state.task.prompt == _TASK_TEXT
+
+
+def test_a_profile_naming_an_unbuildable_agent_leaves_the_repository_untouched(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Отказ сборки портов не оставляет ни `.disputatio/`, ни имени сессии.
+
+    Отказ старта наступает не только на грязном дереве: адаптер, которого нет
+    в реестре, отвергается `build_runtime` — то есть после pre-flight. Сессии
+    при этом не возникает, и обещание [REQ-010] «disputatio не трогает чужой
+    репозиторий, пока не начала работу» держится только если ни одна запись
+    не случилась раньше последней проверки старта.
+
+    Напечатанный id пиньется тем же аргументом: имя, выданное пользователю,
+    обязано называть сессию, которую можно продолжить, а не ту, которой на
+    диске нет.
+    """
+    _setup(git_repo, monkeypatch)
+    profile = replace(
+        _profile(), reviewer=AgentConfig(adapter=_UNKNOWN_ADAPTER, model="sonnet")
+    )
+    (git_repo.parent / "profile.toml").write_text(
+        profile.render_toml(), encoding="utf-8"
+    )
+
+    code = _main(_argv(git_repo))
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert not session_dir(git_repo).exists()
+    assert len(captured.err.splitlines()) == 1, captured.err
+    assert _UNKNOWN_ADAPTER in captured.err
 
 
 def test_gates_from_the_profile_reach_the_step_that_announces_them(
