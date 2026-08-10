@@ -56,7 +56,7 @@ def _write_gate_test(repo: Path) -> None:
     (repo / "tests" / "test_new.py").write_text(
         "from pathlib import Path\n\n\n"
         "def test_x():\n"
-        "    assert Path('src/mod.py').read_text() == 'READY\\n'\n"
+        '    assert Path("src/mod.py").read_text() == "READY\\n"\n'
     )
 
 
@@ -516,8 +516,14 @@ def test_verify_test_path_changed_remedy_interpolates_real_ns_and_task_id(
 
     assert code != 0
     err = capsys.readouterr().err
-    assert "spec/.tdd-evidence/claims/default/TASK-001.json" in err
-    assert "spec/.tdd-evidence/verdicts/default/TASK-001.json" in err
+    # disputatio#8: прежний текст советовал «удалить claim и verdict», а это не
+    # работает — recovery восстановит claim из red-коммита по трейлерам. Теперь
+    # подсказка обязана называть действующий remedy и конкретный путь файла, а
+    # не плейсхолдеры (исходное требование этого теста).
+    assert "abandon" in err
+    assert "repair" in err
+    assert TEST_PATH in err
+    assert "TASK-001" in err
     assert "<ns>" not in err
     assert "<TASK>" not in err
     assert tdd_gate.load_verdict(repo, "TASK-001") is None

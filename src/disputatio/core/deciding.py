@@ -181,10 +181,20 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
     обязан закрывать, не должно попадать ни в манифест, ни в промпт автора.
     Порядок — пришедшие первыми, в порядке прошлого решения: он уходит в
     следующий снимок, и перестановка сделала бы историю раундов
-    невоспроизводимой. Устаревшее пропадёт само — `carried_issues` пересекает
-    список с ревью, и id, который ревьюер больше не называет, дальше не идёт.
+    невоспроизводимой.
+
+    Пришедшее открытым остаётся открытым, только пока ревью этого раунда его
+    ещё называет (disputatio#14). Раньше входящее множество переносилось
+    целиком, и сходящаяся сессия объявляла открытым замечание, которого
+    ревьюер уже не видит: `decision.json` раунда с `approve` нёс id из
+    раунда 1. Наружу это не протекало — оба потребителя пересекают список с
+    `issues` ревью, — но `decision.json` читает человек, и в нём было
+    написано неверное.
     """
-    carried_ids = tuple(issue.id for issue in inputs.carried_issues)
+    named_now = {issue.id for issue in inputs.review.issues}
+    carried_ids = tuple(
+        issue.id for issue in inputs.carried_issues if issue.id in named_now
+    )
     known = set(carried_ids)
     open_issues_carried = carried_ids + tuple(
         issue.id

@@ -119,7 +119,7 @@ def test_cmd_red_maestro_mode_wrong_branch_is_error(repo: Path) -> None:
     """A6 (интеграционно): та же граница на уровне команды `red` — exit 3."""
     write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
     (repo / "tests" / "test_new.py").write_text(
-        "def test_x():\n    assert False, 'not implemented'\n"
+        'def test_x():\n    assert False, "not implemented"\n'
     )
 
     code = tdd_gate.cmd_red(repo, "tests/test_new.py::test_x", "что-то")
@@ -292,7 +292,7 @@ def test_red_recovery_ignores_foreign_namespace_after_merge(repo: Path) -> None:
     """
     tdd_gate.git(repo, "checkout", "-b", "ws/w-fsm")
     write_tasks(repo, "maestro-tasks.md", ONE_RUNNING)
-    (repo / "tests" / "a.py").write_text("def test_a():\n    assert False, 'w-fsm'\n")
+    (repo / "tests" / "a.py").write_text('def test_a():\n    assert False, "w-fsm"\n')
     fsm_code = tdd_gate.cmd_red(repo, "tests/a.py::test_a", "w-fsm версия")
     assert fsm_code == 0
     fsm_claim = tdd_gate.load_claim(repo, "TASK-001", "ws-w-fsm")
@@ -309,7 +309,7 @@ def test_red_recovery_ignores_foreign_namespace_after_merge(repo: Path) -> None:
 
     tdd_gate.git(repo, "checkout", "-b", "ws/w-runtime")
     (repo / "tests" / "b.py").write_text(
-        "def test_b():\n    assert False, 'w-runtime'\n"
+        'def test_b():\n    assert False, "w-runtime"\n'
     )
 
     runtime_code = tdd_gate.cmd_red(repo, "tests/b.py::test_b", "w-runtime версия")

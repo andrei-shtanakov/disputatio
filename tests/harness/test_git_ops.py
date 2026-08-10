@@ -210,7 +210,7 @@ def test_find_red_commit_by_trailer_returns_latest_of_several(repo: Path) -> Non
     )
 
     (repo / "tests" / "test_new.py").write_text(
-        "def test_x():\n    assert False, 'v2'\n"
+        'def test_x():\n    assert False, "v2"\n'
     )
     tdd_gate.git(repo, "add", "tests/test_new.py")
     second_sha = tdd_gate.commit_red(

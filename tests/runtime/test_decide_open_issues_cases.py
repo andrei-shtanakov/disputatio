@@ -143,6 +143,21 @@ def test_a_resolved_issue_is_absent_from_the_carried_set() -> None:
     assert "R1-1" not in draft.open_issues_carried
 
 
+def test_a_carried_issue_the_reviewer_no_longer_names_drops() -> None:
+    """disputatio#14: пришедшее открытым выпадает, если ревью его не назвало.
+
+    Ровно случай сходящейся сессии: замечание раунда 1 приходит во входящем
+    множестве, но ревьюер раунда 2 его больше не выставляет — значит оно
+    закрыто, и `decision.json` не должен объявлять его открытым. До починки
+    входящее множество переносилось целиком, и сходящийся раунд врал.
+    """
+    draft = decide(
+        _inputs(carried=(_CARRIED,), review_issues=[], verdict=Verdict.APPROVE)
+    )
+
+    assert draft.open_issues_carried == ()
+
+
 def test_a_clean_approve_carries_nothing() -> None:
     """Approve без замечаний — пустое множество, а не пустота по недосмотру.
 

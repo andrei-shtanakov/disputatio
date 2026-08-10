@@ -1,0 +1,41 @@
+# Эталон операторского конфига workstream'а. Живой файл
+# (`spec-runner.config.yaml`) gitignored — в нём локальные пути. Требования и
+# их обоснование: docs/workstream-setup.md.
+executor:
+  auto_commit: true
+  claude_command: claude
+  claude_model: ''
+  commands:
+    # Порядок значим: pytest последним. spec-runner в scoped-режиме дописывает
+    # пути тест-файлов в КОНЕЦ строки, и при другом порядке они уехали бы в
+    # аргументы pyrefly (spec-runner#139).
+    lint: uv run ruff check .
+    test: uv run python scripts/tdd_gate.py verify && uv run pyrefly check && uv run pytest -q
+  harness_files:
+  # Control-plane: дефолтный HARNESS_CANDIDATES их не включает, а агент
+  # работает в worktree и технически может изменить саму политику
+  # (spec-runner#137).
+  - spec-runner.config.yaml
+  - pyrefly.toml
+  - scripts/tdd_gate.py
+  - spec/plugins/tdd-gate
+  - spec/.tdd-evidence/verdicts
+  - spec/.tdd-evidence/waivers
+  - spec/.tdd-evidence/abandoned
+  - spec/.tdd-evidence/repairs
+  - spec/maestro-constitution.md
+  harness_guard: strict
+  hooks:
+    post_done:
+      auto_commit: true
+      run_lint: true
+      run_tests: true
+    pre_start:
+      create_git_branch: false
+  main_branch: ws/<workstream-id>
+  max_retries: 3
+  on_task_failure: stop        # объявление намерения, НЕ гарантия (spec-runner#136)
+  review_command: ''
+  review_model: ''
+  spec_prefix: maestro-
+  task_timeout_minutes: 30
