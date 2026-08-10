@@ -1,0 +1,11 @@
+{
+  "schema": "tdd-claim/v1",
+  "task_id": "TASK-021",
+  "selector": "tests/cli/test_cli_resume.py::test_resume_drives_the_interrupted_session_to_a_terminal_state",
+  "expected_behavior": "",
+  "baseline_sha": "d5f702257a1a24f071712892fdf4b2cc7431b3fe",
+  "red_sha": "9d1b23eccea236f337e0924d69bf39b929b4352f",
+  "created_at": "2026-08-10T01:52:22.913491+00:00",
+  "revision": 1,
+  "test_path": "tests/cli/test_cli_resume.py"
+}
