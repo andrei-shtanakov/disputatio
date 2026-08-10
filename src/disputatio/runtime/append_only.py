@@ -208,9 +208,10 @@ def _immutability_handlers(
     tree: ast.AST, module: Path
 ) -> Iterator[ImmutabilityHandler]:
     """Обработчики I3 одного модуля вместе с именем объемлющей функции."""
+    catching = _catching_names(tree)
     for function, handler in _handlers(tree, function=""):
         caught = "" if handler.type is None else ast.unparse(handler.type)
-        if not _catches_immutability(handler.type):
+        if not _catches_immutability(handler.type, catching):
             continue
         yield ImmutabilityHandler(
             module=module,
@@ -243,12 +244,75 @@ def _handlers(
         yield from _handlers(child, function=function)
 
 
-def _catches_immutability(caught: ast.expr | None) -> bool:
-    """`True`, если такой `except` поймает `RoundImmutableError`."""
+def _catches_immutability(caught: ast.expr | None, catching: frozenset[str]) -> bool:
+    """`True`, если такой `except` поймает `RoundImmutableError`.
+
+    Сверка идёт со списком имён модуля (`catching`), а не с одним именем
+    исключения: `except` называет локальную привязку, и она не обязана
+    совпадать с именем класса.
+    """
     if caught is None:
         return True
     names = caught.elts if isinstance(caught, ast.Tuple) else [caught]
-    return any(_called_name(name) in _CATCHING_NAMES for name in names)
+    return any(_called_name(name) in catching for name in names)
+
+
+def _catching_names(tree: ast.AST) -> frozenset[str]:
+    """Имена, за которыми в `except` этого модуля стоит `RoundImmutableError`.
+
+    Кроме самого `RoundImmutableError` и широких типов сюда попадают его
+    локальные привязки: `import … as`, переименование присваиванием и кортеж
+    исключений, собранный в константу. Без них скан проверял бы написание, а
+    не смысл: `except _RIE` и `except IGNORED`, где `IGNORED =
+    (RoundImmutableError,)`, глушат I3 ровно так же, как `except
+    RoundImmutableError`, — а разница в одну строку импорта.
+
+    У присваивания смотрится ТОЛЬКО значение: аннотация вида `tuple[type[
+    Exception], …]` называет широкий тип, ничего им не ловя, и учёт аннотаций
+    объявил бы обработчиком I3 всякий `except` по такой константе — включая
+    schema-retry ([DESIGN-006]), который ловит совсем другое.
+    """
+    names = set(_CATCHING_NAMES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            names |= _rebound_by_import(node, names)
+    while (rebound := _rebound_by_assignment(tree, names)) - names:
+        names |= rebound
+    return frozenset(names)
+
+
+def _rebound_by_import(node: ast.Import | ast.ImportFrom, names: set[str]) -> set[str]:
+    """Локальные имена импорта, за которыми стоит уже известное имя."""
+    return {
+        alias.asname or alias.name
+        for alias in node.names
+        if alias.name.rpartition(".")[2] in names
+    }
+
+
+def _rebound_by_assignment(tree: ast.AST, names: set[str]) -> set[str]:
+    """Имена, которым присвоено значение, упоминающее известное имя."""
+    rebound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if not _mentions(value, names):
+            continue
+        rebound |= {target.id for target in targets if isinstance(target, ast.Name)}
+    return rebound
+
+
+def _mentions(value: ast.expr, names: set[str]) -> bool:
+    """`True`, если выражение называет одно из имён `names`."""
+    return any(
+        _called_name(node) in names
+        for node in ast.walk(value)
+        if isinstance(node, ast.Name | ast.Attribute)
+    )
 
 
 def _prose_nodes(tree: ast.AST) -> frozenset[int]:
@@ -268,12 +332,26 @@ def _mode_argument(node: ast.Call, name: str) -> str:
     У встроенного `open(path, "a")` режим второй, у метода `path.open("a")` —
     первый. Спутай их, и `Path.open("a")` прочитался бы как открытие без
     режима, то есть как чтение: писатель журнала прошёл бы скан насквозь.
+
+    `os.open` — тоже метод по форме, но второй его аргумент не режим, а флаги,
+    и первый — путь. Считать путь режимом опаснее всего: `os.open("log.jsonl",
+    O_APPEND)` не содержит ни одной буквы записи, то есть прочитался бы как
+    чтение. Поэтому у него берётся второй аргумент — нелитеральные флаги скан
+    трактует как запись.
     """
     for keyword in node.keywords:
         if keyword.arg == "mode":
             return ast.unparse(keyword.value)
-    index = 0 if name == "open" and isinstance(node.func, ast.Attribute) else 1
+    index = 0 if _is_bound_open(node.func, name) else 1
     return ast.unparse(node.args[index]) if len(node.args) > index else ""
+
+
+def _is_bound_open(func: ast.expr, name: str) -> bool:
+    """`True` для `something.open(mode)`, где `something` — не модуль `os`."""
+    if name != "open" or not isinstance(func, ast.Attribute):
+        return False
+    receiver = func.value
+    return not (isinstance(receiver, ast.Name) and receiver.id == _OS_MODULE)
 
 
 def _mode_writes(mode: str) -> bool:
@@ -311,3 +389,6 @@ _SELF: Final = Path(__file__).resolve()
 
 _MODED_CALLS: Final = frozenset({"open", "fdopen"})
 """Вызовы, у которых запись отличается от чтения режимом, а не именем."""
+
+_OS_MODULE: Final = "os"
+"""Получатель, у которого `open` принимает путь и флаги, а не режим."""
