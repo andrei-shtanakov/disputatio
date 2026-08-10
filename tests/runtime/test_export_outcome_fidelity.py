@@ -9,15 +9,19 @@
 сразу.
 
 До тех пор дыра закрывается формой: кодов исходов §5 в модуле экспорта нет
-как значений. Ключи словаря из проверки исключены — `"converged"` в
-манифесте это ИМЯ поля §3.2, а не исход; запрещено ровно то место, где код
-исхода мог бы оказаться ответом на вопрос «чем кончилась сессия».
-Отсутствующий литерал обойти нечем, а перечень поведений обходится новой
-веткой.
+как значений. Скан идёт по ВСЕМУ модулю, а не по замыканию `export`:
+константа уровня модуля — самая дешёвая форма подмены (рядом уже лежат
+`RESULT_MD_NAME` и `RESULT_PATCH_NAME`), а из тела функции она видна одним
+безобидным именем, которое запретить нечем.
+
+Ключи словарей и докстроки из проверки исключены — `"converged"` в
+манифесте это ИМЯ поля §3.2, а докстрока объяснение; ни то, ни другое
+ответом на вопрос «чем кончилась сессия» быть не может. Запрещено ровно то
+место, где код исхода мог бы оказаться этим ответом: отсутствующий литерал
+обойти нечем, а перечень поведений обходится новой веткой.
 """
 
 import ast
-from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -25,6 +29,17 @@ from types import ModuleType
 from disputatio.contracts import Outcome
 
 _OUTCOME_CODES = frozenset(outcome.value for outcome in Outcome)
+
+# Подложенный модуль для обратной половины скана: по одному коду исхода в
+# каждом месте, которое скан обязан различать.
+_PLANTED_MODULE = (
+    '"""converged"""\n'
+    '_CODE = "budget_hit"\n'
+    "\n"
+    "def export(ctx):\n"
+    '    """deadlock"""\n'
+    '    return {"converged": _CODE, "outcome": "continue"}\n'
+)
 
 
 def _exporting() -> ModuleType:
@@ -42,59 +57,28 @@ def _source(module: ModuleType) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _functions_reachable_from(
-    tree: ast.Module, root: str
-) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Функция `root` модуля и все функции модуля, вызываемые из неё.
-
-    Замыкание транзитивное: код, вынесенный в хелпер, скан обязан видеть так
-    же, как код в теле, — иначе запрет обходится одной лишней функцией.
-    """
-    defined: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-    }
-    assert root in defined, f"модуль не определяет функцию {root!r}"
-
-    seen: set[str] = set()
-    queue = [root]
-    while queue:
-        current = queue.pop()
-        if current in seen or current not in defined:
-            continue
-        seen.add(current)
-        for node in ast.walk(defined[current]):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                queue.append(node.func.id)
-    return [defined[name] for name in sorted(seen)]
-
-
-def _value_strings(nodes: Sequence[ast.AST]) -> set[str]:
-    """Строковые константы `nodes`, кроме ключей словарей и докстрок.
+def _value_strings(tree: ast.Module) -> set[str]:
+    """Строковые константы модуля, кроме ключей словарей и докстрок.
 
     Ключ словаря — имя поля манифеста, докстрока — объяснение; ни то, ни
     другое ответом на вопрос «чем кончилась сессия» быть не может. Всё
-    остальное — значение, и именно там литерал подменил бы собой решение.
+    остальное — значение, и именно там литерал подменил бы собой решение,
+    на каком бы уровне модуля он ни лежал.
     """
     ignored: set[int] = set()
-    for scope in nodes:
-        for node in ast.walk(scope):
-            if isinstance(node, ast.Dict):
-                ignored.update(id(key) for key in node.keys if key is not None)
-            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-                ignored.add(id(node.value))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            ignored.update(id(key) for key in node.keys if key is not None)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            ignored.add(id(node.value))
 
-    values: set[str] = set()
-    for scope in nodes:
-        for node in ast.walk(scope):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and id(node) not in ignored
-            ):
-                values.add(node.value)
-    return values
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in ignored
+    }
 
 
 def test_export_never_spells_out_an_outcome_code() -> None:
@@ -105,10 +89,13 @@ def test_export_never_spells_out_an_outcome_code() -> None:
     сошедшуюся ветку и соврал бы ровно в тот раз, когда сессия кончилась
     иначе.
     """
-    module = _exporting()
-    functions = _functions_reachable_from(ast.parse(_source(module)), "export")
+    tree = ast.parse(_source(_exporting()))
+    assert any(
+        isinstance(node, ast.FunctionDef) and node.name == "export"
+        for node in tree.body
+    ), "runtime/exporting.py не определяет функцию export"
 
-    leaked = sorted(_value_strings(list(functions)) & _OUTCOME_CODES)
+    leaked = sorted(_value_strings(tree) & _OUTCOME_CODES)
 
     assert not leaked, (
         f"runtime/exporting.py называет исход строкой: {leaked} — исход "
@@ -117,21 +104,14 @@ def test_export_never_spells_out_an_outcome_code() -> None:
 
 
 def test_the_scan_sees_a_planted_outcome_literal() -> None:
-    """Обратная половина: скан ловит подложенный литерал, а не молчит всегда.
+    """Обратная половина: скан ловит подложенные литералы, а не молчит всегда.
 
-    Без неё предыдущий тест был бы вакуумен — пустой результат `_value_strings`
-    прошёл бы его при любой реализации экспорта.
+    Без неё предыдущий тест был бы вакуумен — пустой результат
+    `_value_strings` прошёл бы его при любой реализации экспорта. Модуль
+    подложен так, что тест различает все четыре места сразу: константа
+    уровня модуля и литерал в теле функции обязаны попасть в результат,
+    ключ словаря и обе докстроки — нет.
     """
-    tree = ast.parse(
-        "def export(ctx):\n"
-        '    """Докстрока со словом converged."""\n'
-        "    return _manifest()\n"
-        "\n"
-        "def _manifest():\n"
-        '    return {"outcome": "deadlock", "converged": False}\n'
-    )
-    functions = _functions_reachable_from(tree, "export")
+    values = _value_strings(ast.parse(_PLANTED_MODULE))
 
-    values = _value_strings(list(functions))
-
-    assert values & _OUTCOME_CODES == {"deadlock"}
+    assert values & _OUTCOME_CODES == {"budget_hit", "continue"}
