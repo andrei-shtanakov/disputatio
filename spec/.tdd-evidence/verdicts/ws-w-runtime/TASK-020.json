@@ -3,10 +3,10 @@
   "task_id": "TASK-020",
   "claim_revision": 1,
   "red_sha": "cf874756a52cca957ab86f7cfb0f12bdb090d894",
-  "verified_head": "cf874756a52cca957ab86f7cfb0f12bdb090d894",
+  "verified_head": "7a2bf4d9c7b5a197704e2d2fe8298c85d711d680",
   "red_replay": "EXPECTED_FAIL",
   "selector_at_head": "PASS",
   "verdict": "PASS",
-  "checked_at": "2026-08-10T01:34:28.964625+00:00",
+  "checked_at": "2026-08-10T01:43:08.066763+00:00",
   "notes": ""
 }
