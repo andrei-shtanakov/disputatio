@@ -26,10 +26,10 @@ repo_url: https://github.com/andrei-shtanakov/disputatio
 # системы: `maestro validate project.yaml --strict --no-fs`.
 # Env-параметризация (${VAR}) сознательно НЕ используется: подстановка
 # maestro fail-closed без синтаксиса дефолта — голый запуск ломался бы.
-repo_path: ~/labs/disputatio
+repo_path: ~/labs/all_ai_orchestrators/disputatio
 
 # Сиблинг без точки и вне ignore-путей (INV-13; ловушка pyrefly в dot-каталогах)
-workspace_base: ~/labs/disputatio-ws
+workspace_base: ~/labs/all_ai_orchestrators/disputatio-ws
 
 max_concurrent: 3
 
