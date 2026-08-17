@@ -38,25 +38,35 @@
 
 ## Активные задачи
 
-- [ ] **D5 — полная интеграционная сертификация** по протоколу D0 с
+- [x] **D5 — полная интеграционная сертификация** по протоколу D0 с
   `phase=integration`: полный прогон таблицы проверок
   (GIT/ENV/TEST/LINT/TYPE/SPEC + MUT-01) как интеграционный транскрипт.
   Существующий integration-транскрипт (2026-08-10) покрывает только
   MUT-пробы. Нюанс из его WARN #3: интеграционной ветки нет — сертифицируется
-  master. @id:d5-integration-certification
+  master. Выполнено PR #20: транскрипт
+  `docs/plans/D0-transcript-integration-2026-08-17.md`, вердикт PASS, 2 WARN
+  (WARN 1 — латентная флейкость D0-MUT-01, см. бэклог-пункт про редакцию 4).
+  @id:d5-integration-certification
 - [ ] **D7-A — спека TDD lifecycle** для spec-runner (`execution_mode: tdd`,
   фазовый FSM) как inbox-issue в spec-runner; артефакты D4
   (`spec/.tdd-evidence/`, `scripts/tdd_gate.py`) — исходный материал.
-  @id:d7a-tdd-lifecycle-spec @blocked_by:todo://disputatio/d5-integration-certification
+  Блокер D5 снят этим же PR #20. @id:d7a-tdd-lifecycle-spec
 - [ ] **D7-B — спека preflight/bootstrap** (`--check/--plan/--apply`, presets)
   по транскриптам D0; friction-копилка — шаблоны spec-generator-skill
-  (23 ruff-ошибки в greenfield), хрупкий литеральный парсинг вывода pytest.
-  @id:d7b-preflight-bootstrap-spec @blocked_by:todo://disputatio/d5-integration-certification
+  (23 ruff-ошибки в greenfield), хрупкий литеральный парсинг вывода pytest,
+  stale-кэш байткода из WARN 1 транскрипта D5 («git чист» ≠ «окружение чисто»).
+  Блокер D5 снят этим же PR #20. @id:d7b-preflight-bootstrap-spec
 
 ## Бэклог
 
 - [ ] `tdd_gate red --supersede` — v2 гейта (осознанная замена red-эталона
   вместо ручного вмешательства оператора). @id:tdd-gate-red-supersede
+- [ ] Протокол D0 → редакция 4: закрыть латентную флейкость D0-MUT-01
+  (WARN 1 транскрипта D5, PR #20) — тик mtime-секунды между шагами 2 и 4
+  либо инвалидация `__pycache__` целевого теста в шаге 4; расширить шаг 5
+  проверкой «зелёный доказуем без сброса кэша» («git чист» ≠ «окружение
+  чисто»). Материал уходит и в friction-копилку D7-B.
+  @id:d0-protocol-rev4-mut01-flakiness
 
 ## Ждём от других проектов
 
