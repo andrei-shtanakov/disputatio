@@ -50,11 +50,12 @@
 - [ ] **D7-A — спека TDD lifecycle** для spec-runner (`execution_mode: tdd`,
   фазовый FSM) как inbox-issue в spec-runner; артефакты D4
   (`spec/.tdd-evidence/`, `scripts/tdd_gate.py`) — исходный материал.
-  @id:d7a-tdd-lifecycle-spec @blocked_by:todo://disputatio/d5-integration-certification
+  Блокер D5 снят этим же PR #20. @id:d7a-tdd-lifecycle-spec
 - [ ] **D7-B — спека preflight/bootstrap** (`--check/--plan/--apply`, presets)
   по транскриптам D0; friction-копилка — шаблоны spec-generator-skill
-  (23 ruff-ошибки в greenfield), хрупкий литеральный парсинг вывода pytest.
-  @id:d7b-preflight-bootstrap-spec @blocked_by:todo://disputatio/d5-integration-certification
+  (23 ruff-ошибки в greenfield), хрупкий литеральный парсинг вывода pytest,
+  stale-кэш байткода из WARN 1 транскрипта D5 («git чист» ≠ «окружение чисто»).
+  Блокер D5 снят этим же PR #20. @id:d7b-preflight-bootstrap-spec
 
 ## Бэклог
 
