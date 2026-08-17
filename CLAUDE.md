@@ -4,9 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Greenfield, spec-first. No commits yet, no source code, no tests, `dependencies = []` in `pyproject.toml`. The only substantive content is `disputatio-SPEC-001-round-protocol.md` (Russian, draft v0.1) — treat it as the authoritative design for the core, not as background reading.
+**Implemented.** Волна 1 (7 workstream'ов через `maestro orchestrate`) влита в master
+2026-08-10 (PR #11), suite ~1200 тестов зелёный. Пакеты `src/disputatio/`:
+`contracts` (pydantic-схемы артефактов), `core` (FSM + decide), `verifier`
+(deterministic gates), `adapters` (CLI-адаптеры агентов), `context` (сборка
+промптов из артефактов), `events` (диск/атомарные записи/event log), `runtime`
+(composition root, шаги, resume, export, CLI `disp`). Авторитетный дизайн —
+`disputatio-SPEC-001-round-protocol.md` (Russian, draft); инварианты реализации —
+`docs/plans/D1-decomposition-invariants.md` (INV-01…INV-18).
 
-Python 3.12 (`.python-version`), package name `disputatio`.
+Репо — **боевая ступень №2** контура spec-runner/Maestro/steward и с 2026-08-17
+живёт в зонтике `all_ai_orchestrators` и во флоте (workspace-manifest). План уровня
+репо — `./TODO.md` (читать в начале сессии); дальше по ступени: D5 (полная
+интеграционная сертификация) → D7-A/B (спеки в spec-runner).
+
+Python 3.12 (`.python-version`), package name `disputatio`, entrypoint `disp`.
 
 ## What Disputatio is
 
@@ -72,16 +84,40 @@ Multiple reviewers / verdict aggregation, the arbiter agent, embedding-based osc
 
 ## Commands
 
-Test/lint tooling is not wired up yet; when adding it, follow the Python profile in the local `spec-generator-skill` (uv + pytest + ruff) so it matches the spec's own `verification.json` gate examples (`uv run pytest -q`, `ruff check .`).
-
 ```bash
 uv sync                     # create .venv and install
-uv run pytest               # full suite
+uv run pytest -q            # full suite (~1200 tests)
 uv run pytest path::test    # single test
+uv run ruff check .         # lint (см. [tool.ruff] в pyproject)
+uv run ruff format --check .
+uv run pyrefly check        # type check
+disp run / disp resume      # CLI (entrypoint disputatio.cli:main)
 ```
+
+## TDD gate (артефакт оси H3, исходник спеки D7-A)
+
+`scripts/tdd_gate.py` (`red`/`verify`/`audit` + операторские remedy
+`abandon`/`repair`, PR #15) — независимый replay red-SHA в worktree; evidence в
+`spec/.tdd-evidence/{claims,verdicts,waivers}/` с неймспейсом по workstream.
+Конституция волны — `spec/maestro-constitution.md`; maestro-конфиг —
+`project.yaml` (SSOT, dual-mode contract: `spec-runner.config.yaml` в worktree
+генерируется и не трекается). Транскрипты сертификации — `docs/plans/`
+(протокол D0, baseline 2026-08-08, integration 2026-08-10).
 
 ## Spec workflow
 
-`.claude/skills/spec-generator-skill/` is a project-local skill defining a Kiro-style spec format: `spec/{requirements,design,tasks}.md` with `REQ-XXX ↔ DESIGN-XXX ↔ TASK-XXX` traceability, phase documents for later increments, and `task.py`/`executor.py` for task tracking. Use it when turning SPEC-001 into an executable task breakdown rather than inventing a format.
+`.claude/skills/spec-generator-skill/` is a project-local skill defining a Kiro-style spec format: `spec/{requirements,design,tasks}.md` with `REQ-XXX ↔ DESIGN-XXX ↔ TASK-XXX` traceability. Existing spec prose is written in Russian — match that when extending SPEC-001 or writing new spec documents.
 
-Existing spec prose is written in Russian — match that when extending SPEC-001 or writing new spec documents.
+## Repo scope & boundaries
+
+- **Этот репо:** `disputatio` — git-корень `all_ai_orchestrators/disputatio/`, remote `git@github.com:andrei-shtanakov/disputatio.git`.
+- **Соседи (READ-ONLY reference):** `../maestro/`, `../spec-runner/`, `../steward/`, `../prograph-vault/` и остальные подпроекты зонтика — их код не редактировать.
+- Нужна правка у соседа → **стоп**: handoff в `../prograph-vault/authored/notes/` (кросс-проектное) или `../_cowork_output/` (черновик).
+- Полное правило (SSOT): `../prograph-vault/authored/rules/repo-boundaries.md`.
+
+## Git workflow (у репо есть remote)
+
+- Ветка `<type>/<slug>` → push → `gh pr create`. **Прямые коммиты в `master` запрещены.**
+- После открытия PR — отработать ревью **GitHub Copilot** (валидное — фиксить, невалидное — ответить с обоснованием); **мерж делает человек**.
+- После мержа: `git switch master && git pull --ff-only`, удалить влитую ветку, `git fetch --prune`.
+- Полное правило (SSOT): `../prograph-vault/authored/rules/git-workflow.md`.
