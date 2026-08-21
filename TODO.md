@@ -121,13 +121,18 @@
   экспорта, не выставляя наружу экспериментальные SQLite-таблицы; закрепить и
   проверять совместимую версию spec-runner; прогон-доказательство с полной
   цепочкой; до него ничего не удалять.
-- [ ] Экспортёр evidence: половина RED→GREEN @id:tdd-evidence-exporter
+- [ ] Экспортёр evidence — ядро @id:tdd-evidence-exporter-core @blocked_by:todo://spec-runner/post-review-plugin-edge
   — читает живую `.executor-state.db`, пишет трекаемый JSON собственной схемы.
-  Точка вызова есть в текущем контракте: `commands.test` (spec-runner
-  `hooks.py:661`) выполняется до candidate-коммита, поэтому записанное там
-  попадает в коммит задачи. В этом окне доступны red-чекпоинт, claims,
-  remedies и фазы до `green_implementing`. Вердикта ревью в нём нет — см.
-  следующий пункт.
+  **Открыт, но не начат — по решению владельца от 2026-08-21.** Незаблокированная
+  половина (RED→GREEN через `commands.test`, spec-runner `hooks.py:661`, окно до
+  candidate-коммита) технически доступна уже сейчас, но делать её отдельно не
+  будем: ценность артефакта — атомарная полная цепочка, а не частичный снимок;
+  выбор владельца spec-runner (post-review hook или трекаемый `audit_log`)
+  определит источник, схему обновления и точку записи; частичная реализация
+  создала бы временный формат и риск принять RED→GREEN-снимок за полную
+  evidence. Проектные требования на момент старта: **один идемпотентный**
+  экспортёр с **явным признаком полноты** цепочки — неполный снимок не должен
+  быть принимаем за завершённую evidence.
 - [ ] Вердикт ревью в трекаемой evidence @id:tdd-evidence-review-half @blocked_by:todo://spec-runner/post-review-plugin-edge
   — ревью пишется на `hooks.py:879`, финальный `commit_task_work` — на
   `hooks.py:1080`, точки расширения между ними нет: `post_done` срабатывает
@@ -140,7 +145,9 @@
   evidence. Только после него удаляются `scripts/tdd_gate.py` (1997 строк),
   `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и
   закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
-  `resume`/`repair`/`release`. Требует обеих половин экспортёра.
+  `resume`/`repair`/`release`. Требует обеих половин экспортёра — и потому
+  зависит от `todo://disputatio/tdd-evidence-exporter-core` и
+  `todo://disputatio/tdd-evidence-review-half` одновременно.
 - [ ] `tdd_gate red --supersede` — v2 гейта @id:tdd-gate-red-supersede
   (осознанная замена red-эталона вместо ручного вмешательства оператора).
   **Кандидат на снятие**: оценка показала (§4.4 отчёта), что сценарий закрыт
