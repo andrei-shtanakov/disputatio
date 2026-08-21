@@ -94,6 +94,10 @@ TASK = "TASK-001"
 NS = "ws-w-context"
 RED_SHA = "a" * 40
 BASE_SHA = "b" * 40
+#: Гейты судят candidate-коммит, а не red: в spec-runner
+#: `checkpoint_sha=merge_candidate` (`hooks.py`), поэтому в фикстуре это
+#: РАЗНЫЕ sha — иначе тест не отличит правильную привязку от случайной.
+CANDIDATE_SHA = "d" * 40
 CFG_HASH = "0123456789abcdef"
 
 
@@ -162,7 +166,7 @@ def seed_full(path: Path) -> None:
                 (
                     TASK,
                     gate,
-                    RED_SHA,
+                    CANDIDATE_SHA,
                     CFG_HASH,
                     "satisfied",
                     None,

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import tdd_evidence_export as exporter
 
-from .conftest import NS, TASK
+from .conftest import CANDIDATE_SHA, CFG_HASH, NS, TASK
 
 VERSION_OK = "2.35.0"
 
@@ -90,7 +90,11 @@ def test_no_temp_files_left(project: Path, full_db: Path) -> None:
     ],
 )
 def test_missing_rows_refuse_and_name_the_gap(
-    project: Path, full_db: Path, table: str, missing_name: str, capsys: object
+    project: Path,
+    full_db: Path,
+    table: str,
+    missing_name: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     conn = sqlite3.connect(full_db)
     with conn:
@@ -99,7 +103,7 @@ def test_missing_rows_refuse_and_name_the_gap(
 
     assert run(project) != 0
     assert not artifact(project).exists()
-    err = capsys.readouterr().err  # type: ignore[attr-defined]
+    err = capsys.readouterr().err
     assert missing_name in err
 
 
@@ -146,36 +150,147 @@ def test_previous_artifact_survives_a_refusal(project: Path, full_db: Path) -> N
     assert artifact(project).read_bytes() == good
 
 
-def test_schema_drift_is_named(project: Path, full_db: Path, capsys: object) -> None:
+def test_schema_drift_is_named(
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     conn = sqlite3.connect(full_db)
     with conn:
         conn.execute("DROP TABLE tdd_phases")
     conn.close()
 
     assert run(project) != 0
-    err = capsys.readouterr().err  # type: ignore[attr-defined]
+    err = capsys.readouterr().err
     assert "tdd_phases" in err
 
 
 def test_old_spec_runner_is_refused(
-    project: Path, full_db: Path, capsys: object
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert run(project, version="2.34.0") != 0
     assert not artifact(project).exists()
-    err = capsys.readouterr().err  # type: ignore[attr-defined]
+    err = capsys.readouterr().err
     assert "2.34.0" in err
 
 
-def test_missing_db_is_refused(project: Path, capsys: object) -> None:
+def test_missing_db_is_refused(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert run(project) != 0
-    err = capsys.readouterr().err  # type: ignore[attr-defined]
+    err = capsys.readouterr().err
     assert "state db" in err.lower()
 
 
-def test_ambiguous_db_is_refused(project: Path, full_db: Path, capsys: object) -> None:
+def test_ambiguous_db_is_refused(
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from .conftest import seed_full
 
     seed_full(project / "spec" / ".executor-phase2-state.db")
     assert run(project) != 0
-    err = capsys.readouterr().err  # type: ignore[attr-defined]
+    err = capsys.readouterr().err
     assert "state db" in err.lower()
+
+
+def test_claims_from_a_previous_lineage_are_not_evidence(
+    project: Path, full_db: Path
+) -> None:
+    """`repair` открывает новую линию; claims старой — не доказательство этой.
+
+    `tdd_claims.checkpoint_sha` — это red-коммит (`claims.py:314`), поэтому
+    привязка проверяема: claim от другого чекпоинта не закрывает требование.
+    """
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute("UPDATE tdd_claims SET checkpoint_sha = ?", ("f" * 40,))
+    conn.close()
+
+    assert run(project) != 0
+    assert not artifact(project).exists()
+
+
+def test_retired_claim_alone_is_not_evidence(project: Path, full_db: Path) -> None:
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute("UPDATE tdd_claims SET status = 'superseded'")
+    conn.close()
+
+    assert run(project) != 0
+    assert not artifact(project).exists()
+
+
+def test_verdict_under_another_policy_is_stale(
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Вердикт ключуется на политике: сменилась — прежний не наследуется."""
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute(
+            "UPDATE gate_verdicts SET config_hash = ? WHERE gate_id = 'tdd.red'",
+            ("ffffffffffffffff",),
+        )
+    conn.close()
+
+    assert run(project) != 0
+    assert not artifact(project).exists()
+    assert "tdd.red" in capsys.readouterr().err
+
+
+def test_verdicts_must_judge_one_tree(project: Path, full_db: Path) -> None:
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute(
+            "UPDATE gate_verdicts SET checkpoint_sha = ? WHERE gate_id = 'review'",
+            ("e" * 40,),
+        )
+    conn.close()
+
+    assert run(project) != 0
+    assert not artifact(project).exists()
+
+
+def test_unsatisfied_verdict_refuses(project: Path, full_db: Path) -> None:
+    """До post_review доходят только пройденные гейты — иначе БД противоречива."""
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute(
+            "UPDATE gate_verdicts SET status = 'unsatisfied' WHERE gate_id = 'review'"
+        )
+    conn.close()
+
+    assert run(project) != 0
+    assert not artifact(project).exists()
+
+
+def test_latest_verdict_per_gate_wins(project: Path, full_db: Path) -> None:
+    """Более ранний отказ не отменяет более позднего согласия по тому же гейту."""
+    conn = sqlite3.connect(full_db)
+    with conn:
+        conn.execute(
+            "INSERT INTO gate_verdicts (task_id, gate_id, checkpoint_sha, "
+            "config_hash, status, detail, timestamp) VALUES (?,?,?,?,?,?,?)",
+            (
+                TASK,
+                "tdd.red",
+                CANDIDATE_SHA,
+                CFG_HASH,
+                "satisfied",
+                "повтор после ретрая",
+                "2026-08-21T10:12:00+00:00",
+            ),
+        )
+        conn.execute(
+            "UPDATE gate_verdicts SET status = 'unsatisfied' "
+            "WHERE gate_id = 'tdd.red' AND timestamp = '2026-08-21T10:11:00+00:00'"
+        )
+    conn.close()
+
+    assert run(project) == 0
+    data = json.loads(artifact(project).read_text())
+    assert data["gates"]["tdd.red"]["status"] == "satisfied"
+
+
+def test_judged_tree_is_recorded(project: Path, full_db: Path) -> None:
+    assert run(project) == 0
+    data = json.loads(artifact(project).read_text())
+    assert data["judged_commit"] == CANDIDATE_SHA
+    assert data["red"]["commit_sha"] != data["judged_commit"]

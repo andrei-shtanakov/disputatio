@@ -215,15 +215,34 @@ def rows(
     return list(conn.execute(sql, args))
 
 
+def judged_commit(latest_gate: dict[str, sqlite3.Row]) -> str:
+    """Дерево, которое судили требуемые гейты; разнобой — пустая строка.
+
+    Вердикты обязаны относиться к одному candidate-коммиту: набор из двух
+    деревьев — это не «цепочка с запасом», а два разных утверждения, склеенных
+    в одно.
+    """
+    shas = {
+        latest_gate[gate]["checkpoint_sha"]
+        for gate in REQUIRED_GATES
+        if gate in latest_gate
+    }
+    return shas.pop() if len(shas) == 1 else ""
+
+
 def collect(conn: sqlite3.Connection, task_id: str, version: str) -> dict[str, Any]:
     """Собрать модель evidence; полнота проверяется отдельно."""
     red = active_red(conn, task_id)
     namespace = red["namespace"] if red else ""
 
+    # Claims привязаны к red-коммиту (`claims.py:314` пишет
+    # `checkpoint_sha=checkpoint.commit_sha`), поэтому линия проверяема:
+    # после `repair` claims прежней линии не доказывают эту.
     claims = rows(
         conn,
-        "SELECT * FROM tdd_claims WHERE task_id = ? AND namespace = ? ORDER BY id",
-        (task_id, namespace),
+        "SELECT * FROM tdd_claims WHERE task_id = ? AND namespace = ? "
+        "AND checkpoint_sha = ? ORDER BY id",
+        (task_id, namespace, red["commit_sha"] if red else ""),
     )
     remedies = rows(
         conn,
@@ -235,11 +254,15 @@ def collect(conn: sqlite3.Connection, task_id: str, version: str) -> dict[str, A
         "SELECT * FROM tdd_phases WHERE task_id = ? AND namespace = ? ORDER BY id",
         (task_id, namespace),
     )
-    gates = rows(
-        conn,
-        "SELECT * FROM gate_verdicts WHERE task_id = ? ORDER BY id",
-        (task_id,),
-    )
+    # Последний вердикт на гейт, а не все: гейт переигрывается на ретрае, и
+    # прежний отказ не отменяет более позднего согласия. Ключ вердикта —
+    # (task, gate, checkpoint_sha, config_hash), поэтому и дерево, и политика
+    # переносятся в артефакт и проверяются ниже.
+    latest_gate: dict[str, sqlite3.Row] = {}
+    for row in rows(
+        conn, "SELECT * FROM gate_verdicts WHERE task_id = ? ORDER BY id", (task_id,)
+    ):
+        latest_gate[row["gate_id"]] = row
     waivers = rows(
         conn, "SELECT * FROM phase_waivers WHERE task_id = ? ORDER BY id", (task_id,)
     )
@@ -284,17 +307,17 @@ def collect(conn: sqlite3.Connection, task_id: str, version: str) -> dict[str, A
             {"phase": r["phase"], "detail": r["detail"], "timestamp": r["timestamp"]}
             for r in phases
         ],
-        "gates": [
-            {
-                "gate": r["gate_id"],
+        "gates": {
+            gate: {
                 "status": r["status"],
                 "detail": r["detail"],
                 "checkpoint_sha": r["checkpoint_sha"],
                 "config_hash": r["config_hash"],
                 "timestamp": r["timestamp"],
             }
-            for r in gates
-        ],
+            for gate, r in latest_gate.items()
+        },
+        "judged_commit": judged_commit(latest_gate),
         "waivers": [
             {
                 "phase": r["phase"],
@@ -317,16 +340,24 @@ def missing_parts(model: dict[str, Any]) -> list[str]:
         gaps.append("red-checkpoint")
     elif red["outcome"] != "expected_fail":
         gaps.append(f"red-checkpoint:не подтверждён (outcome={red['outcome']})")
-    if not model["claims"]:
-        gaps.append("claims")
+    if not any(c["status"] == "active" for c in model["claims"]):
+        gaps.append("claims:нет активного claim текущей линии red")
     reached = {p["phase"] for p in model["phases"]}
     for phase in ("red_verifying", "green_implementing", "refactoring"):
         if phase not in reached:
             gaps.append(f"phase:{phase}")
-    seen_gates = {g["gate"] for g in model["gates"]}
+    policy = red["config_hash"] if red else None
     for gate in REQUIRED_GATES:
-        if gate not in seen_gates:
+        verdict = model["gates"].get(gate)
+        if verdict is None:
             gaps.append(f"gate-verdict:{gate}")
+            continue
+        if policy is not None and verdict["config_hash"] != policy:
+            gaps.append(f"gate-verdict:{gate}:вынесен под другой политикой")
+        if verdict["status"] != "satisfied":
+            gaps.append(f"gate-verdict:{gate}:status={verdict['status']}")
+    if not model["judged_commit"] and not [g for g in gaps if g.startswith("gate-")]:
+        gaps.append("gate-verdicts:судят разные деревья")
     return gaps
 
 
