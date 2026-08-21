@@ -52,20 +52,59 @@
   строке-продолжении жили без identity. Перенесены все шесть id-тегов файла
   (3 из issue + `d7a`/`d7b`/`tdd-gate-red-supersede` того же класса, детектором
   не пойманные — строка-продолжение с прозой перед тегом).
-- [ ] **D7-A — спека TDD lifecycle** для spec-runner @id:d7a-tdd-lifecycle-spec
-  (`execution_mode: tdd`, фазовый FSM) как inbox-issue в spec-runner; артефакты
-  D4 (`spec/.tdd-evidence/`, `scripts/tdd_gate.py`) — исходный материал.
-  Блокер D5 снят PR #20.
-- [ ] **D7-B — спека preflight/bootstrap** @id:d7b-preflight-bootstrap-spec
-  (`--check/--plan/--apply`, presets) по транскриптам D0; friction-копилка —
-  шаблоны spec-generator-skill (23 ruff-ошибки в greenfield), хрупкий
-  литеральный парсинг вывода pytest, stale-кэш байткода из WARN 1 транскрипта
-  D5 («git чист» ≠ «окружение чисто»). Блокер D5 снят PR #20.
+- [x] **D7-A — спека TDD lifecycle** для spec-runner @id:d7a-tdd-lifecycle-spec
+  (`execution_mode: tdd`, фазовый FSM; исходный материал — артефакты D4
+  `spec/.tdd-evidence/`, `scripts/tdd_gate.py`) — подана **2026-08-10** как
+  inbox-issue spec-runner#141, ещё до снятия мнимого блокера D5. Принята
+  владельцем как **design track**, а не minor-релиз; дизайн —
+  `spec-runner/docs/superpowers/specs/2026-08-11-tdd-lifecycle-design.md`.
+  Отгружено срезами 0–4a: типизированные исходы фаз + `phase_results` (#167),
+  `execution_mode: standard|tdd` (#171), RED-чекпойнт с replay в одноразовом
+  worktree (#172), RED-гейт (#173), claims/byte-lock (#181), операторские
+  remedies `abandon`/`repair` (#183), жизненный цикл как записанная FSM
+  `tdd_phases` (#188). Issue закрыт 2026-08-14 как функционально выполненный.
+  Две наши формулировки поправлены при приёме: «`standard` остаётся
+  byte-identical» отвергнуто как невыполнимое по построению (срез 0 добавляет
+  append-only строки) — действует «execution, terminal state и внешние
+  контракты не меняются»; `WAIVED` не стал пятым вердиктом — waiver это
+  решение оператора со своей причиной и provenance (`phase_waivers`), а не
+  исход фазы. Остаток — automatic REFACTORING — вынесен в spec-runner#285
+  (deferred by evidence trigger, счётчик 0/3). **На disputatio его не берём:**
+  нашего `@blocked_by` на него нет, а владение чужим счётчиком без отдельного
+  решения размыло бы границы ответственности.
+- [x] **D7-B — спека preflight/bootstrap** @id:d7b-preflight-bootstrap-spec
+  (`--check/--plan/--apply`, presets) по транскриптам D0 — подана **2026-08-10**
+  как inbox-issue spec-runner#142, закрыта 2026-08-11 с разделением надвое.
+  Read-only `preflight [--json]` отгружен (PR #158): восемь проверок со
+  статусами `ok·missing·empty·broken·unavailable·skipped` и отдельным флагом
+  `blocking`; главное требование пилота выполнено буквально — `0 tests` не
+  считается доказательством исправности (пустой набор — блокер со своим
+  статусом). `bootstrap --check|--plan|--apply` и mutation probe вынесены в
+  spec-runner#159 и **отклонены** решением владельца 2026-08-11
+  (`bootstrap-product-boundary`): scaffolding — новая роль, а не естественное
+  продолжение executor'а. Friction-копилка (шаблоны spec-generator-skill —
+  23 ruff-ошибки в greenfield, хрупкий литеральный парсинг вывода pytest,
+  stale-кэш байткода из WARN 1 транскрипта D5, «git чист» ≠ «окружение чисто»)
+  не пропадает: она — материал бэклог-пункта `todo://disputatio/d0-protocol-rev4-mut01-flakiness`.
 
 ## Бэклог
 
+- [ ] Оценка миграции TDD-гейта на штатный режим @id:tdd-gate-migration-assessment
+  — `scripts/tdd_gate.py` (~2000 строк) и плагин `spec/plugins/tdd-gate`
+  писались потому, что у spec-runner не было фаз: задаче негде было хранить
+  «тест написан и подтверждённо падает». После отгрузки D7-A (срезы 0–4a)
+  `execution_mode: tdd` — штатный контракт, и наш гейт его дублирует.
+  Оценить: что покрывается штатно (RED-гейт, claims, `abandon`/`repair`/
+  `resume`/`release`, `tdd_phases`), что теряется (независимый replay red-SHA,
+  evidence в `spec/.tdd-evidence/` с неймспейсом по workstream, audit-фоллбэк
+  `post_done` из `plugin.yaml`), и во что обходится переход. Это оценка, не
+  миграция: решение принимается по её итогам.
 - [ ] `tdd_gate red --supersede` — v2 гейта @id:tdd-gate-red-supersede
   (осознанная замена red-эталона вместо ручного вмешательства оператора).
+  **Кандидат на снятие** по итогам
+  `todo://disputatio/tdd-gate-migration-assessment`: штатные `tdd resume` /
+  `repair` / `release` закрывают, судя по всему, тот же сценарий. Пока не
+  снимаем — сперва оценка.
 - [ ] Протокол D0 → редакция 4 @id:d0-protocol-rev4-mut01-flakiness
   — закрыть латентную флейкость D0-MUT-01 (WARN 1 транскрипта D5, PR #20):
   тик mtime-секунды между шагами 2 и 4 либо инвалидация `__pycache__` целевого
