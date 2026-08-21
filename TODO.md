@@ -121,33 +121,45 @@
   экспорта, не выставляя наружу экспериментальные SQLite-таблицы; закрепить и
   проверять совместимую версию spec-runner; прогон-доказательство с полной
   цепочкой; до него ничего не удалять.
-- [ ] Экспортёр evidence — ядро @id:tdd-evidence-exporter-core @blocked_by:todo://spec-runner/post-review-plugin-edge
-  — читает живую `.executor-state.db`, пишет трекаемый JSON собственной схемы.
-  **Открыт, но не начат — по решению владельца от 2026-08-21.** Незаблокированная
-  половина (RED→GREEN через `commands.test`, spec-runner `hooks.py:661`, окно до
-  candidate-коммита) технически доступна уже сейчас, но делать её отдельно не
-  будем: ценность артефакта — атомарная полная цепочка, а не частичный снимок;
-  выбор владельца spec-runner (post-review hook или трекаемый `audit_log`)
-  определит источник, схему обновления и точку записи; частичная реализация
-  создала бы временный формат и риск принять RED→GREEN-снимок за полную
-  evidence. Проектные требования на момент старта: **один идемпотентный**
-  экспортёр с **явным признаком полноты** цепочки — неполный снимок не должен
-  быть принимаем за завершённую evidence.
-- [ ] Вердикт ревью в трекаемой evidence @id:tdd-evidence-review-half @blocked_by:todo://spec-runner/post-review-plugin-edge
-  — ревью пишется на `hooks.py:879`, финальный `commit_task_work` — на
-  `hooks.py:1080`, точки расширения между ними нет: `post_done` срабатывает
-  после commit и merge, повторный прогон тестов условен
-  (`review_verdict == FIXED`). Запрошена hook-точка `post_review`/`pre_commit`
-  либо, как альтернатива, TDD-события в `audit_log` — spec-runner#307.
-  На post-mortem архив не переключаемся: это другой класс артефакта.
-- [ ] Прогон-доказательство миграции @id:tdd-gate-migration-proof
+- [x] Экспортёр evidence — ядро @id:tdd-evidence-exporter-core
+  — `scripts/tdd_evidence_export.py` (stdlib) + плагин
+  `spec/plugins/tdd-evidence/plugin.yaml` на точке `post_review`,
+  `blocking: true`; 16 тестов в `tests/evidence/`. Читает живую
+  `.executor-*state.db`, пишет `spec/evidence/<ns>/<TASK>.json` по собственной
+  схеме `disputatio/tdd-evidence/v1`. Полнота = данные, доступные ПЕРЕД DONE:
+  подтверждённый red, claims, фазы включая `refactoring`, вердикт ревью и
+  вердикты `tdd.red`/`tdd.claims`/`review`; сам DONE не требуется. Неполные
+  данные не материализуются: недостающее печатается поимённо в stderr, код
+  возврата ненулевой, прежний корректный артефакт не трогается — коммитится
+  только `complete: true`. Запись каноническая (сортированные ключи, без
+  времени экспорта) и атомарная, повтор даёт байт-в-байт тот же файл. Версия
+  spec-runner пишется в артефакт и проверяется fail-closed (`MIN_SPEC_RUNNER`),
+  как и наличие нужных таблиц/колонок.
+- [x] Вердикт ревью в трекаемой evidence @id:tdd-evidence-review-half
+  — закрыт тем же экспортёром: точка `post_review` отгружена соседом
+  (spec-runner#307 → PR spec-runner#308, влит в их master), срабатывает после
+  вердикта ревью и успешных пре-терминальных гейтов, до DONE-флипа и
+  `commit_task_work`; записанное подметает `stage_all_except_runtime`.
+  Оговорка соседа принята: под `wants_candidate` evidence ложится в финальный
+  bookkeeping-коммит, а не в candidate — требование звучит как «в одной
+  доставляемой истории/PR», а не «в том же коммите, что код». Наш вариант B
+  (TDD-события в `audit_log`) отклонён владельцем с проверкой, которой у нас
+  не было: `spec/.gitignore` игнорирует `.executor-*`, так что тот путь вообще
+  не трекается.
+- [ ] Прогон-доказательство миграции @id:tdd-gate-migration-proof @trigger:"spec-runner выпущен с post_review"
   — одна leaf-задача с полной цепочкой RED → GREEN → review → трекаемая
-  evidence. Только после него удаляются `scripts/tdd_gate.py` (1997 строк),
-  `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и
-  закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
-  `resume`/`repair`/`release`. Требует обеих половин экспортёра — и потому
-  зависит от `todo://disputatio/tdd-evidence-exporter-core` и
-  `todo://disputatio/tdd-evidence-review-half` одновременно.
+  evidence. **Ждём официального релиза: git-ref не пиним** — доказательство
+  должно относиться к опубликованному воспроизводимому артефакту. На
+  2026-08-21 точка влита в master spec-runner, но запись в их `CHANGELOG.md`
+  под `[Unreleased]`, а установленная версия — 2.34.0; экспортёр такую
+  отвергает fail-closed. Перед прогоном — cutover, который сейчас сознательно
+  не сделан: `execution_mode: tdd` в `project.yaml`, переписанная конституция
+  (п. 2–4 инструктируют звать `tdd_gate.py red`, в штатном режиме от агента
+  нужен маркер `TDD_SELECTOR:`), пересобранный `harness_files`. Только после
+  прогона удаляются `scripts/tdd_gate.py` (1997 строк), `tests/harness/`
+  (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и закрывается
+  `todo://disputatio/tdd-gate-red-supersede` штатными
+  `resume`/`repair`/`release`.
 - [ ] `tdd_gate red --supersede` — v2 гейта @id:tdd-gate-red-supersede
   (осознанная замена red-эталона вместо ручного вмешательства оператора).
   **Кандидат на снятие**: оценка показала (§4.4 отчёта), что сценарий закрыт

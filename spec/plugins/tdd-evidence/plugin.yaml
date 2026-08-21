@@ -1,0 +1,14 @@
+name: tdd-evidence
+description: "Экспорт TDD-evidence в трекаемый артефакт репо (post_review, spec-runner#307)"
+version: "1.0"
+hooks:
+  # Точка между вердиктом ревью и `commit_task_work`: записанное здесь
+  # подметает `stage_all_except_runtime`, и evidence уезжает в той же
+  # доставляемой истории, что и работа. Инертна на spec-runner <= 2.34.0 —
+  # там точки просто нет, и хук не диспатчится.
+  post_review:
+    command: 'cd "$SR_PROJECT_ROOT" && uv run python scripts/tdd_evidence_export.py'
+    # Блокирующий: evidence здесь — продукт, а не лог. Отказ останавливает
+    # задачу в той же возобновляемой форме, что и отказ гейта, и недописанный
+    # экспорт остаётся грязным в дереве, а не коммитится как доказательство.
+    blocking: true
