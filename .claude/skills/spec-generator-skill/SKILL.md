@@ -1,3 +1,8 @@
+---
+name: spec-generator-skill
+description: "Create project specifications in Kiro-style format: three linked documents (requirements, design, tasks) with REQ-to-TASK traceability, including the pi dev/review/test loop variant. Use when starting a spec, documenting an existing project, or asked to write requirements."
+---
+
 # Spec Generator Skill
 
 ## Overview

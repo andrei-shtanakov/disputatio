@@ -15,10 +15,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Репо — **боевая ступень №2** контура spec-runner/Maestro/steward и с 2026-08-17
 живёт в зонтике `all_ai_orchestrators` и во флоте (workspace-manifest). План уровня
-репо — `./TODO.md` (читать в начале сессии); дальше по ступени: D5 (полная
-интеграционная сертификация) → D7-A/B (спеки в spec-runner).
+репо — `./TODO.md` (читать в начале сессии).
 
-Python 3.12 (`.python-version`), package name `disputatio`, entrypoint `disp`.
+**Ступень D0–D7 пройдена целиком** (2026-08-21): D5 закрыт PR #20, обе спеки
+поданы соседу и отработаны им — D7-A → spec-runner#141 (`execution_mode: tdd`
+отгружен срезами 0–4a), D7-B → spec-runner#142 (read-only `preflight` отгружен,
+`bootstrap` отклонён владельцем как выход за роль executor'а). Текущая линия
+работ — миграция локального TDD-гейта на штатный режим: экспортёр evidence
+написан (PR #29), прогон-доказательство ждёт публикации релиза spec-runner с
+hook-точкой `post_review` (spec-runner#307, влита в их master). До этого прогона
+`scripts/tdd_gate.py` и `tests/harness/` не удаляются — они действующая
+страховка. Детали и порядок — в `./TODO.md`.
 
 ## What Disputatio is
 
@@ -82,18 +89,6 @@ The core knows nothing about UI. A Textual TUI is a pure subscriber to `events.j
 
 Multiple reviewers / verdict aggregation, the arbiter agent, embedding-based oscillation metrics, LiteLLM-proxy cost accounting. §10 lists the open questions — check it before designing something that looks like a gap.
 
-## Commands
-
-```bash
-uv sync                     # create .venv and install
-uv run pytest -q            # full suite (~1200 tests)
-uv run pytest path::test    # single test
-uv run ruff check .         # lint (см. [tool.ruff] в pyproject)
-uv run ruff format --check .
-uv run pyrefly check        # type check
-disp run / disp resume      # CLI (entrypoint disputatio.cli:main)
-```
-
 ## TDD gate (артефакт оси H3, исходник спеки D7-A)
 
 `scripts/tdd_gate.py` (`red`/`verify`/`audit` + операторские remedy
@@ -102,7 +97,15 @@ disp run / disp resume      # CLI (entrypoint disputatio.cli:main)
 Конституция волны — `spec/maestro-constitution.md`; maestro-конфиг —
 `project.yaml` (SSOT, dual-mode contract: `spec-runner.config.yaml` в worktree
 генерируется и не трекается). Транскрипты сертификации — `docs/plans/`
-(протокол D0, baseline 2026-08-08, integration 2026-08-10).
+(протокол D0 редакции 4, baseline 2026-08-08, integration 2026-08-10 и
+2026-08-17).
+
+Рядом с гейтом лежит его сменщик: `scripts/tdd_evidence_export.py` +
+`spec/plugins/tdd-evidence/` — экспорт evidence из живой `.executor-state.db` в
+трекаемый `spec/evidence/<ns>/<TASK>.json` на hook-точке `post_review`. Он
+инертен, пока не выйдет релиз spec-runner с этой точкой, и **не заменяет**
+`tdd_gate.py` до прогона-доказательства. Оценка миграции —
+`docs/plans/2026-08-21-tdd-gate-migration-assessment.md`.
 
 ## Spec workflow
 
