@@ -32,6 +32,9 @@
 ## Правила ведения
 
 - Выполненный пункт → `[x]` + хеш коммита/номер PR.
+- Ссылка на чужой репо — только с префиксом (`spec-runner#141`, `maestro#163`):
+  голый `#N` GitHub резолвит в disputatio и уводит читателя не туда. Свои
+  PR/issue пишем как есть.
 - Прямые коммиты в `master` запрещены: ветка → PR → ревью Copilot → мержит человек.
 - Чужие репо не правим: нужна правка у соседа — handoff в
   `../prograph-vault/authored/notes/`.
@@ -58,11 +61,12 @@
   inbox-issue spec-runner#141, ещё до снятия мнимого блокера D5. Принята
   владельцем как **design track**, а не minor-релиз; дизайн —
   `spec-runner/docs/superpowers/specs/2026-08-11-tdd-lifecycle-design.md`.
-  Отгружено срезами 0–4a: типизированные исходы фаз + `phase_results` (#167),
-  `execution_mode: standard|tdd` (#171), RED-чекпойнт с replay в одноразовом
-  worktree (#172), RED-гейт (#173), claims/byte-lock (#181), операторские
-  remedies `abandon`/`repair` (#183), жизненный цикл как записанная FSM
-  `tdd_phases` (#188). Issue закрыт 2026-08-14 как функционально выполненный.
+  Отгружено срезами 0–4a: типизированные исходы фаз + `phase_results`
+  (spec-runner#167), `execution_mode: standard|tdd` (spec-runner#171),
+  RED-чекпойнт с replay в одноразовом worktree (spec-runner#172), RED-гейт
+  (spec-runner#173), claims/byte-lock (spec-runner#181), операторские remedies
+  `abandon`/`repair` (spec-runner#183), жизненный цикл как записанная FSM
+  `tdd_phases` (spec-runner#188). Issue закрыт 2026-08-14 как функционально выполненный.
   Две наши формулировки поправлены при приёме: «`standard` остаётся
   byte-identical» отвергнуто как невыполнимое по построению (срез 0 добавляет
   append-only строки) — действует «execution, terminal state и внешние
@@ -75,7 +79,7 @@
 - [x] **D7-B — спека preflight/bootstrap** @id:d7b-preflight-bootstrap-spec
   (`--check/--plan/--apply`, presets) по транскриптам D0 — подана **2026-08-10**
   как inbox-issue spec-runner#142, закрыта 2026-08-11 с разделением надвое.
-  Read-only `preflight [--json]` отгружен (PR #158): восемь проверок со
+  Read-only `preflight [--json]` отгружен (spec-runner#158): восемь проверок со
   статусами `ok·missing·empty·broken·unavailable·skipped` и отдельным флагом
   `blocking`; главное требование пилота выполнено буквально — `0 tests` не
   считается доказательством исправности (пустой набор — блокер со своим
@@ -132,7 +136,8 @@
 - [x] maestro: `validate --strict` не эскалирует warnings @id:maestro-strict-warnings-finding
   — находка D2, заведена как maestro#163. **Вердикт владельца maestro: не
   воспроизводится**; issue закрыт 2026-08-10, опровержение — коммит `cd30f00`
-  (PR #168): и на HEAD, и на том самом установленном 0.4.x `validate --strict`
+  (maestro#168): и на HEAD, и на том самом установленном 0.4.x
+  `validate --strict`
   даёт exit 1, а строка эскалации `if not report.ok or (strict and
   report.warnings)` не менялась с `7277700` (2026-07-04). Механизм исходного
   наблюдения — pipe-masked exit code (`… | tail -1`); владелец заявил это как
