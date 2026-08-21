@@ -22,8 +22,12 @@ repo_url: https://github.com/andrei-shtanakov/disputatio
 
 # Пути ниже — операторские (user-relative через `~`, конвенция maestro:
 # «absolute path or start with ~»). Это runtime-конфиг запуска оркестрации,
-# не переносимый билд-артефакт; CI-проверка конфига идёт без файловой
-# системы: `maestro validate project.yaml --strict --no-fs`.
+# не переносимый билд-артефакт, поэтому в CI конфиг проверяется без файлового
+# яруса: `maestro validate project.yaml --strict --no-fs`. Это ограниченная
+# проверка: `--no-fs` убирает файловый ярус целиком, и его находки
+# (`scope-no-match`, repo sanity) не поднимаются вовсе — проверяется меньший
+# набор условий, а не тот же набор мягче. Полная проверка — `maestro validate
+# project.yaml --strict` на реальном дереве (D2 preflight, см. заголовок).
 # Env-параметризация (${VAR}) сознательно НЕ используется: подстановка
 # maestro fail-closed без синтаксиса дефолта — голый запуск ломался бы.
 repo_path: ~/labs/all_ai_orchestrators/disputatio
