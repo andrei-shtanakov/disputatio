@@ -193,7 +193,8 @@
   настраиваемый или scope-aware), затем глоб снять.
   Третья находка подготовки: `spec/evidence/**` обязан быть в scope —
   orchestrator-managed для scope-гейта только `spec/maestro-*`,
-  `spec/.maestro-*` и `spec/.executor-*` (`maestro/changed_paths.py`), так что
+  `spec/.maestro-*` и `spec/.executor-*` (код соседа — maestro,
+  `maestro/changed_paths.py`, не файл этого репо), так что
   артефакт экспортёра иначе прочитался бы как scope escape.
   Только после прогона удаляются `scripts/tdd_gate.py` (1997 строк),
   `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и
@@ -222,11 +223,13 @@
   рукописном операторском конфиге — дрейф старше миграции), а теперь и не может
   стоять там, где стоял: композитный `test_command` в TDD-режиме отвергается, а
   композитный `lint_command` гоняется RED-фазой целиком перед заморозкой файла
-  (`_lint_claimed`), где реализации ещё нет — проектный pyrefly там красный по
+  (`_lint_claimed` в spec-runner), где реализации ещё нет — проектный pyrefly
+  там красный по
   построению и отказывал бы каждый red. Оплаченный урок пилота (типовой долг
   на 22 задачи, вскрытый на byte-locked тестах) при этом в силе.
   **Решено: блокирующий плагин `spec/plugins/pyrefly/` на `post_review`.**
-  Порядок хуков проверен на `discover_plugins`: они идут по алфавиту **имён
+  Порядок хуков проверен на `discover_plugins` (spec-runner): они идут по
+  алфавиту **имён
   плагинов**, поэтому `pyrefly` исполняется перед `tdd-evidence` — цепочка
   RED → GREEN → review → pyrefly → evidence, и ошибка типизации останавливает
   задачу до фиксации evidence. Версия зафиксирована `uv.lock` (pyrefly 1.2.0).

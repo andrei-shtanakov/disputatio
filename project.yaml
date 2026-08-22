@@ -71,8 +71,9 @@ spec_runner:
   create_git_branch: false
   run_tests_on_done: true
   # Ровно ОДНА команда, без `&&`: `execution_mode: tdd` отвергает композитный
-  # test_command до запуска чего-либо (`is_composite_shell_command` в
-  # spec_runner/tdd.py) — реплей не может угадать, какой компонент `a && b`
+  # test_command до запуска чего-либо (`is_composite_shell_command` в коде
+  # соседа, spec-runner: `src/spec_runner/tdd.py`) — реплей не может угадать,
+  # какой компонент `a && b`
   # принимает node id, и каждый red стал бы `unverifiable`. Прежняя обёртка
   # `tdd_gate.py verify && …` была primary edge локального гейта; штатный
   # RED-гейт отказывает раньше — на переходе `red_verifying → green_implementing`.
@@ -169,12 +170,14 @@ workstreams:
       # не `test_*_red.py`: второй не матчит ни одного существующего файла и
       # роняет `validate --strict` предупреждением `scope-no-match`, а создать
       # файл-заглушку нельзя — red в предсуществующем файле отвергается
-      # (`_refuse_pre_existing_file`). Снять после системного фикса у соседа
+      # (`_refuse_pre_existing_file` в spec-runner). Снять после системного
+      # фикса у соседа
       # (RED-путь настраиваемый или scope-aware).
       - "tests/test_*.py"
       # Артефакт экспортёра едет в том же PR, а orchestrator-managed для
       # scope-гейта — только `spec/maestro-*`, `spec/.maestro-*` и
-      # `spec/.executor-*` (`maestro/changed_paths.py`). Без этой строки
+      # `spec/.executor-*` — это код соседа, maestro:
+      # `maestro/changed_paths.py`, не файл этого репо. Без этой строки
       # evidence прочиталась бы как scope escape.
       - "spec/evidence/**"
     depends_on: []
