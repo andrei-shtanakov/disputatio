@@ -136,9 +136,7 @@ def test_an_issue_is_carried_across_rounds_and_drops_when_resolved(
     assert decision_two.open_issues_carried == ["R1-1", "R2-1"]
 
     # Звено 3b: то же множество доступно промптам автора и ревьюера раунда 3.
-    for_prompt = select_open_issues(
-        [_BUG, _SECOND], decision_two.open_issues_carried
-    )
+    for_prompt = select_open_issues([_BUG, _SECOND], decision_two.open_issues_carried)
     assert [issue.id for issue in for_prompt] == ["R1-1", "R2-1"], (
         "сборка контекста читает open_issues_carried решения предыдущего "
         "раунда; пустой список оставлял бы автора без единого замечания"
