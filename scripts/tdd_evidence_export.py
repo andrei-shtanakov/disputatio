@@ -148,6 +148,9 @@ GIT_STRIPPED_VARS = (*GIT_LOCATION_VARS, GIT_CONFIG_INJECTION_VAR)
 def current_branch(project_root: Path) -> str | None:
     """Имя текущей ветки `project_root`; `None` ТОЛЬКО при detached HEAD.
 
+    Обещание в первой строке буквальное: любой другой исход — отказ, включая
+    успешный код с пустым выводом.
+
     «git не смог ответить» — не то же самое, что «HEAD отцеплён», и читать
     любой ненулевой код как второе значит превращать отказ инструмента в
     ложное утверждение о состоянии дерева: не-репозиторий, битый `.git` и
@@ -174,7 +177,13 @@ def current_branch(project_root: Path) -> str | None:
     except OSError as exc:
         fail(f"git не запустился в {project_root}: {exc}")
     if result.returncode == 0:
-        return result.stdout.strip() or None
+        branch = result.stdout.strip()
+        if not branch:
+            # Успех с пустым выводом — ответ, которого контракт git не
+            # предусматривает. Прочитать его как detached HEAD значило бы
+            # вернуть ту же подмену причины через другую дверь.
+            fail(f"git вернул пустое имя ветки для {project_root} при коде 0")
+        return branch
     detail = (result.stderr or result.stdout).strip()
     if result.returncode == 1 and not detail:
         return None

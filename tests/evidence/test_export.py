@@ -468,3 +468,28 @@ def test_git_failure_is_not_reported_as_detached_head(
     assert "git не смог определить ветку" in err
     assert "exit 128" in err
     assert "detached" not in err.lower()
+
+
+def test_empty_branch_name_is_refused_not_read_as_detached(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Успешный вызов с пустым выводом — не detached, а необъяснимый ответ.
+
+    Единственный случай во всём файле, где git подменяется: настоящий
+    `symbolic-ref` так себя не ведёт, а закрывать надо именно расхождение
+    контракта с реализацией — `None` обещан только для detached HEAD, и
+    молчаливый `or None` на успешном коде нарушал бы это обещание, а дальше
+    по коду выглядел бы как отцепленный HEAD.
+    """
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="\n", stderr=""
+        )
+
+    monkeypatch.setattr(exporter.subprocess, "run", fake_run)
+
+    with pytest.raises(exporter.Refusal) as refusal:
+        exporter.current_branch(project)
+
+    assert "detached" not in str(refusal.value).lower()
