@@ -31,7 +31,10 @@
    завершена — снять локи).
 4. **Harness не редактировать.** `scripts/tdd_evidence_export.py`,
    `spec/plugins/**`, `spec/evidence/**`, `scripts/tdd_gate.py`,
-   `spec/.tdd-evidence/verdicts/`, `spec/.tdd-evidence/waivers/` и этот файл.
+   `spec/.tdd-evidence/verdicts/`, `spec/.tdd-evidence/waivers/`,
+   `spec/.tdd-evidence/abandoned/`, `spec/.tdd-evidence/repairs/` и этот файл.
+   Последние два — записи операторских remedy: их пишут сами команды, и правка
+   агентом была бы подделкой операторской санкции.
    `harness_guard: strict` валит попытку ДО гейтов, а сообщение уходит в промпт
    следующей попытки. Сам штатный TDD-гейт правкой недоступен по построению —
    это код установленного пакета, а не файл репо.

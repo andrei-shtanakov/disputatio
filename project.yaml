@@ -99,6 +99,12 @@ spec_runner:
         - scripts/tdd_gate.py
         - spec/.tdd-evidence/verdicts
         - spec/.tdd-evidence/waivers
+        # Каталоги операторских remedy: `abandon`/`repair` пишут туда сами, и
+        # правка агентом — подделка санкции оператора. Каталогов может не быть
+        # на диске (remedy ещё не применялась) — снапшот берёт то, что есть.
+        # Были в операторском конфиге и доках, но не в SSOT (Copilot, PR #32).
+        - spec/.tdd-evidence/abandoned
+        - spec/.tdd-evidence/repairs
         # N2 (Round 4): волна оставила конституцию свободно правимой —
         # regression против «автор не правит свой оракул» (агент, которому
         # неудобна TDD-дисциплина, мог бы просто отредактировать п.1-5).
