@@ -108,6 +108,129 @@ def fail(message: str) -> NoReturn:
     raise Refusal(message)
 
 
+#: Ветка workstream'а в Mode 2 Maestro; из неё берётся идентичность evidence.
+WS_BRANCH_PREFIX = "ws/"
+
+
+def in_workstream_tree(project_root: Path) -> bool:
+    """`True`, если это worktree Maestro (`spec/maestro-*tasks.md` в дереве).
+
+    Тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: факт наличия файла,
+    а не его содержимое.
+    """
+    return any((project_root / "spec").glob("maestro-*tasks.md"))
+
+
+#: Переменные расположения репозитория перебивают `cwd`: с экспортированным
+#: `GIT_DIR` (обёртка git-хука, шелл разработчика, CI) команда отработает
+#: успешно, но прочитает ЧУЖОЙ репозиторий — и evidence уедет в неймспейс
+#: соседней ветки молча и с виду корректно. Тот же класс описан в
+#: `tests/conftest.py`. Подпись и конфиг не трогаем: здесь только чтение.
+GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+)
+
+#: `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` — конфиг прямо из окружения, по
+#: приоритету выше локального `.git/config` и не отключаемый ни
+#: `GIT_CONFIG_GLOBAL`, ни `GIT_CONFIG_NOSYSTEM`. Снимается счётчик: без него
+#: git не читает пары (та же конвенция, что в `tests/conftest.py`). Измерено:
+#: со сломанным счётчиком `symbolic-ref` падает целиком, и экспортёр прочитал
+#: бы это как detached HEAD — отказ на ровном месте.
+GIT_CONFIG_INJECTION_VAR = "GIT_CONFIG_COUNT"
+
+#: Всё, что вызов git обязан не унаследовать.
+GIT_STRIPPED_VARS = (*GIT_LOCATION_VARS, GIT_CONFIG_INJECTION_VAR)
+
+
+def current_branch(project_root: Path) -> str | None:
+    """Имя текущей ветки `project_root`; `None` ТОЛЬКО при detached HEAD.
+
+    Обещание в первой строке буквальное: любой другой исход — отказ, включая
+    успешный код с пустым выводом.
+
+    «git не смог ответить» — не то же самое, что «HEAD отцеплён», и читать
+    любой ненулевой код как второе значит превращать отказ инструмента в
+    ложное утверждение о состоянии дерева: не-репозиторий, битый `.git` и
+    отсутствующий бинарь докладывались бы как detached HEAD. Тот же принцип,
+    по которому сосед выбрал `ls-tree` вместо `cat-file -e` (spec-runner
+    `_refuse_pre_existing_file`), и та же fail-closed линия, что у остальных
+    проверок экспортёра.
+
+    `symbolic-ref -q` различает случаи сам, и это измерено: detached — код 1
+    при пустом stderr; всё прочее — код 128 с текстом (`fatal: not a git
+    repository`). Поэтому detached опознаётся по паре (код, пустой stderr),
+    а не по одному коду.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in GIT_STRIPPED_VARS}
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except OSError as exc:
+        fail(f"git не запустился в {project_root}: {exc}")
+    if result.returncode == 0:
+        branch = result.stdout.strip()
+        if not branch:
+            # Успех с пустым выводом — ответ, которого контракт git не
+            # предусматривает. Прочитать его как detached HEAD значило бы
+            # вернуть ту же подмену причины через другую дверь.
+            fail(f"git вернул пустое имя ветки для {project_root} при коде 0")
+        return branch
+    detail = (result.stderr or result.stdout).strip()
+    if result.returncode == 1 and not detail:
+        return None
+    fail(
+        f"git не смог определить ветку {project_root} "
+        f"(exit {result.returncode}): {detail[:200] or 'вывода нет'}"
+    )
+
+
+def resolve_export_namespace(project_root: Path, state_namespace: str) -> str:
+    """Под каким именем evidence ложится в репо (INV-16), а не в БД.
+
+    Неймспейс spec-runner'а — `sha256(путь worktree + spec_prefix)[:16]`, если
+    `tdd_namespace` не объявлен, а объявить его в `project.yaml` нельзя: ключ
+    один на весь конфиг, а неймспейс обязан быть свой у каждого workstream'а.
+    Хеш изолирует верно, но идентичности не даёт: тот же workstream по другому
+    пути получает другой каталог, и история трекаемой evidence разъезжается.
+    Поэтому в worktree Maestro имя берётся из ветки `ws/<id>` → `ws-<id>`, а
+    хеш остаётся fallback'ом для прогонов вне workstream'а (ручных, смоуковых).
+
+    В maestro-дереве неожиданная ветка — отказ, а не молчаливый fallback
+    (INV-18): прогон не имеет права незаметно уехать в другой неймспейс.
+    Форма СТРОГО `ws/<id>` без внутренних `/`: иначе `ws/a/b` и `ws/a-b`
+    схлопнулись бы в один каталог, поделив evidence двух разных workstream'ов.
+    """
+    if not in_workstream_tree(project_root):
+        return state_namespace
+    branch = current_branch(project_root)
+    if branch is None:
+        fail(
+            "detached HEAD в maestro-дереве: неймспейс неоднозначен, "
+            f"ожидается ветка {WS_BRANCH_PREFIX}<workstream-id>"
+        )
+    prefix = WS_BRANCH_PREFIX
+    if not branch.startswith(prefix) or branch == prefix:
+        fail(
+            f"ветка {branch!r} в maestro-дереве не соответствует "
+            f"{prefix}<workstream-id> — неймспейс неоднозначен"
+        )
+    if "/" in branch[len(prefix) :]:
+        fail(
+            f"ветка {branch!r} содержит лишний '/' после {prefix!r} — "
+            "неймспейс схлопнулся бы с другой веткой при замене '/' на '-'"
+        )
+    return branch.replace("/", "-")
+
+
 def resolve_state_db(project_root: Path, explicit: str | None) -> Path:
     """Найти живую `.executor-*state.db`; неоднозначность — отказ.
 
@@ -389,6 +512,12 @@ def export(project_root: Path, task_id: str, version: str, db: str | None) -> Pa
         model = collect(conn, task_id, version)
     finally:
         conn.close()
+
+    # Идентичность артефакта в репо и идентичность строк в БД — разные вещи:
+    # первая читаема и стабильна (INV-16), вторая нужна, чтобы найти те самые
+    # строки в живой БД или post-mortem архиве. Обе в артефакте.
+    model["state_namespace"] = model["namespace"]
+    model["namespace"] = resolve_export_namespace(project_root, model["namespace"])
 
     gaps = missing_parts(model)
     if gaps:

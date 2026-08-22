@@ -10,6 +10,7 @@
 
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def artifact(project: Path, ns: str = NS, task: str = TASK) -> Path:
 
 def test_full_chain_is_written(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["schema"] == "disputatio/tdd-evidence/v1"
     assert data["complete"] is True
     assert data["task_id"] == TASK
@@ -55,7 +56,7 @@ def test_full_chain_is_written(project: Path, full_db: Path) -> None:
 
 def test_refactoring_phase_is_carried(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    phases = json.loads(artifact(project).read_text())["phases"]
+    phases = json.loads(artifact(project).read_text(encoding="utf-8"))["phases"]
     assert [p["phase"] for p in phases][-1] == "refactoring"
     assert phases[-1]["detail"] == "skipped"
 
@@ -69,7 +70,7 @@ def test_export_is_idempotent(project: Path, full_db: Path) -> None:
 
 def test_json_is_canonical(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    text = artifact(project).read_text()
+    text = artifact(project).read_text(encoding="utf-8")
     keys = [k for k in json.loads(text)]
     assert keys == sorted(keys)
     assert text.endswith("\n")
@@ -285,12 +286,210 @@ def test_latest_verdict_per_gate_wins(project: Path, full_db: Path) -> None:
     conn.close()
 
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["gates"]["tdd.red"]["status"] == "satisfied"
 
 
 def test_judged_tree_is_recorded(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["judged_commit"] == CANDIDATE_SHA
     assert data["red"]["commit_sha"] != data["judged_commit"]
+
+
+def _git(workdir: Path, *args: str) -> None:
+    """Git в тестовом дереве; окружение уже приведено фикстурой `git_env`.
+
+    Env здесь намеренно НЕ подменяется — ровно как в `_git` корневого
+    `tests/conftest.py`: герметичность (снятые `GIT_DIR`/`GIT_WORK_TREE`/
+    подпись/`GIT_CONFIG_COUNT`, `os.devnull` + `GIT_CONFIG_NOSYSTEM`) —
+    ответственность одной фикстуры, а не каждого вызова. Дубль с
+    захардкоженным `/dev/null` расходился бы с ней молча.
+    """
+    try:
+        subprocess.run(
+            ["git", *args],
+            cwd=workdir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # `CalledProcessError.__str__` печатает только код возврата, поэтому
+        # причина падения фикстуры иначе не видна в отчёте pytest — та же
+        # пересборка, что у `_git` корневого conftest (Copilot, PR #32).
+        raise RuntimeError(
+            f"git {' '.join(args)} упал ({exc.returncode}): {exc.stderr or exc.stdout}"
+        ) from exc
+
+
+def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
+    """Дерево, неотличимое от worktree Maestro: spec/maestro-*tasks.md + ветка.
+
+    Репозиторий приносит фикстура `git_repo` (тот же `tmp_path`), поэтому
+    здесь остаётся только сигнал maestro-режима и ветка. `maestro-*tasks.md` —
+    тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: наличие файла, а не
+    его содержимое.
+    """
+    # `encoding` явный: строка meta-задачи содержит эмодзи, а `write_text` без
+    # него берёт локаль процесса и падает там, где она не UTF-8.
+    (project / "spec" / "maestro-tasks.md").write_text(
+        "- TASK-001 | ✅ DONE\n", encoding="utf-8"
+    )
+    _git(project, "checkout", "-q", "-b", branch)
+    return project
+
+
+def test_namespace_comes_from_the_workstream_branch(
+    project: Path, full_db: Path, git_repo: Path
+) -> None:
+    """`ws/<id>` даёт `ws-<id>` и в каталоге, и в поле — INV-16, не хеш пути."""
+    workstream_tree(project, "ws/w-runtime")
+
+    assert run(project) == 0
+
+    data = json.loads(artifact(project, ns="ws-w-runtime").read_text(encoding="utf-8"))
+    assert data["namespace"] == "ws-w-runtime"
+    # Сырой неймспейс БД сохранён как provenance: по нему находятся строки,
+    # из которых собран артефакт (в фикстуре он намеренно ДРУГОЙ).
+    assert data["state_namespace"] == NS
+
+
+def test_outside_a_workstream_the_db_namespace_is_used(
+    project: Path, full_db: Path
+) -> None:
+    """Вне workstream'а (ручной прогон, смоук) — fallback на неймспейс БД."""
+    assert run(project) == 0
+
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
+    assert data["namespace"] == NS
+    assert data["state_namespace"] == NS
+
+
+@pytest.mark.parametrize(
+    ("branch", "fragment"),
+    [
+        ("feature/x", "ws/"),
+        ("ws/a/b", "'/'"),
+    ],
+)
+def test_workstream_tree_with_a_wrong_branch_refuses(
+    project: Path, full_db: Path, git_repo: Path, branch: str, fragment: str, capsys
+) -> None:
+    """В maestro-дереве неймспейс не угадывается: молчаливого fallback нет.
+
+    INV-18: прогон Maestro не имеет права свалиться в другой неймспейс
+    из-за неожиданной ветки. `ws/a/b` отдельно — иначе он схлопнулся бы
+    с `ws/a-b` (замена '/' на '-' не различает исходный разделитель).
+    """
+    workstream_tree(project, branch)
+
+    assert run(project) == 1
+
+    assert not (project / "spec" / "evidence").exists()
+    assert fragment in capsys.readouterr().err
+
+
+def test_detached_head_in_a_workstream_tree_refuses(
+    project: Path, full_db: Path, git_repo: Path, capsys
+) -> None:
+    """Detached HEAD — неймспейс неоднозначен, а не «сойдёт и хеш»."""
+    workstream_tree(project)
+    _git(project, "checkout", "-q", "--detach")
+
+    assert run(project) == 1
+
+    assert not (project / "spec" / "evidence").exists()
+    assert "HEAD" in capsys.readouterr().err
+
+
+def test_inherited_git_dir_does_not_redirect_the_namespace(
+    project: Path, full_db: Path, git_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Унаследованный `GIT_DIR` перебивает `cwd` — экспортёр обязан его снять.
+
+    Тот же класс, что описан в `tests/conftest.py`: под обёрткой git-хука или
+    в шелле с экспортированным `GIT_DIR` команда отработает успешно, но
+    прочитает ЧУЖОЙ репозиторий. Здесь это дало бы evidence, уехавшую в
+    неймспейс соседней ветки — молча и с виду корректно.
+    """
+    workstream_tree(project, "ws/w-runtime")
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    _git(stranger, "init", "-q", "-b", "ws/w-stranger")
+    monkeypatch.setenv("GIT_DIR", str(stranger / ".git"))
+
+    assert run(project) == 0
+
+    assert artifact(project, ns="ws-w-runtime").exists()
+    assert not artifact(project, ns="ws-w-stranger").exists()
+
+
+def test_config_from_the_environment_does_not_reach_git(
+    project: Path, full_db: Path, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GIT_CONFIG_COUNT` — конфиг поверх локального; вызов обязан его снять.
+
+    Приоритет этих пар выше `.git/config`, и ни `GIT_CONFIG_GLOBAL`, ни
+    `GIT_CONFIG_NOSYSTEM` их не отключают — то же соображение, что в
+    `tests/conftest.py`. Проверяется поведением: со сломанным счётчиком
+    `git symbolic-ref` падает целиком, и без фильтра экспортёр прочитал бы
+    это как detached HEAD — отказ на ровном месте.
+    """
+    workstream_tree(project, "ws/w-runtime")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "bogus")
+
+    assert run(project) == 0
+
+    assert artifact(project, ns="ws-w-runtime").exists()
+
+
+def test_git_failure_is_not_reported_as_detached_head(
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """«git не смог ответить» ≠ «HEAD отцеплён» — причина должна быть настоящей.
+
+    Тот же класс, что у соседа в `_refuse_pre_existing_file`: ненулевой код
+    возврата, прочитанный как факт о дереве, превращает отказ инструмента в
+    ложное утверждение о состоянии. `symbolic-ref -q` различает их сам:
+    detached — код 1 при пустом stderr, всё остальное — код 128 с текстом.
+    """
+    (project / "spec" / "maestro-tasks.md").write_text(
+        "- TASK-001 | ✅ DONE\n", encoding="utf-8"
+    )
+
+    assert run(project) == 1
+
+    # Ассертить текст git нельзя: он локализуется (`LANG`/`LC_ALL`), и тест
+    # стал бы флейким на не-английском окружении. Проверяется то, что мы
+    # действительно контролируем: собственное сообщение экспортёра, код
+    # возврата git и отсутствие подмены причины (Copilot, PR #32).
+    err = capsys.readouterr().err
+    assert "git не смог определить ветку" in err
+    assert "exit 128" in err
+    assert "detached" not in err.lower()
+
+
+def test_empty_branch_name_is_refused_not_read_as_detached(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Успешный вызов с пустым выводом — не detached, а необъяснимый ответ.
+
+    Единственный случай во всём файле, где git подменяется: настоящий
+    `symbolic-ref` так себя не ведёт, а закрывать надо именно расхождение
+    контракта с реализацией — `None` обещан только для detached HEAD, и
+    молчаливый `or None` на успешном коде нарушал бы это обещание, а дальше
+    по коду выглядел бы как отцепленный HEAD.
+    """
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="\n", stderr=""
+        )
+
+    monkeypatch.setattr(exporter.subprocess, "run", fake_run)
+
+    with pytest.raises(exporter.Refusal) as refusal:
+        exporter.current_branch(project)
+
+    assert "detached" not in str(refusal.value).lower()

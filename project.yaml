@@ -55,18 +55,56 @@ spec_runner:
   # обязана оставаться `ws/<id>` на всём протяжении workstream'а.
   create_git_branch: false
   run_tests_on_done: true
-  test_command: "uv run python scripts/tdd_gate.py verify && uv run pytest -q"
+  # Ровно ОДНА команда, без `&&`: `execution_mode: tdd` отвергает композитный
+  # test_command до запуска чего-либо (`is_composite_shell_command` в
+  # spec_runner/tdd.py) — реплей не может угадать, какой компонент `a && b`
+  # принимает node id, и каждый red стал бы `unverifiable`. Прежняя обёртка
+  # `tdd_gate.py verify && …` была primary edge локального гейта; штатный
+  # RED-гейт отказывает раньше — на переходе `red_verifying → green_implementing`.
+  # Полный suite, а не подмножество: narrowing включается только в parallel-режиме
+  # spec-runner (`changed_since`), а maestro зовёт `spec-runner run --all` без него.
+  test_command: "uv run pytest -q"
   run_lint_on_done: true
   lint_command: "uv run ruff check ."
   extra_executor_config:
     executor:
       on_task_failure: stop
+      # Штатный TDD-контракт вместо локального гейта (D7-A → spec-runner#141).
+      # Падающий тест авторствует отдельный RED-пас, его коммит реплеится в
+      # одноразовом worktree, файл теста лочится побайтно, а без подтверждённого
+      # red пас реализации не запускается вовсе.
+      execution_mode: tdd
+      # Объявлен, а не выведен: exit code реплея означает то, что говорит
+      # конкретный раннер (pytest 1 = «тесты упали»), и инференс разрешён только
+      # там, где не может ошибиться. Объявленный раннер, которого команда не
+      # несёт, отвергается на загрузке конфига, а не логируется.
+      tdd_runner: pytest
+      # `tdd_namespace` НЕ объявлен намеренно: ключ один на весь project.yaml, а
+      # неймспейс обязан быть свой у каждого workstream'а (INV-16) — одно
+      # значение на всех склеило бы их claim'ы при схождении веток. Пустое
+      # значение даёт хеш от пути worktree: изоляция верная, читаемость каталога
+      # evidence теряется (открытый пункт в TODO.md).
       harness_guard: strict
       harness_files:
+        # Штатный гейт — код установленного пакета: агенту его править нечем,
+        # и защищать осталось только наше. Экспортёр evidence, плагины и сами
+        # артефакты — новый harness-периметр.
+        - scripts/tdd_evidence_export.py
+        - spec/plugins
+        - spec/evidence
+        # Старый гейт остаётся в дереве страховкой до прогона-доказательства
+        # (todo://disputatio/tdd-gate-migration-proof) — пока он здесь, он тоже
+        # harness. Его post_done-плагин инертен в штатном режиме: `audit`
+        # пропускает DONE-задачи без claim'а в `spec/.tdd-evidence/`.
         - scripts/tdd_gate.py
-        - spec/plugins/tdd-gate
         - spec/.tdd-evidence/verdicts
         - spec/.tdd-evidence/waivers
+        # Каталоги операторских remedy: `abandon`/`repair` пишут туда сами, и
+        # правка агентом — подделка санкции оператора. Каталогов может не быть
+        # на диске (remedy ещё не применялась) — снапшот берёт то, что есть.
+        # Были в операторском конфиге и доках, но не в SSOT (Copilot, PR #32).
+        - spec/.tdd-evidence/abandoned
+        - spec/.tdd-evidence/repairs
         # N2 (Round 4): волна оставила конституцию свободно правимой —
         # regression против «автор не правит свой оракул» (агент, которому
         # неудобна TDD-дисциплина, мог бы просто отредактировать п.1-5).

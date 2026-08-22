@@ -8,26 +8,62 @@
 локальными путями), поэтому требования к нему живут здесь, а не в самом файле.
 Эталон — `spec-runner.config.example.yaml`.
 
-## 1. Пер-тасковый гейт: pyrefly обязателен
+## 0. Режим: штатный `execution_mode: tdd`
+
+С cutover'а (2026-08-22) TDD-дисциплину исполняет spec-runner, а не
+`scripts/tdd_gate.py`: red авторствует отдельный пас, его коммит реплеится в
+одноразовом worktree, файл теста лочится побайтно, и без подтверждённого red
+переход к реализации не запускается. Конфиг — `project.yaml` (SSOT):
+
+```yaml
+  extra_executor_config:
+    executor:
+      execution_mode: tdd
+      tdd_runner: pytest
+```
+
+Локальный гейт ещё лежит в дереве страховкой и удаляется только после
+прогона-доказательства (`todo://disputatio/tdd-gate-migration-proof`). Всё, что
+ниже, читать уже в этом режиме.
+
+## 1. Пер-тасковый гейт: одна команда, и pyrefly в неё не влезает
 
 ```yaml
 executor:
   commands:
-    test: uv run python scripts/tdd_gate.py verify && uv run pyrefly check && uv run pytest -q
+    test: uv run pytest -q      # ровно одна команда, без `&&`
     lint: uv run ruff check .
 ```
 
-**Почему не только на приёмке.** В пилоте пер-тасковый гейт был
-`tdd_gate verify && pytest`, а typecheck стоял лишь в чек-листе приёмочной
-задачи. Типовой долг копился 22 задачи и вскрылся в конце — четырьмя ошибками
-в тестах, которые к тому моменту уже были byte-locked, то есть неисправимы без
-операторской санкции (см. `abandon`/`repair` в конституции). Цена pyrefly в
-цепочке — около 18 секунд на задачу.
+**Композитный `test_command` в TDD-режиме отвергается до запуска чего-либо**
+(`is_composite_shell_command` в `spec_runner/tdd.py`): реплей не может угадать,
+какой компонент `a && b` принимает node id, и каждый red стал бы
+`unverifiable`. Прежняя цепочка `tdd_gate verify && pyrefly check && pytest -q`
+в этом режиме нерабочая целиком, а не только в части гейта.
 
-**Порядок команд значим.** `pytest` идёт последним: spec-runner умеет
-переписывать `test_command`, дописывая пути тест-файлов в конец строки
-(scoped-режим), и при другом порядке они уехали бы в аргументы `pyrefly`
-(spec-runner#139).
+**Оплаченный урок при этом никуда не делся.** В пилоте typecheck стоял лишь в
+чек-листе приёмочной задачи: типовой долг копился 22 задачи и вскрылся в конце
+четырьмя ошибками в тестах, которые к тому моменту были byte-locked, то есть
+неисправимы без операторской санкции. Цена pyrefly в цепочке — около 18 секунд
+на задачу, и платить её на каждой задаче было правильно.
+
+**Куда pyrefly НЕ переносится:** в `commands.lint`. RED-фаза линтует файл,
+который собирается заморозить, и при композитном `lint_command` гоняет
+**весь** объявленный гейт вместо сужения до файла (`_lint_claimed`, тот же урок
+#139). На RED-дереве реализации ещё нет — тест ссылается на несуществующий
+модуль, — так что проектный pyrefly там красный по построению, и каждый red
+отказывался бы с «lint failed on the file about to be frozen».
+
+**Куда pyrefly перенесён:** в блокирующий плагин `spec/plugins/pyrefly/` на
+точке `post_review` — после реализации и вердикта ревью, до коммита задачи.
+Единственное место, где typecheck не ломает RED-фазу. Версия зафиксирована
+`uv.lock` (pyrefly 1.2.0), так что прогоны воспроизводимы.
+
+**Порядок хуков значим и проверен:** `discover_plugins` исполняет хуки одной
+точки в алфавитном порядке **имён плагинов**, а не каталогов, поэтому `pyrefly`
+идёт перед `tdd-evidence`. Цепочка задачи: RED → GREEN → review → pyrefly →
+evidence. Ошибка типизации останавливает задачу до того, как evidence
+зафиксирует её как состоявшуюся.
 
 ## 2. Control-plane в harness_files
 
@@ -36,14 +72,21 @@ executor:
   harness_files:
   - spec-runner.config.yaml      # ← сама политика
   - pyrefly.toml                 # ← послабления typecheck
-  - scripts/tdd_gate.py
-  - spec/plugins/tdd-gate
+  - scripts/tdd_evidence_export.py
+  - spec/plugins
+  - spec/evidence
+  - scripts/tdd_gate.py          # ← пока страховка в дереве, она тоже harness
   - spec/.tdd-evidence/verdicts
   - spec/.tdd-evidence/waivers
   - spec/.tdd-evidence/abandoned
   - spec/.tdd-evidence/repairs
   - spec/maestro-constitution.md
 ```
+
+Сам TDD-гейт в этот список больше не входит и не может: он — код
+установленного пакета, а не файл репо, и агенту его править нечем. Защищать
+осталось наше — экспортёр evidence, плагины, сами артефакты `spec/evidence/**`
+и конституцию.
 
 Дефолтный список `HARNESS_CANDIDATES` в spec-runner не включает ни собственный
 конфиг, ни `pyrefly.toml`. Агент работает в worktree и технически может
