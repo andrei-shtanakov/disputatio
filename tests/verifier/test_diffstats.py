@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from disputatio.contracts.verification import DiffStats
 
 # Герметичное окружение git: глобальный/системный конфиг разработчика
@@ -131,3 +133,149 @@ def test_repo_without_head_reports_zeroes_without_raising(tmp_path: Path) -> Non
     stats = diffstats.collect_diff_stats(tmp_path)
 
     assert (stats.files, stats.insertions, stats.deletions) == (0, 0, 0)
+
+
+def _observe_numstat(workdir: Path) -> subprocess.CompletedProcess[str]:
+    """Контрольный запуск `git diff --numstat HEAD` ровно как `collect_diff_stats`.
+
+    Окружение НЕ переопределяется: иначе измеренный код возврата относился бы
+    к другому репозиторию, чем проверяемый вызов ([REQ-008]).
+    """
+    return subprocess.run(
+        ["git", "diff", "--numstat", "HEAD"],
+        shell=False,
+        cwd=workdir,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def test_broken_git_dir_raises_instead_of_reporting_zeroes(tmp_path: Path) -> None:
+    """Повреждённый `.git` (`gitdir:` в никуда) → отказ, а не `DiffStats(0, 0, 0)`.
+
+    Состояние названо в [REQ-002] наравне с bare и «вне репозитория», но в
+    залоченном red-тесте не покрыто. От тех двух оно отличается тем, что
+    исход не зависит от окружения: файл `.git` обрывает поиск репозитория
+    вверх по дереву, поэтому кейс не выродится, даже если `tmp_path`
+    окажется внутри чужого репозитория.
+    """
+    diffstats = _import_diffstats()
+    (tmp_path / ".git").write_text(
+        "gitdir: /nonexistent/broken.git\n", encoding="utf-8"
+    )
+    control = _observe_numstat(tmp_path)
+    assert control.returncode != 0, (
+        "контроль: `git diff --numstat HEAD` при битом `.git` обязан падать, "
+        f"а дал rc=0 и stdout={control.stdout!r}"
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    message = str(caught.value)
+    # Сравниваем с ИЗМЕРЕННЫМ stderr контроля, а не с английской строкой:
+    # git локализует сообщения через LANG/LC_ALL, и жёсткий текст сделал бы
+    # тест флейким на не-английском окружении (Copilot, PR #37).
+    control_head = (control.stderr or control.stdout).strip().splitlines()[0]
+    assert control_head in message, (
+        f"в отказе нет диагностики git: ожидалась первая строка измеренного "
+        f"вывода {control_head!r}, сообщение: {message!r} ([REQ-003])"
+    )
+    assert str(control.returncode) in message, (
+        f"в отказе нет измеренного кода возврата {control.returncode}, "
+        f"сообщение: {message!r} ([REQ-003])"
+    )
+
+
+def test_failure_message_keeps_head_of_git_stderr_and_bounds_it(
+    tmp_path: Path,
+) -> None:
+    """Вне репозитория в отказ идёт голова stderr, а не вся usage-простыня.
+
+    `git diff` вне репозитория печатает 130 строк, из которых 129 —
+    справка `git diff --no-index`; в сообщение идут первые
+    `_STDERR_HEAD_LINES` строк, и первая из них — различающая
+    ([DESIGN-005]). Верхняя граница проверяется безусловно, а совпадение
+    первой строки — по факту измерения, поэтому тест не зависит от
+    болтливости конкретной версии git.
+    """
+    diffstats = _import_diffstats()
+    probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode != 0 or probe.stdout.strip() != "true", (
+        f"{tmp_path} оказался внутри git-репозитория (зонд: rc="
+        f"{probe.returncode}, stdout={probe.stdout.strip()!r}) — кейс выродился"
+    )
+    control = _observe_numstat(tmp_path)
+    assert control.returncode != 0
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    message = str(caught.value)
+    assert len(message.splitlines()) <= diffstats._STDERR_HEAD_LINES, (
+        f"диагностика не обрезана до {diffstats._STDERR_HEAD_LINES} строк: "
+        f"{len(message.splitlines())} строк в сообщении ([DESIGN-005])"
+    )
+    # `(stderr or stdout)`, как и в самом `_diagnostic`: git волен писать
+    # диагностику в stdout, и тест не должен предполагать поток за него
+    # (Copilot, PR #37).
+    control_head = (control.stderr or control.stdout).strip().splitlines()[0]
+    assert control_head in message, (
+        "в сообщение попала не голова диагностики: первой строки git "
+        f"{control_head!r} в нём нет ([DESIGN-005])"
+    )
+
+
+def test_head_probe_that_says_something_is_not_read_as_missing_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_env: None
+) -> None:
+    """Зонд HEAD с диагностикой — не «HEAD нет», а невыясненное состояние.
+
+    Тот же принцип, что и у самой задачи, но уровнем ниже: «git не смог
+    ответить» нельзя читать как факт о дереве. Нули законны только там, где
+    зонд промолчал — так git и сообщает о нерождённом HEAD (rc 1, пустой
+    вывод; проверено и на недоступном ref, где вывод тоже пуст).
+
+    Единственный тест файла с подменой git: сконструировать такое состояние
+    настоящим репозиторием не вышло — сломанный `HEAD` роняет первый зонд,
+    удалённый объект коммита даёт rc 0, недоступный ref — rc 1 без вывода.
+    Защита fail-closed от состояния, которого мы не умеем воспроизвести,
+    но которое git вправе показать (Copilot, PR #37).
+    """
+    diffstats = _import_diffstats()
+    real_run = diffstats._run_git
+
+    def fake_run(argv: tuple[str, ...], workdir: Path):
+        if argv == diffstats._HEAD_PROBE_ARGV:
+            return subprocess.CompletedProcess(
+                args=list(argv),
+                returncode=128,
+                stdout="",
+                stderr="fatal: не удалось прочитать refs\n",
+            )
+        return real_run(argv, workdir)
+
+    monkeypatch.setattr(diffstats, "_run_git", fake_run)
+    # `git_env` снимает GIT_DIR/GIT_WORK_TREE и прочие переменные, иначе
+    # `git init` при экспортированном GIT_DIR ушёл бы мутировать чужой
+    # репозиторий — тот же класс, что репо уже ловил в экспортёре evidence.
+    subprocess.run(["git", "init", "--quiet", "-b", "main"], cwd=tmp_path, check=True)
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    # Проверяется именно отказ, а не текст: сообщение докладывает про
+    # основную команду, и требовать в нём диагностику зонда значило бы
+    # закрепить деталь, которой контракт не обещает.
+    assert "упал с кодом" in str(caught.value), (
+        f"отказ не назвал код возврата: {str(caught.value)!r}"
+    )
