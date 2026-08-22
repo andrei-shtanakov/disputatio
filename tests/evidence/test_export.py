@@ -460,6 +460,11 @@ def test_git_failure_is_not_reported_as_detached_head(
 
     assert run(project) == 1
 
+    # Ассертить текст git нельзя: он локализуется (`LANG`/`LC_ALL`), и тест
+    # стал бы флейким на не-английском окружении. Проверяется то, что мы
+    # действительно контролируем: собственное сообщение экспортёра, код
+    # возврата git и отсутствие подмены причины (Copilot, PR #32).
     err = capsys.readouterr().err
-    assert "not a git repository" in err
+    assert "git не смог определить ветку" in err
+    assert "exit 128" in err
     assert "detached" not in err.lower()
