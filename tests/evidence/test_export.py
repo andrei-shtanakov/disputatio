@@ -44,7 +44,7 @@ def artifact(project: Path, ns: str = NS, task: str = TASK) -> Path:
 
 def test_full_chain_is_written(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["schema"] == "disputatio/tdd-evidence/v1"
     assert data["complete"] is True
     assert data["task_id"] == TASK
@@ -56,7 +56,7 @@ def test_full_chain_is_written(project: Path, full_db: Path) -> None:
 
 def test_refactoring_phase_is_carried(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    phases = json.loads(artifact(project).read_text())["phases"]
+    phases = json.loads(artifact(project).read_text(encoding="utf-8"))["phases"]
     assert [p["phase"] for p in phases][-1] == "refactoring"
     assert phases[-1]["detail"] == "skipped"
 
@@ -70,7 +70,7 @@ def test_export_is_idempotent(project: Path, full_db: Path) -> None:
 
 def test_json_is_canonical(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    text = artifact(project).read_text()
+    text = artifact(project).read_text(encoding="utf-8")
     keys = [k for k in json.loads(text)]
     assert keys == sorted(keys)
     assert text.endswith("\n")
@@ -286,13 +286,13 @@ def test_latest_verdict_per_gate_wins(project: Path, full_db: Path) -> None:
     conn.close()
 
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["gates"]["tdd.red"]["status"] == "satisfied"
 
 
 def test_judged_tree_is_recorded(project: Path, full_db: Path) -> None:
     assert run(project) == 0
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["judged_commit"] == CANDIDATE_SHA
     assert data["red"]["commit_sha"] != data["judged_commit"]
 
@@ -306,7 +306,16 @@ def _git(workdir: Path, *args: str) -> None:
     ответственность одной фикстуры, а не каждого вызова. Дубль с
     захардкоженным `/dev/null` расходился бы с ней молча.
     """
-    subprocess.run(["git", *args], cwd=workdir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=workdir,
+        check=True,
+        capture_output=True,
+        # Без `text=True` вывод упавшего git остаётся bytes, и причина сбоя
+        # фикстуры в отчёте pytest читается как `b'...'` — то же соображение,
+        # что у `_git` корневого conftest (Copilot, PR #32).
+        text=True,
+    )
 
 
 def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
@@ -317,7 +326,11 @@ def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
     тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: наличие файла, а не
     его содержимое.
     """
-    (project / "spec" / "maestro-tasks.md").write_text("- TASK-001 | ✅ DONE\n")
+    # `encoding` явный: строка meta-задачи содержит эмодзи, а `write_text` без
+    # него берёт локаль процесса и падает там, где она не UTF-8.
+    (project / "spec" / "maestro-tasks.md").write_text(
+        "- TASK-001 | ✅ DONE\n", encoding="utf-8"
+    )
     _git(project, "checkout", "-q", "-b", branch)
     return project
 
@@ -330,7 +343,7 @@ def test_namespace_comes_from_the_workstream_branch(
 
     assert run(project) == 0
 
-    data = json.loads(artifact(project, ns="ws-w-runtime").read_text())
+    data = json.loads(artifact(project, ns="ws-w-runtime").read_text(encoding="utf-8"))
     assert data["namespace"] == "ws-w-runtime"
     # Сырой неймспейс БД сохранён как provenance: по нему находятся строки,
     # из которых собран артефакт (в фикстуре он намеренно ДРУГОЙ).
@@ -343,7 +356,7 @@ def test_outside_a_workstream_the_db_namespace_is_used(
     """Вне workstream'а (ручной прогон, смоук) — fallback на неймспейс БД."""
     assert run(project) == 0
 
-    data = json.loads(artifact(project).read_text())
+    data = json.loads(artifact(project).read_text(encoding="utf-8"))
     assert data["namespace"] == NS
     assert data["state_namespace"] == NS
 
