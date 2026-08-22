@@ -244,8 +244,9 @@
   Стоимость цепочки $4.75 (RED $1.43 + GREEN $1.33 + review $1.99; GREEN
   считается в `attempts`, не в `agent_calls`). Транскрипт —
   `docs/plans/2026-08-22-tdd-migration-proof-transcript.md`.
-  Страховочный глоб `tests/test_*.py` снят: оба прогона положили RED в
-  `tests/verifier/` по инструкции задачи, корень `tests/` не понадобился.
+  Страховочный глоб `tests/test_*.py` снят: RED вставал в `tests/verifier/`
+  во всех трёх прогонах — и в двух упавших, и в успешном (сверено по claims
+  в post-mortem архивах), корень `tests/` не понадобился ни разу.
   Условие снятия страховки выполнено. Удаляются `scripts/tdd_gate.py` (1997
   строк), `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`,
   и закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
