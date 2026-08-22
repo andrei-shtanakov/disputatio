@@ -295,7 +295,7 @@
 
 ## Ждём от других проектов
 
-- [ ] maestro: автоповтор workstream'а стирает TDD-состояние @id:maestro-retry-wipes-tdd-state @blocked_by:todo://maestro/209
+- [x] maestro: автоповтор workstream'а стирает TDD-состояние @id:maestro-retry-wipes-tdd-state @blocked_by:todo://maestro/workstream-retry-wipes-tdd-state
   — находка прогона 2 (2026-08-22), заведена как maestro#209. Автоповтор
   срабатывает через 2 секунды после `TASK_BLOCKED` и пересоздаёт
   `.executor-*state.db`: чекпоинта и claims в живой БД не остаётся, а
@@ -306,7 +306,19 @@
   только в runtime-модели `Workstream`. Предложены три варианта на выбор
   владельца (не повторять при `TASK_BLOCKED` / дать ключ во входном
   `WorkstreamConfig` / сохранять TDD-состояние между попытками).
-  **Прогон-доказательство этим не блокируется**: чтобы дойти до evidence,
+  **Закрыто соседом 2026-08-22** (maestro PR #212, `feat/blocked-task-no-retry`,
+  влит в их master): взяты варианты 1+2, третий отклонён с обоснованием —
+  держать executor state поверх заново сгенерированного спека значит
+  оформить `state_spec_mismatch` как фичу. Вариант 1 сделан не через
+  `stop_reason` (под `on_task_failure=stop` он равен `task_failed_stop`, а тот
+  ретраится намеренно — упавшая задача может быть флейком), а через
+  персистентный per-attempt `error_code = TASK_BLOCKED`; ключ — попытка, не
+  статус задачи. Исключение `state_missing: true` ретрай сохраняет: это
+  записанный факт, а не молчание.
+  Ссылка приведена к каноническому виду: `todo://maestro/209` резолвился в
+  `@id:209`, которого у соседа нет (WARN `PF-ID-DANGLING` у
+  `check-plan-fields`) — номер issue не является идентификатором пункта плана.
+  **Прогон-доказательство этим не блокировалось**: чтобы дойти до evidence,
   remedy не нужен — нужен red без фактической ошибки в ассерте.
 
 - [x] maestro: `validate --strict` не эскалирует warnings @id:maestro-strict-warnings-finding
