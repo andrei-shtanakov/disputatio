@@ -166,7 +166,7 @@
   для `pyrefly check` (см. новый пункт бэклога);
   **(3)** полный suite сохраняется: narrowing включается только в
   parallel-режиме spec-runner, а maestro зовёт `spec-runner run --all`.
-- [ ] Прогон-доказательство миграции @id:tdd-gate-migration-proof
+- [x] Прогон-доказательство миграции @id:tdd-gate-migration-proof
   — одна leaf-задача с полной цепочкой RED → GREEN → review → трекаемая
   evidence. Cutover выполнен (`todo://disputatio/tdd-standard-mode-cutover`),
   релиз опубликован — ждать больше нечего. **Уровень прогона: полный
@@ -235,10 +235,23 @@
   `spec/.maestro-*` и `spec/.executor-*` (код соседа — maestro,
   `maestro/changed_paths.py`, не файл этого репо), так что
   артефакт экспортёра иначе прочитался бы как scope escape.
-  Только после прогона удаляются `scripts/tdd_gate.py` (1997 строк),
-  `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и
-  закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
-  `resume`/`repair`/`release`.
+  **Прогон 3 (2026-08-22) — PASS.** Задача `success` за 245.9 с, PR #37 влит.
+  Артефакт `spec/evidence/ws-w-proof/TASK-001.json` в master: `complete: true`,
+  `namespace: ws-w-proof` (выведен из ветки), `state_namespace`
+  `d4ff62d4adb76ae1`, red `c70bc191` подтверждён реплеем, claim активен, фазы
+  до `refactoring`, все три гейта `satisfied` под одним `judged_commit`
+  `3202560c`. Порядок хуков подтверждён живьём: `pyrefly` → `tdd-evidence`.
+  Стоимость цепочки $4.75 (RED $1.43 + GREEN $1.33 + review $1.99; GREEN
+  считается в `attempts`, не в `agent_calls`). Транскрипт —
+  `docs/plans/2026-08-22-tdd-migration-proof-transcript.md`.
+  Страховочный глоб `tests/test_*.py` снят: оба прогона положили RED в
+  `tests/verifier/` по инструкции задачи, корень `tests/` не понадобился.
+  Условие снятия страховки выполнено. Удаляются `scripts/tdd_gate.py` (1997
+  строк), `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`,
+  и закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
+  `resume`/`repair`/`release` — отдельным атомарным PR, чтобы ревью удаления
+  не растворилось среди документации, а откат сводился к `git revert` одного
+  мерж-коммита.
 - [x] Имя каталога трекаемой evidence @id:tdd-evidence-namespace-dir
   — экспортёр кладёт артефакт в `spec/evidence/<namespace>/<TASK>.json`, беря
   namespace из БД. `tdd_namespace` в `project.yaml` объявить нельзя: ключ один
@@ -272,6 +285,20 @@
   плагинов**, поэтому `pyrefly` исполняется перед `tdd-evidence` — цепочка
   RED → GREEN → review → pyrefly → evidence, и ошибка типизации останавливает
   задачу до фиксации evidence. Версия зафиксирована `uv.lock` (pyrefly 1.2.0).
+- [ ] INV-12 нарушен: maestro двигает локальный master @id:inv-12-local-master-fast-forward
+  — прогон-доказательство (2026-08-22) завершился успешно, и maestro продвинул
+  **локальный** `master` на коммиты workstream'а fast-forward'ом; `origin`
+  не затронут, я вернул ветку на `origin/master` вручную. Это ровно то
+  ожидание, ради которого волна 1 держала интеграционную ветку `pilot/wave-1`
+  (INV-12: «master инструментам запрещён»); после её удаления `base_branch`
+  был переставлен на `master`, и защита исчезла вместе с веткой.
+  Доказательству это не помешало — evidence и код приехали в PR корректно, —
+  но оставлять инструменту право двигать `master` нельзя: следующий прогон
+  сделает то же молча, и расхождение с `origin/master` заметит не каждый.
+  Варианты: снова завести интеграционную ветку под прогоны; проверить, есть
+  ли у maestro ключ, отключающий мерж в base; либо принять осознанно и
+  записать в правилах репо, что после прогона `master` сверяется с origin.
+  Решать до следующего прогона, не после.
 - [ ] `tdd_gate red --supersede` — v2 гейта @id:tdd-gate-red-supersede
   (осознанная замена red-эталона вместо ручного вмешательства оператора).
   **Кандидат на снятие**: оценка показала (§4.4 отчёта), что сценарий закрыт
