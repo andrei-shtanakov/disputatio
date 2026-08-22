@@ -236,7 +236,7 @@ def test_failure_message_keeps_head_of_git_stderr_and_bounds_it(
 
 
 def test_head_probe_that_says_something_is_not_read_as_missing_head(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_env: None
 ) -> None:
     """Зонд HEAD с диагностикой — не «HEAD нет», а невыясненное состояние.
 
@@ -265,6 +265,9 @@ def test_head_probe_that_says_something_is_not_read_as_missing_head(
         return real_run(argv, workdir)
 
     monkeypatch.setattr(diffstats, "_run_git", fake_run)
+    # `git_env` снимает GIT_DIR/GIT_WORK_TREE и прочие переменные, иначе
+    # `git init` при экспортированном GIT_DIR ушёл бы мутировать чужой
+    # репозиторий — тот же класс, что репо уже ловил в экспортёре evidence.
     subprocess.run(["git", "init", "--quiet", "-b", "main"], cwd=tmp_path, check=True)
 
     with pytest.raises(RuntimeError) as caught:
