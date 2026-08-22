@@ -108,6 +108,71 @@ def fail(message: str) -> NoReturn:
     raise Refusal(message)
 
 
+#: Ветка workstream'а в Mode 2 Maestro; из неё берётся идентичность evidence.
+WS_BRANCH_PREFIX = "ws/"
+
+
+def in_workstream_tree(project_root: Path) -> bool:
+    """`True`, если это worktree Maestro (`spec/maestro-*tasks.md` в дереве).
+
+    Тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: факт наличия файла,
+    а не его содержимое.
+    """
+    return any((project_root / "spec").glob("maestro-*tasks.md"))
+
+
+def current_branch(project_root: Path) -> str | None:
+    """Имя текущей ветки; `None` при detached HEAD."""
+    result = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def resolve_export_namespace(project_root: Path, state_namespace: str) -> str:
+    """Под каким именем evidence ложится в репо (INV-16), а не в БД.
+
+    Неймспейс spec-runner'а — `sha256(путь worktree + spec_prefix)[:16]`, если
+    `tdd_namespace` не объявлен, а объявить его в `project.yaml` нельзя: ключ
+    один на весь конфиг, а неймспейс обязан быть свой у каждого workstream'а.
+    Хеш изолирует верно, но идентичности не даёт: тот же workstream по другому
+    пути получает другой каталог, и история трекаемой evidence разъезжается.
+    Поэтому в worktree Maestro имя берётся из ветки `ws/<id>` → `ws-<id>`, а
+    хеш остаётся fallback'ом для прогонов вне workstream'а (ручных, смоуковых).
+
+    В maestro-дереве неожиданная ветка — отказ, а не молчаливый fallback
+    (INV-18): прогон не имеет права незаметно уехать в другой неймспейс.
+    Форма СТРОГО `ws/<id>` без внутренних `/`: иначе `ws/a/b` и `ws/a-b`
+    схлопнулись бы в один каталог, поделив evidence двух разных workstream'ов.
+    """
+    if not in_workstream_tree(project_root):
+        return state_namespace
+    branch = current_branch(project_root)
+    if branch is None:
+        fail(
+            "detached HEAD в maestro-дереве: неймспейс неоднозначен, "
+            f"ожидается ветка {WS_BRANCH_PREFIX}<workstream-id>"
+        )
+    prefix = WS_BRANCH_PREFIX
+    if not branch.startswith(prefix) or branch == prefix:
+        fail(
+            f"ветка {branch!r} в maestro-дереве не соответствует "
+            f"{prefix}<workstream-id> — неймспейс неоднозначен"
+        )
+    if "/" in branch[len(prefix) :]:
+        fail(
+            f"ветка {branch!r} содержит лишний '/' после {prefix!r} — "
+            "неймспейс схлопнулся бы с другой веткой при замене '/' на '-'"
+        )
+    return branch.replace("/", "-")
+
+
 def resolve_state_db(project_root: Path, explicit: str | None) -> Path:
     """Найти живую `.executor-*state.db`; неоднозначность — отказ.
 
@@ -389,6 +454,12 @@ def export(project_root: Path, task_id: str, version: str, db: str | None) -> Pa
         model = collect(conn, task_id, version)
     finally:
         conn.close()
+
+    # Идентичность артефакта в репо и идентичность строк в БД — разные вещи:
+    # первая читаема и стабильна (INV-16), вторая нужна, чтобы найти те самые
+    # строки в живой БД или post-mortem архиве. Обе в артефакте.
+    model["state_namespace"] = model["namespace"]
+    model["namespace"] = resolve_export_namespace(project_root, model["namespace"])
 
     gaps = missing_parts(model)
     if gaps:

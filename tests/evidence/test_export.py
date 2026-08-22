@@ -9,7 +9,9 @@
 """
 
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -294,3 +296,101 @@ def test_judged_tree_is_recorded(project: Path, full_db: Path) -> None:
     data = json.loads(artifact(project).read_text())
     assert data["judged_commit"] == CANDIDATE_SHA
     assert data["red"]["commit_sha"] != data["judged_commit"]
+
+
+def _git(project: Path, *args: str) -> None:
+    """Git в тестовом дереве, тихо и без пользовательских настроек."""
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            *args,
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+        },
+    )
+
+
+def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
+    """Дерево, неотличимое от worktree Maestro: spec/maestro-*tasks.md + ветка.
+
+    `maestro-*tasks.md` — тот же сигнал maestro-режима, что у INV-16 в
+    `scripts/tdd_gate.py`: наличие файла, а не его содержимое.
+    """
+    (project / "spec" / "maestro-tasks.md").write_text("- TASK-001 | ✅ DONE\n")
+    _git(project, "init", "-q")
+    _git(project, "commit", "-q", "--allow-empty", "-m", "seed")
+    _git(project, "checkout", "-q", "-b", branch)
+    return project
+
+
+def test_namespace_comes_from_the_workstream_branch(
+    project: Path, full_db: Path
+) -> None:
+    """`ws/<id>` даёт `ws-<id>` и в каталоге, и в поле — INV-16, не хеш пути."""
+    workstream_tree(project, "ws/w-runtime")
+
+    assert run(project) == 0
+
+    data = json.loads(artifact(project, ns="ws-w-runtime").read_text())
+    assert data["namespace"] == "ws-w-runtime"
+    # Сырой неймспейс БД сохранён как provenance: по нему находятся строки,
+    # из которых собран артефакт (в фикстуре он намеренно ДРУГОЙ).
+    assert data["state_namespace"] == NS
+
+
+def test_outside_a_workstream_the_db_namespace_is_used(
+    project: Path, full_db: Path
+) -> None:
+    """Вне workstream'а (ручной прогон, смоук) — fallback на неймспейс БД."""
+    assert run(project) == 0
+
+    data = json.loads(artifact(project).read_text())
+    assert data["namespace"] == NS
+    assert data["state_namespace"] == NS
+
+
+@pytest.mark.parametrize(
+    ("branch", "fragment"),
+    [
+        ("feature/x", "ws/"),
+        ("ws/a/b", "'/'"),
+    ],
+)
+def test_workstream_tree_with_a_wrong_branch_refuses(
+    project: Path, full_db: Path, branch: str, fragment: str, capsys
+) -> None:
+    """В maestro-дереве неймспейс не угадывается: молчаливого fallback нет.
+
+    INV-18: прогон Maestro не имеет права свалиться в другой неймспейс
+    из-за неожиданной ветки. `ws/a/b` отдельно — иначе он схлопнулся бы
+    с `ws/a-b` (замена '/' на '-' не различает исходный разделитель).
+    """
+    workstream_tree(project, branch)
+
+    assert run(project) == 1
+
+    assert not (project / "spec" / "evidence").exists()
+    assert fragment in capsys.readouterr().err
+
+
+def test_detached_head_in_a_workstream_tree_refuses(
+    project: Path, full_db: Path, capsys
+) -> None:
+    """Detached HEAD — неймспейс неоднозначен, а не «сойдёт и хеш»."""
+    workstream_tree(project)
+    _git(project, "checkout", "-q", "--detach")
+
+    assert run(project) == 1
+
+    assert not (project / "spec" / "evidence").exists()
+    assert "HEAD" in capsys.readouterr().err

@@ -100,7 +100,11 @@ Multiple reviewers / verdict aggregation, the arbiter agent, embedding-based osc
 его промпт собирает `prompt.build_red_prompt` в spec-runner. Трекаемую evidence
 пишет `scripts/tdd_evidence_export.py` + `spec/plugins/tdd-evidence/` на
 hook-точке `post_review` (spec-runner ≥ 2.35.0) в
-`spec/evidence/<ns>/<TASK>.json`.
+`spec/evidence/ws-<id>/<TASK>.json`: имя каталога и поле `namespace` выводятся
+из ветки `ws/<id>` (INV-16), хеш-неймспейс БД сохранён рядом как
+`state_namespace`. На той же точке, но **раньше** экспортёра (хуки идут по
+алфавиту имён плагинов) — блокирующий `spec/plugins/pyrefly/`: типовая ошибка
+останавливает задачу до фиксации evidence.
 
 `scripts/tdd_gate.py` (`red`/`verify`/`audit` + операторские remedy
 `abandon`/`repair`, PR #15) — независимый replay red-SHA в worktree; evidence в
