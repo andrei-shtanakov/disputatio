@@ -95,11 +95,23 @@ def _is_repo_without_head(workdir: Path) -> bool:
     bare-репозитории `--is-inside-work-tree` даёт rc 0 и печатает `false`,
     так что классификация по одному коду пропустила бы bare в нули
     ([DESIGN-001], [REQ-007]).
+
+    Второй зонд судится по паре (код, вывод): нерождённый HEAD — это rc 1
+    при пустом выводе, и недоступный ref git показывает так же. Любая
+    диагностика от зонда означает невыясненное состояние, а не отсутствие
+    HEAD, и уходит наружу отказом.
     """
     worktree = _run_git(_WORKTREE_PROBE_ARGV, workdir)
     if worktree.returncode != 0 or worktree.stdout.strip() != "true":
         return False
-    return _run_git(_HEAD_PROBE_ARGV, workdir).returncode != 0
+    head = _run_git(_HEAD_PROBE_ARGV, workdir)
+    # Ненулевого кода мало: `--quiet` молчит именно про нерождённый HEAD, а
+    # заговоривший зонд сообщает о чём-то ещё, и читать это как «HEAD нет»
+    # значило бы повторить исходный дефект уровнем ниже — «инструмент не смог
+    # ответить» снова стало бы фактом о дереве (ревью PR #37).
+    if head.returncode == 0:
+        return False
+    return not (head.stderr or head.stdout).strip()
 
 
 def _diagnostic(result: subprocess.CompletedProcess[str]) -> str:

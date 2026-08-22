@@ -225,7 +225,54 @@ def test_failure_message_keeps_head_of_git_stderr_and_bounds_it(
         f"диагностика не обрезана до {diffstats._STDERR_HEAD_LINES} строк: "
         f"{len(message.splitlines())} строк в сообщении ([DESIGN-005])"
     )
-    assert control.stderr.splitlines()[0] in message, (
-        "в сообщение попала не голова stderr: первой строки git "
-        f"{control.stderr.splitlines()[0]!r} в нём нет ([DESIGN-005])"
+    # `(stderr or stdout)`, как и в самом `_diagnostic`: git волен писать
+    # диагностику в stdout, и тест не должен предполагать поток за него
+    # (Copilot, PR #37).
+    control_head = (control.stderr or control.stdout).strip().splitlines()[0]
+    assert control_head in message, (
+        "в сообщение попала не голова диагностики: первой строки git "
+        f"{control_head!r} в нём нет ([DESIGN-005])"
+    )
+
+
+def test_head_probe_that_says_something_is_not_read_as_missing_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Зонд HEAD с диагностикой — не «HEAD нет», а невыясненное состояние.
+
+    Тот же принцип, что и у самой задачи, но уровнем ниже: «git не смог
+    ответить» нельзя читать как факт о дереве. Нули законны только там, где
+    зонд промолчал — так git и сообщает о нерождённом HEAD (rc 1, пустой
+    вывод; проверено и на недоступном ref, где вывод тоже пуст).
+
+    Единственный тест файла с подменой git: сконструировать такое состояние
+    настоящим репозиторием не вышло — сломанный `HEAD` роняет первый зонд,
+    удалённый объект коммита даёт rc 0, недоступный ref — rc 1 без вывода.
+    Защита fail-closed от состояния, которого мы не умеем воспроизвести,
+    но которое git вправе показать (Copilot, PR #37).
+    """
+    diffstats = _import_diffstats()
+    real_run = diffstats._run_git
+
+    def fake_run(argv: tuple[str, ...], workdir: Path):
+        if argv == diffstats._HEAD_PROBE_ARGV:
+            return subprocess.CompletedProcess(
+                args=list(argv),
+                returncode=128,
+                stdout="",
+                stderr="fatal: не удалось прочитать refs\n",
+            )
+        return real_run(argv, workdir)
+
+    monkeypatch.setattr(diffstats, "_run_git", fake_run)
+    subprocess.run(["git", "init", "--quiet", "-b", "main"], cwd=tmp_path, check=True)
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    # Проверяется именно отказ, а не текст: сообщение докладывает про
+    # основную команду, и требовать в нём диагностику зонда значило бы
+    # закрепить деталь, которой контракт не обещает.
+    assert "упал с кодом" in str(caught.value), (
+        f"отказ не назвал код возврата: {str(caught.value)!r}"
     )
