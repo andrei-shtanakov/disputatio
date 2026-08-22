@@ -146,19 +146,42 @@ GIT_STRIPPED_VARS = (*GIT_LOCATION_VARS, GIT_CONFIG_INJECTION_VAR)
 
 
 def current_branch(project_root: Path) -> str | None:
-    """Имя текущей ветки `project_root`; `None` при detached HEAD."""
+    """Имя текущей ветки `project_root`; `None` ТОЛЬКО при detached HEAD.
+
+    «git не смог ответить» — не то же самое, что «HEAD отцеплён», и читать
+    любой ненулевой код как второе значит превращать отказ инструмента в
+    ложное утверждение о состоянии дерева: не-репозиторий, битый `.git` и
+    отсутствующий бинарь докладывались бы как detached HEAD. Тот же принцип,
+    по которому сосед выбрал `ls-tree` вместо `cat-file -e` (spec-runner
+    `_refuse_pre_existing_file`), и та же fail-closed линия, что у остальных
+    проверок экспортёра.
+
+    `symbolic-ref -q` различает случаи сам, и это измерено: detached — код 1
+    при пустом stderr; всё прочее — код 128 с текстом (`fatal: not a git
+    repository`). Поэтому detached опознаётся по паре (код, пустой stderr),
+    а не по одному коду.
+    """
     env = {k: v for k, v in os.environ.items() if k not in GIT_STRIPPED_VARS}
-    result = subprocess.run(
-        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    if result.returncode != 0:
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except OSError as exc:
+        fail(f"git не запустился в {project_root}: {exc}")
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+    detail = (result.stderr or result.stdout).strip()
+    if result.returncode == 1 and not detail:
         return None
-    return result.stdout.strip() or None
+    fail(
+        f"git не смог определить ветку {project_root} "
+        f"(exit {result.returncode}): {detail[:200] or 'вывода нет'}"
+    )
 
 
 def resolve_export_namespace(project_root: Path, state_namespace: str) -> str:

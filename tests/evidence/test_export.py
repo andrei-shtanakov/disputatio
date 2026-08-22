@@ -442,3 +442,24 @@ def test_config_from_the_environment_does_not_reach_git(
     assert run(project) == 0
 
     assert artifact(project, ns="ws-w-runtime").exists()
+
+
+def test_git_failure_is_not_reported_as_detached_head(
+    project: Path, full_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """«git не смог ответить» ≠ «HEAD отцеплён» — причина должна быть настоящей.
+
+    Тот же класс, что у соседа в `_refuse_pre_existing_file`: ненулевой код
+    возврата, прочитанный как факт о дереве, превращает отказ инструмента в
+    ложное утверждение о состоянии. `symbolic-ref -q` различает их сам:
+    detached — код 1 при пустом stderr, всё остальное — код 128 с текстом.
+    """
+    (project / "spec" / "maestro-tasks.md").write_text(
+        "- TASK-001 | ✅ DONE\n", encoding="utf-8"
+    )
+
+    assert run(project) == 1
+
+    err = capsys.readouterr().err
+    assert "not a git repository" in err
+    assert "detached" not in err.lower()
