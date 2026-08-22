@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from disputatio.contracts.verification import DiffStats
 
 # Герметичное окружение git: глобальный/системный конфиг разработчика
@@ -131,3 +133,94 @@ def test_repo_without_head_reports_zeroes_without_raising(tmp_path: Path) -> Non
     stats = diffstats.collect_diff_stats(tmp_path)
 
     assert (stats.files, stats.insertions, stats.deletions) == (0, 0, 0)
+
+
+def _observe_numstat(workdir: Path) -> subprocess.CompletedProcess[str]:
+    """Контрольный запуск `git diff --numstat HEAD` ровно как `collect_diff_stats`.
+
+    Окружение НЕ переопределяется: иначе измеренный код возврата относился бы
+    к другому репозиторию, чем проверяемый вызов ([REQ-008]).
+    """
+    return subprocess.run(
+        ["git", "diff", "--numstat", "HEAD"],
+        shell=False,
+        cwd=workdir,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def test_broken_git_dir_raises_instead_of_reporting_zeroes(tmp_path: Path) -> None:
+    """Повреждённый `.git` (`gitdir:` в никуда) → отказ, а не `DiffStats(0, 0, 0)`.
+
+    Состояние названо в [REQ-002] наравне с bare и «вне репозитория», но в
+    залоченном red-тесте не покрыто. От тех двух оно отличается тем, что
+    исход не зависит от окружения: файл `.git` обрывает поиск репозитория
+    вверх по дереву, поэтому кейс не выродится, даже если `tmp_path`
+    окажется внутри чужого репозитория.
+    """
+    diffstats = _import_diffstats()
+    (tmp_path / ".git").write_text(
+        "gitdir: /nonexistent/broken.git\n", encoding="utf-8"
+    )
+    control = _observe_numstat(tmp_path)
+    assert control.returncode != 0, (
+        "контроль: `git diff --numstat HEAD` при битом `.git` обязан падать, "
+        f"а дал rc=0 и stdout={control.stdout!r}"
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    message = str(caught.value)
+    assert "not a git repository" in message.lower(), (
+        f"в отказе нет диагностики git, сообщение: {message!r} ([REQ-003])"
+    )
+    assert str(control.returncode) in message, (
+        f"в отказе нет измеренного кода возврата {control.returncode}, "
+        f"сообщение: {message!r} ([REQ-003])"
+    )
+
+
+def test_failure_message_keeps_head_of_git_stderr_and_bounds_it(
+    tmp_path: Path,
+) -> None:
+    """Вне репозитория в отказ идёт голова stderr, а не вся usage-простыня.
+
+    `git diff` вне репозитория печатает 130 строк, из которых 129 —
+    справка `git diff --no-index`; в сообщение идут первые
+    `_STDERR_HEAD_LINES` строк, и первая из них — различающая
+    ([DESIGN-005]). Верхняя граница проверяется безусловно, а совпадение
+    первой строки — по факту измерения, поэтому тест не зависит от
+    болтливости конкретной версии git.
+    """
+    diffstats = _import_diffstats()
+    probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode != 0 or probe.stdout.strip() != "true", (
+        f"{tmp_path} оказался внутри git-репозитория (зонд: rc="
+        f"{probe.returncode}, stdout={probe.stdout.strip()!r}) — кейс выродился"
+    )
+    control = _observe_numstat(tmp_path)
+    assert control.returncode != 0
+
+    with pytest.raises(RuntimeError) as caught:
+        diffstats.collect_diff_stats(tmp_path)
+
+    message = str(caught.value)
+    assert len(message.splitlines()) <= diffstats._STDERR_HEAD_LINES, (
+        f"диагностика не обрезана до {diffstats._STDERR_HEAD_LINES} строк: "
+        f"{len(message.splitlines())} строк в сообщении ([DESIGN-005])"
+    )
+    assert control.stderr.splitlines()[0] in message, (
+        "в сообщение попала не голова stderr: первой строки git "
+        f"{control.stderr.splitlines()[0]!r} в нём нет ([DESIGN-005])"
+    )
