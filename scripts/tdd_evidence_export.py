@@ -133,10 +133,21 @@ GIT_LOCATION_VARS = (
     "GIT_OBJECT_DIRECTORY",
 )
 
+#: `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` — конфиг прямо из окружения, по
+#: приоритету выше локального `.git/config` и не отключаемый ни
+#: `GIT_CONFIG_GLOBAL`, ни `GIT_CONFIG_NOSYSTEM`. Снимается счётчик: без него
+#: git не читает пары (та же конвенция, что в `tests/conftest.py`). Измерено:
+#: со сломанным счётчиком `symbolic-ref` падает целиком, и экспортёр прочитал
+#: бы это как detached HEAD — отказ на ровном месте.
+GIT_CONFIG_INJECTION_VAR = "GIT_CONFIG_COUNT"
+
+#: Всё, что вызов git обязан не унаследовать.
+GIT_STRIPPED_VARS = (*GIT_LOCATION_VARS, GIT_CONFIG_INJECTION_VAR)
+
 
 def current_branch(project_root: Path) -> str | None:
     """Имя текущей ветки `project_root`; `None` при detached HEAD."""
-    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARS}
+    env = {k: v for k, v in os.environ.items() if k not in GIT_STRIPPED_VARS}
     result = subprocess.run(
         ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         cwd=project_root,

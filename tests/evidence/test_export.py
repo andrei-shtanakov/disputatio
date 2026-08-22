@@ -306,16 +306,21 @@ def _git(workdir: Path, *args: str) -> None:
     ответственность одной фикстуры, а не каждого вызова. Дубль с
     захардкоженным `/dev/null` расходился бы с ней молча.
     """
-    subprocess.run(
-        ["git", *args],
-        cwd=workdir,
-        check=True,
-        capture_output=True,
-        # Без `text=True` вывод упавшего git остаётся bytes, и причина сбоя
-        # фикстуры в отчёте pytest читается как `b'...'` — то же соображение,
-        # что у `_git` корневого conftest (Copilot, PR #32).
-        text=True,
-    )
+    try:
+        subprocess.run(
+            ["git", *args],
+            cwd=workdir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # `CalledProcessError.__str__` печатает только код возврата, поэтому
+        # причина падения фикстуры иначе не видна в отчёте pytest — та же
+        # пересборка, что у `_git` корневого conftest (Copilot, PR #32).
+        raise RuntimeError(
+            f"git {' '.join(args)} упал ({exc.returncode}): {exc.stderr or exc.stdout}"
+        ) from exc
 
 
 def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
@@ -418,3 +423,22 @@ def test_inherited_git_dir_does_not_redirect_the_namespace(
 
     assert artifact(project, ns="ws-w-runtime").exists()
     assert not artifact(project, ns="ws-w-stranger").exists()
+
+
+def test_config_from_the_environment_does_not_reach_git(
+    project: Path, full_db: Path, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GIT_CONFIG_COUNT` — конфиг поверх локального; вызов обязан его снять.
+
+    Приоритет этих пар выше `.git/config`, и ни `GIT_CONFIG_GLOBAL`, ни
+    `GIT_CONFIG_NOSYSTEM` их не отключают — то же соображение, что в
+    `tests/conftest.py`. Проверяется поведением: со сломанным счётчиком
+    `git symbolic-ref` падает целиком, и без фильтра экспортёр прочитал бы
+    это как detached HEAD — отказ на ровном месте.
+    """
+    workstream_tree(project, "ws/w-runtime")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "bogus")
+
+    assert run(project) == 0
+
+    assert artifact(project, ns="ws-w-runtime").exists()
