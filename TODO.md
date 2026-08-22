@@ -169,15 +169,32 @@
 - [ ] Прогон-доказательство миграции @id:tdd-gate-migration-proof
   — одна leaf-задача с полной цепочкой RED → GREEN → review → трекаемая
   evidence. Cutover выполнен (`todo://disputatio/tdd-standard-mode-cutover`),
-  релиз опубликован — ждать больше нечего. Открытая развилка перед запуском:
-  RED-пас обязан писать тест в **новый** файл, которого не было на baseline
-  (`_refuse_pre_existing_file`), а встроенный промпт предлагает
-  `tests/test_<task>_red.py` — то есть корень `tests/`, вне scope-глобов наших
-  workstream'ов. `is_discoverable` каталог не проверяет (только `test_*.py` /
-  `*_test.py`), так что файл можно увести в `tests/<pkg>/`, но сказать это
-  RED-пасу можно только через описание задачи в `tasks.md` — не через
-  конституцию (см. факт 1 выше). Решить до запуска: расширять scope или
-  формулировать задачу.
+  релиз опубликован — ждать больше нечего. **Уровень прогона: полный
+  `maestro orchestrate`** (решение 2026-08-22) — доказывается не работа
+  leaf-задачи, а весь production-путь после cutover'а: maestro → worktree →
+  ветка `ws/<id>` → spec-runner → RED → GREEN → review → pyrefly → трекаемая
+  evidence → PR. Прямой запуск spec-runner обошёл бы ровно те интеграционные
+  границы, которые и проверяются. Доказательство засчитывается только после
+  проверки содержимого PR, включая `spec/evidence/ws-<id>/<TASK>.json`.
+  Подготовка (этот PR): `base_branch` → `master` (`pilot/wave-1` удалена после
+  PR #11, а worktree создаётся именно от base — `validate --strict` этого не
+  ловит, файловый ярус ветку не проверяет); состав workstream'ов заменён одним
+  `w-proof` (у `orchestrate` нет фильтра по workstream'у — он берёт весь
+  список); задача взята из настоящего долга репо — TODO в
+  `src/disputatio/verifier/diffstats.py`, где любой ненулевой код возврата git
+  читается как «изменений нет».
+  Развилка про red-файл закрыта **обеими** страховками: описание задачи ведёт
+  RED-пас в `tests/verifier/`, а scope-глоб `tests/test_*.py` страхует от
+  встроенного промпта, который предлагает корень `tests/`. Глоб именно
+  `test_*.py`, а не `test_*_red.py`: второй не матчит ни одного файла и роняет
+  `validate --strict` через `scope-no-match`, а заглушку создать нельзя — red
+  в предсуществующем файле отвергается. Помечен как временное исключение
+  w-proof; после прогона — issue соседу на системный фикс (RED-путь
+  настраиваемый или scope-aware), затем глоб снять.
+  Третья находка подготовки: `spec/evidence/**` обязан быть в scope —
+  orchestrator-managed для scope-гейта только `spec/maestro-*`,
+  `spec/.maestro-*` и `spec/.executor-*` (`maestro/changed_paths.py`), так что
+  артефакт экспортёра иначе прочитался бы как scope escape.
   Только после прогона удаляются `scripts/tdd_gate.py` (1997 строк),
   `tests/harness/` (2725 строк, 130 тестов), `spec/plugins/tdd-gate/`, и
   закрывается `todo://disputatio/tdd-gate-red-supersede` штатными
