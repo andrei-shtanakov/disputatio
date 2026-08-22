@@ -121,14 +121,29 @@ def in_workstream_tree(project_root: Path) -> bool:
     return any((project_root / "spec").glob("maestro-*tasks.md"))
 
 
+#: Переменные расположения репозитория перебивают `cwd`: с экспортированным
+#: `GIT_DIR` (обёртка git-хука, шелл разработчика, CI) команда отработает
+#: успешно, но прочитает ЧУЖОЙ репозиторий — и evidence уедет в неймспейс
+#: соседней ветки молча и с виду корректно. Тот же класс описан в
+#: `tests/conftest.py`. Подпись и конфиг не трогаем: здесь только чтение.
+GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+)
+
+
 def current_branch(project_root: Path) -> str | None:
-    """Имя текущей ветки; `None` при detached HEAD."""
+    """Имя текущей ветки `project_root`; `None` при detached HEAD."""
+    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCATION_VARS}
     result = subprocess.run(
         ["git", "symbolic-ref", "--short", "-q", "HEAD"],
         cwd=project_root,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         return None

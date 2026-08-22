@@ -9,7 +9,6 @@
 """
 
 import json
-import os
 import sqlite3
 import subprocess
 import sys
@@ -298,43 +297,33 @@ def test_judged_tree_is_recorded(project: Path, full_db: Path) -> None:
     assert data["red"]["commit_sha"] != data["judged_commit"]
 
 
-def _git(project: Path, *args: str) -> None:
-    """Git в тестовом дереве, тихо и без пользовательских настроек."""
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@example.invalid",
-            *args,
-        ],
-        cwd=project,
-        check=True,
-        capture_output=True,
-        env={
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_SYSTEM": "/dev/null",
-        },
-    )
+def _git(workdir: Path, *args: str) -> None:
+    """Git в тестовом дереве; окружение уже приведено фикстурой `git_env`.
+
+    Env здесь намеренно НЕ подменяется — ровно как в `_git` корневого
+    `tests/conftest.py`: герметичность (снятые `GIT_DIR`/`GIT_WORK_TREE`/
+    подпись/`GIT_CONFIG_COUNT`, `os.devnull` + `GIT_CONFIG_NOSYSTEM`) —
+    ответственность одной фикстуры, а не каждого вызова. Дубль с
+    захардкоженным `/dev/null` расходился бы с ней молча.
+    """
+    subprocess.run(["git", *args], cwd=workdir, check=True, capture_output=True)
 
 
 def workstream_tree(project: Path, branch: str = "ws/w-runtime") -> Path:
     """Дерево, неотличимое от worktree Maestro: spec/maestro-*tasks.md + ветка.
 
-    `maestro-*tasks.md` — тот же сигнал maestro-режима, что у INV-16 в
-    `scripts/tdd_gate.py`: наличие файла, а не его содержимое.
+    Репозиторий приносит фикстура `git_repo` (тот же `tmp_path`), поэтому
+    здесь остаётся только сигнал maestro-режима и ветка. `maestro-*tasks.md` —
+    тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: наличие файла, а не
+    его содержимое.
     """
     (project / "spec" / "maestro-tasks.md").write_text("- TASK-001 | ✅ DONE\n")
-    _git(project, "init", "-q")
-    _git(project, "commit", "-q", "--allow-empty", "-m", "seed")
     _git(project, "checkout", "-q", "-b", branch)
     return project
 
 
 def test_namespace_comes_from_the_workstream_branch(
-    project: Path, full_db: Path
+    project: Path, full_db: Path, git_repo: Path
 ) -> None:
     """`ws/<id>` даёт `ws-<id>` и в каталоге, и в поле — INV-16, не хеш пути."""
     workstream_tree(project, "ws/w-runtime")
@@ -367,7 +356,7 @@ def test_outside_a_workstream_the_db_namespace_is_used(
     ],
 )
 def test_workstream_tree_with_a_wrong_branch_refuses(
-    project: Path, full_db: Path, branch: str, fragment: str, capsys
+    project: Path, full_db: Path, git_repo: Path, branch: str, fragment: str, capsys
 ) -> None:
     """В maestro-дереве неймспейс не угадывается: молчаливого fallback нет.
 
@@ -384,7 +373,7 @@ def test_workstream_tree_with_a_wrong_branch_refuses(
 
 
 def test_detached_head_in_a_workstream_tree_refuses(
-    project: Path, full_db: Path, capsys
+    project: Path, full_db: Path, git_repo: Path, capsys
 ) -> None:
     """Detached HEAD — неймспейс неоднозначен, а не «сойдёт и хеш»."""
     workstream_tree(project)
@@ -394,3 +383,25 @@ def test_detached_head_in_a_workstream_tree_refuses(
 
     assert not (project / "spec" / "evidence").exists()
     assert "HEAD" in capsys.readouterr().err
+
+
+def test_inherited_git_dir_does_not_redirect_the_namespace(
+    project: Path, full_db: Path, git_repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """Унаследованный `GIT_DIR` перебивает `cwd` — экспортёр обязан его снять.
+
+    Тот же класс, что описан в `tests/conftest.py`: под обёрткой git-хука или
+    в шелле с экспортированным `GIT_DIR` команда отработает успешно, но
+    прочитает ЧУЖОЙ репозиторий. Здесь это дало бы evidence, уехавшую в
+    неймспейс соседней ветки — молча и с виду корректно.
+    """
+    workstream_tree(project, "ws/w-runtime")
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    _git(stranger, "init", "-q", "-b", "ws/w-stranger")
+    monkeypatch.setenv("GIT_DIR", str(stranger / ".git"))
+
+    assert run(project) == 0
+
+    assert artifact(project, ns="ws-w-runtime").exists()
+    assert not artifact(project, ns="ws-w-stranger").exists()
