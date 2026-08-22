@@ -176,8 +176,13 @@ def test_broken_git_dir_raises_instead_of_reporting_zeroes(tmp_path: Path) -> No
         diffstats.collect_diff_stats(tmp_path)
 
     message = str(caught.value)
-    assert "not a git repository" in message.lower(), (
-        f"в отказе нет диагностики git, сообщение: {message!r} ([REQ-003])"
+    # Сравниваем с ИЗМЕРЕННЫМ stderr контроля, а не с английской строкой:
+    # git локализует сообщения через LANG/LC_ALL, и жёсткий текст сделал бы
+    # тест флейким на не-английском окружении (Copilot, PR #37).
+    control_head = (control.stderr or control.stdout).strip().splitlines()[0]
+    assert control_head in message, (
+        f"в отказе нет диагностики git: ожидалась первая строка измеренного "
+        f"вывода {control_head!r}, сообщение: {message!r} ([REQ-003])"
     )
     assert str(control.returncode) in message, (
         f"в отказе нет измеренного кода возврата {control.returncode}, "
