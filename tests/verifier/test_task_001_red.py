@@ -109,7 +109,9 @@ def _outcome(workdir: Path) -> tuple[DiffStats | None, Exception | None]:
         return None, exc
 
 
-def test_git_failure_is_distinguished_from_empty_diff(tmp_path: Path) -> None:
+def test_git_failure_is_distinguished_from_empty_diff(
+    tmp_path: Path, git_env: None
+) -> None:
     """Четыре состояния репозитория дают три разных исхода, а не один.
 
     Кейсы (г) и (а) сегодня уже зелёные и стоят первыми как негативный
@@ -177,9 +179,12 @@ def test_git_failure_is_distinguished_from_empty_diff(tmp_path: Path) -> None:
         "вместо отказа — сбой git неотличим от «изменений нет» ([REQ-002])"
     )
     outside_message = str(exc)
-    assert "not a git repository" in outside_message.lower(), (
-        "в отказе нет диагностики git (ожидалась строка про «not a git "
-        f"repository»), сообщение: {outside_message!r} ([REQ-003])"
+    outside_head = (
+        (outside_control.stderr or outside_control.stdout).strip().splitlines()[0]
+    )
+    assert outside_head in outside_message, (
+        "в отказе нет диагностики git: ожидалась первая строка измеренного "
+        f"вывода {outside_head!r}, сообщение: {outside_message!r} ([REQ-003])"
     )
     assert str(outside_control.returncode) in outside_message, (
         f"в отказе нет измеренного кода возврата {outside_control.returncode}, "
@@ -203,9 +208,10 @@ def test_git_failure_is_distinguished_from_empty_diff(tmp_path: Path) -> None:
         "— код 128 принят за «изменений нет» ([REQ-002], [REQ-007])"
     )
     bare_message = str(exc)
-    assert "must be run in a work tree" in bare_message.lower(), (
-        "в отказе нет диагностики git (ожидалась строка про «must be run in "
-        f"a work tree»), сообщение: {bare_message!r} ([REQ-003])"
+    bare_head = (bare_control.stderr or bare_control.stdout).strip().splitlines()[0]
+    assert bare_head in bare_message, (
+        "в отказе нет диагностики git: ожидалась первая строка измеренного "
+        f"вывода {bare_head!r}, сообщение: {bare_message!r} ([REQ-003])"
     )
     assert str(bare_control.returncode) in bare_message, (
         f"в отказе нет измеренного кода возврата {bare_control.returncode}, "
