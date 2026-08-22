@@ -1,0 +1,83 @@
+{
+  "claims": [
+    {
+      "blob_sha": "dca30e8f9434f92d2328977e4fc1b9ff1f05a07d",
+      "checkpoint_sha": "c70bc191d3d75ef305a8c7725d41d35e0a683576",
+      "created_at": "2026-08-22T21:54:03.462271",
+      "path": "tests/verifier/test_task_001_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "3202560c5a35a469666290a0d2fa02641ea278ed",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review fixed of review checkpoint 3432330551e54f5bd1e88452928755ca18a7630e at merge candidate 3202560c5a35a469666290a0d2fa02641ea278ed",
+      "status": "satisfied",
+      "timestamp": "2026-08-22T22:09:05.157609"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "3202560c5a35a469666290a0d2fa02641ea278ed",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-08-22T22:09:05.204187"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "3202560c5a35a469666290a0d2fa02641ea278ed",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/verifier/test_task_001_red.py::test_git_failure_is_distinguished_from_empty_diff at c70bc191d3d7 in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-08-22T22:09:05.174039"
+    }
+  },
+  "judged_commit": "3202560c5a35a469666290a0d2fa02641ea278ed",
+  "namespace": "ws-w-proof",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-08-22T21:48:41.595042"
+    },
+    {
+      "detail": "tests/verifier/test_task_001_red.py::test_git_failure_is_distinguished_from_empty_diff",
+      "phase": "red_verifying",
+      "timestamp": "2026-08-22T21:53:58.397571"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-08-22T21:54:03.507226"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-08-22T22:09:05.138514"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-08-22T22:09:05.205146"
+    }
+  ],
+  "red": {
+    "baseline_sha": "04f9dc00a02bd73816c0f1fc67635f8f08635241",
+    "commit_sha": "c70bc191d3d75ef305a8c7725d41d35e0a683576",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/verifier/test_task_001_red.py::test_git_failure_is_distinguished_from_empty_diff",
+    "status": "active",
+    "timestamp": "2026-08-22T21:54:03.460673"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "d4ff62d4adb76ae1",
+  "task_id": "TASK-001",
+  "waivers": []
+}
