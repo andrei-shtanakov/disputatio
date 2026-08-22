@@ -24,9 +24,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 работ — миграция локального TDD-гейта на штатный режим: экспортёр evidence
 написан (PR #29), релиз с hook-точкой `post_review` опубликован соседом
 (spec-runner#307 → **v2.35.0**, 2026-08-21), cutover выполнен 2026-08-22
-(`execution_mode: tdd` в `project.yaml`, переписанная конституция). Осталось
-прогон-доказательство — до него `scripts/tdd_gate.py` и `tests/harness/` не
-удаляются, они действующая страховка. Детали и порядок — в `./TODO.md`.
+(`execution_mode: tdd` в `project.yaml`, переписанная конституция).
+**Миграция завершена 2026-08-22**: прогон-доказательство пройден (PR #37,
+артефакт `spec/evidence/ws-w-proof/TASK-001.json` в master, транскрипт —
+`docs/plans/2026-08-22-tdd-migration-proof-transcript.md`), локальный гейт
+удалён. Детали и порядок — в `./TODO.md`.
 
 ## What Disputatio is
 
@@ -106,12 +108,14 @@ hook-точке `post_review` (spec-runner ≥ 2.35.0) в
 алфавиту имён плагинов) — блокирующий `spec/plugins/pyrefly/`: типовая ошибка
 останавливает задачу до фиксации evidence.
 
-`scripts/tdd_gate.py` (`red`/`verify`/`audit` + операторские remedy
-`abandon`/`repair`, PR #15) — независимый replay red-SHA в worktree; evidence в
-`spec/.tdd-evidence/{claims,verdicts,waivers}/` с неймспейсом по workstream.
-Из `test_command` он выведен; в дереве остаётся страховкой до
-прогона-доказательства (его `post_done`-плагин в штатном режиме инертен:
-`audit` пропускает DONE-задачи без claim'а). maestro-конфиг — `project.yaml`
+Локальный гейт `scripts/tdd_gate.py` (1997 строк) вместе с
+`tests/harness/` (130 тестов) и `spec/plugins/tdd-gate/` **удалён** после
+прогона-доказательства: держать вторую реализацию той же дисциплины значит
+иметь два источника истины. Его артефакты волны 1 остаются в репо как архив
+сертификации — `spec/.tdd-evidence/{claims,verdicts,waivers}/`, 208 файлов,
+писать туда некому, править нельзя (путь под `harness_files`). История гейта —
+PR #15, `docs/plans/2026-08-08-tdd-gate-plan.md`; откат сноса — `git revert`
+мерж-коммита PR #40. maestro-конфиг — `project.yaml`
 (SSOT, dual-mode contract: `spec-runner.config.yaml` в worktree генерируется и
 не трекается). Транскрипты сертификации — `docs/plans/` (протокол D0 редакции
 4, baseline 2026-08-08, integration 2026-08-10 и 2026-08-17). Оценка миграции —
