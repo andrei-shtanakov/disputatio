@@ -22,10 +22,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 отгружен срезами 0–4a), D7-B → spec-runner#142 (read-only `preflight` отгружен,
 `bootstrap` отклонён владельцем как выход за роль executor'а). Текущая линия
 работ — миграция локального TDD-гейта на штатный режим: экспортёр evidence
-написан (PR #29), прогон-доказательство ждёт публикации релиза spec-runner с
-hook-точкой `post_review` (spec-runner#307, влита в их master). До этого прогона
-`scripts/tdd_gate.py` и `tests/harness/` не удаляются — они действующая
-страховка. Детали и порядок — в `./TODO.md`.
+написан (PR #29), релиз с hook-точкой `post_review` опубликован соседом
+(spec-runner#307 → **v2.35.0**, 2026-08-21), cutover выполнен 2026-08-22
+(`execution_mode: tdd` в `project.yaml`, переписанная конституция). Осталось
+прогон-доказательство — до него `scripts/tdd_gate.py` и `tests/harness/` не
+удаляются, они действующая страховка. Детали и порядок — в `./TODO.md`.
 
 ## What Disputatio is
 
@@ -91,20 +92,25 @@ Multiple reviewers / verdict aggregation, the arbiter agent, embedding-based osc
 
 ## TDD gate (артефакт оси H3, исходник спеки D7-A)
 
+**С 2026-08-22 дисциплину исполняет штатный режим соседа**, а не наш гейт:
+`project.yaml` объявляет `execution_mode: tdd` + `tdd_runner: pytest`,
+`test_command` — ровно `uv run pytest -q` (композитная команда в этом режиме
+отвергается целиком). Конституция (`spec/maestro-constitution.md`) переписана
+под него и адресована пасу реализации и ревьюеру: **RED-пас её не получает** —
+его промпт собирает `prompt.build_red_prompt` в spec-runner. Трекаемую evidence
+пишет `scripts/tdd_evidence_export.py` + `spec/plugins/tdd-evidence/` на
+hook-точке `post_review` (spec-runner ≥ 2.35.0) в
+`spec/evidence/<ns>/<TASK>.json`.
+
 `scripts/tdd_gate.py` (`red`/`verify`/`audit` + операторские remedy
 `abandon`/`repair`, PR #15) — независимый replay red-SHA в worktree; evidence в
 `spec/.tdd-evidence/{claims,verdicts,waivers}/` с неймспейсом по workstream.
-Конституция волны — `spec/maestro-constitution.md`; maestro-конфиг —
-`project.yaml` (SSOT, dual-mode contract: `spec-runner.config.yaml` в worktree
-генерируется и не трекается). Транскрипты сертификации — `docs/plans/`
-(протокол D0 редакции 4, baseline 2026-08-08, integration 2026-08-10 и
-2026-08-17).
-
-Рядом с гейтом лежит его сменщик: `scripts/tdd_evidence_export.py` +
-`spec/plugins/tdd-evidence/` — экспорт evidence из живой `.executor-state.db` в
-трекаемый `spec/evidence/<ns>/<TASK>.json` на hook-точке `post_review`. Он
-инертен, пока не выйдет релиз spec-runner с этой точкой, и **не заменяет**
-`tdd_gate.py` до прогона-доказательства. Оценка миграции —
+Из `test_command` он выведен; в дереве остаётся страховкой до
+прогона-доказательства (его `post_done`-плагин в штатном режиме инертен:
+`audit` пропускает DONE-задачи без claim'а). maestro-конфиг — `project.yaml`
+(SSOT, dual-mode contract: `spec-runner.config.yaml` в worktree генерируется и
+не трекается). Транскрипты сертификации — `docs/plans/` (протокол D0 редакции
+4, baseline 2026-08-08, integration 2026-08-10 и 2026-08-17). Оценка миграции —
 `docs/plans/2026-08-21-tdd-gate-migration-assessment.md`.
 
 ## Spec workflow

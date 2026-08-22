@@ -6,19 +6,29 @@ executor:
   claude_command: claude
   claude_model: ''
   commands:
-    # Порядок значим: pytest последним. spec-runner в scoped-режиме дописывает
-    # пути тест-файлов в КОНЕЦ строки, и при другом порядке они уехали бы в
-    # аргументы pyrefly (spec-runner#139).
+    # lint сужается до замораживаемого файла, если команда НЕ композитная —
+    # поэтому здесь ровно ruff. Обоснование и место для pyrefly:
+    # docs/workstream-setup.md §1.
     lint: uv run ruff check .
-    test: uv run python scripts/tdd_gate.py verify && uv run pyrefly check && uv run pytest -q
+    # Ровно одна команда: `execution_mode: tdd` отвергает композитный
+    # test_command (реплей не угадывает, какой компонент принимает node id).
+    test: uv run pytest -q
+  # Штатный TDD-контракт вместо scripts/tdd_gate.py (D7-A → spec-runner#141).
+  execution_mode: tdd
+  tdd_runner: pytest
   harness_files:
   # Control-plane: дефолтный HARNESS_CANDIDATES их не включает, а агент
   # работает в worktree и технически может изменить саму политику
-  # (spec-runner#137).
+  # (spec-runner#137). Самого TDD-гейта здесь больше нет — он код
+  # установленного пакета, агенту его править нечем.
   - spec-runner.config.yaml
   - pyrefly.toml
+  - scripts/tdd_evidence_export.py
+  - spec/plugins
+  - spec/evidence
+  # Старый гейт — страховка до прогона-доказательства; пока он в дереве, он
+  # тоже harness.
   - scripts/tdd_gate.py
-  - spec/plugins/tdd-gate
   - spec/.tdd-evidence/verdicts
   - spec/.tdd-evidence/waivers
   - spec/.tdd-evidence/abandoned
