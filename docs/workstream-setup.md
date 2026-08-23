@@ -81,6 +81,7 @@ evidence. Ошибка типизации останавливает задач�
   - spec/plugins
   - spec/evidence
   # архив сертификации волны 1: писать некому, править нельзя
+  - spec/.tdd-evidence/claims
   - spec/.tdd-evidence/verdicts
   - spec/.tdd-evidence/waivers
   - spec/.tdd-evidence/abandoned

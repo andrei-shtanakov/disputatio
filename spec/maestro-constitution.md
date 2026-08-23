@@ -30,11 +30,11 @@
    подтверждённый red и его claim'ы), `spec-runner tdd release` (задача
    завершена — снять локи).
 4. **Harness не редактировать.** `scripts/tdd_evidence_export.py`,
-   `spec/plugins/**`, `spec/evidence/**`, `scripts/tdd_gate.py`,
-   `spec/.tdd-evidence/verdicts/`, `spec/.tdd-evidence/waivers/`,
-   `spec/.tdd-evidence/abandoned/`, `spec/.tdd-evidence/repairs/` и этот файл.
-   Последние два — записи операторских remedy: их пишут сами команды, и правка
-   агентом была бы подделкой операторской санкции.
+   `spec/plugins/**`, `spec/evidence/**`, `spec/.tdd-evidence/**` и этот файл.
+   `spec/.tdd-evidence/` целиком (claims, verdicts, waivers, abandoned,
+   repairs) — архив сертификации волны 1: локальный гейт, который туда писал,
+   удалён, дописывать там нечего, а правка задним числом была бы подделкой
+   уже вынесенных вердиктов и операторских санкций.
    `harness_guard: strict` валит попытку ДО гейтов, а сообщение уходит в промпт
    следующей попытки. Сам штатный TDD-гейт правкой недоступен по построению —
    это код установленного пакета, а не файл репо.
