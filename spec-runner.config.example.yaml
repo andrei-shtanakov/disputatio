@@ -13,22 +13,22 @@ executor:
     # Ровно одна команда: `execution_mode: tdd` отвергает композитный
     # test_command (реплей не угадывает, какой компонент принимает node id).
     test: uv run pytest -q
-  # Штатный TDD-контракт вместо scripts/tdd_gate.py (D7-A → spec-runner#141).
+  # Штатный TDD-контракт (D7-A → spec-runner#141); локальный гейт удалён
+  # после прогона-доказательства 2026-08-22.
   execution_mode: tdd
   tdd_runner: pytest
   harness_files:
   # Control-plane: дефолтный HARNESS_CANDIDATES их не включает, а агент
   # работает в worktree и технически может изменить саму политику
-  # (spec-runner#137). Самого TDD-гейта здесь больше нет — он код
-  # установленного пакета, агенту его править нечем.
+  # (spec-runner#137). Самого TDD-гейта здесь нет — он код установленного
+  # пакета, агенту его править нечем.
   - spec-runner.config.yaml
   - pyrefly.toml
   - scripts/tdd_evidence_export.py
   - spec/plugins
   - spec/evidence
-  # Старый гейт — страховка до прогона-доказательства; пока он в дереве, он
-  # тоже harness.
-  - scripts/tdd_gate.py
+  # Архив сертификации волны 1: писать некому, править нельзя.
+  - spec/.tdd-evidence/claims
   - spec/.tdd-evidence/verdicts
   - spec/.tdd-evidence/waivers
   - spec/.tdd-evidence/abandoned

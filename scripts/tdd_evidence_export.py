@@ -115,8 +115,8 @@ WS_BRANCH_PREFIX = "ws/"
 def in_workstream_tree(project_root: Path) -> bool:
     """`True`, если это worktree Maestro (`spec/maestro-*tasks.md` в дереве).
 
-    Тот же сигнал, что у INV-16 в `scripts/tdd_gate.py`: факт наличия файла,
-    а не его содержимое.
+    Сигнал берётся по факту наличия файла, а не по его содержимому — правило
+    INV-16, унаследованное от удалённого локального гейта.
     """
     return any((project_root / "spec").glob("maestro-*tasks.md"))
 

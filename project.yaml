@@ -74,9 +74,9 @@ spec_runner:
   # test_command до запуска чего-либо (`is_composite_shell_command` в коде
   # соседа, spec-runner: `src/spec_runner/tdd.py`) — реплей не может угадать,
   # какой компонент `a && b`
-  # принимает node id, и каждый red стал бы `unverifiable`. Прежняя обёртка
-  # `tdd_gate.py verify && …` была primary edge локального гейта; штатный
-  # RED-гейт отказывает раньше — на переходе `red_verifying → green_implementing`.
+  # принимает node id, и каждый red стал бы `unverifiable`. Штатный RED-гейт
+  # отказывает на переходе `red_verifying → green_implementing`, то есть до
+  # реализации, а не на стадии тестов.
   # Полный suite, а не подмножество: narrowing включается только в parallel-режиме
   # spec-runner (`changed_since`), а maestro зовёт `spec-runner run --all` без него.
   test_command: "uv run pytest -q"
@@ -118,17 +118,19 @@ spec_runner:
         - scripts/tdd_evidence_export.py
         - spec/plugins
         - spec/evidence
-        # Старый гейт остаётся в дереве страховкой до прогона-доказательства
-        # (todo://disputatio/tdd-gate-migration-proof) — пока он здесь, он тоже
-        # harness. Его post_done-плагин инертен в штатном режиме: `audit`
-        # пропускает DONE-задачи без claim'а в `spec/.tdd-evidence/`.
-        - scripts/tdd_gate.py
+        # `scripts/tdd_gate.py` из списка убран вместе с самим гейтом
+        # (прогон-доказательство пройден, `todo://disputatio/tdd-gate-migration-proof`).
+        # Каталоги `spec/.tdd-evidence/**` остаются под защитой, хотя писать в
+        # них больше некому: это исторические артефакты сертификации волны 1
+        # (208 файлов claims/verdicts/waivers), и агент не должен их править —
+        # ни задним числом дописать вердикт, ни «прибраться».
+        # `claims` в списке не было, и до сноса это было верно: гейт писал
+        # туда сам, каталог обязан был оставаться доступным на запись. Гейта
+        # нет — 100 файлов claims стали таким же архивом, как остальные три
+        # каталога, и без этой строки их можно было переписать молча.
+        - spec/.tdd-evidence/claims
         - spec/.tdd-evidence/verdicts
         - spec/.tdd-evidence/waivers
-        # Каталоги операторских remedy: `abandon`/`repair` пишут туда сами, и
-        # правка агентом — подделка санкции оператора. Каталогов может не быть
-        # на диске (remedy ещё не применялась) — снапшот берёт то, что есть.
-        # Были в операторском конфиге и доках, но не в SSOT (Copilot, PR #32).
         - spec/.tdd-evidence/abandoned
         - spec/.tdd-evidence/repairs
         # N2 (Round 4): волна оставила конституцию свободно правимой —
