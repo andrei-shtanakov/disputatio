@@ -63,8 +63,10 @@ max_concurrent: 3
 #   ветки (origin не трогается). Пост-шаг прогона обязателен и начинается с
 #   переключения ветки, а не со сброса:
 #     git switch master && git fetch origin
-#     git rev-parse master origin/master     # разошлись?
-#     git reset --hard origin/master         # только если да и только на master
+#     # вердикт, а не два SHA на глаз:
+#     test "$(git rev-parse master)" = "$(git rev-parse origin/master)" \
+#       && echo "master чист" || echo "РАСХОЖДЕНИЕ"
+#     git reset --hard origin/master   # только при расхождении и только на master
 #   Порядок не косметический: тот же `reset --hard` на `ws/<id>` снёс бы
 #   ветку прогона вместе с red-коммитом. И сверять надо именно SHA: пока PR
 #   не смержен, локальный master просто ВПЕРЕДИ origin, а `git pull --ff-only`

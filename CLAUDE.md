@@ -145,9 +145,10 @@ PR #15, `docs/plans/2026-08-08-tdd-gate-plan.md`; откат сноса — `git
   `base_branch: master` maestro сам мержит ветку workstream'а в локальный
   master перед DONE (`orchestrator._merge_into_base`; мерж безусловен, DONE
   на нём гейтится, флага отключения нет). `origin` при этом не трогается.
-  После каждого прогона — **сначала переключиться на master, потом сверять**:
-  `git switch master && git fetch origin && git rev-parse master origin/master`;
-  если разошлись — `git reset --hard origin/master`. Порядок не
+  После каждого прогона — **сначала переключиться на master, потом сверить**.
+  Команда сама даёт вердикт, а не оставляет сравнение глазу:
+  `git switch master && git fetch origin && test "$(git rev-parse master)" = "$(git rev-parse origin/master)" && echo "master чист" || echo "РАСХОЖДЕНИЕ"`;
+  при расхождении — `git reset --hard origin/master`. Порядок не
   косметический: тот же `reset --hard`, выполненный на `ws/<id>`, снёс бы
   ветку прогона вместе с red-коммитом. Работа остаётся в `ws/<id>` и
   приезжает своим PR. **Сверка обязательна, потому что git о расхождении не
