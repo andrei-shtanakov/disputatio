@@ -66,9 +66,11 @@ max_concurrent: 3
 #     git rev-parse master origin/master     # разошлись?
 #     git reset --hard origin/master         # только если да и только на master
 #   Порядок не косметический: тот же `reset --hard` на `ws/<id>` снёс бы
-#   ветку прогона вместе с red-коммитом. Ошибиться тихо нельзя: после мержа
-#   PR локальный master расходится с origin, и `git pull --ff-only`
-#   отказывает громко.
+#   ветку прогона вместе с red-коммитом. И сверять надо именно SHA: пока PR
+#   не смержен, локальный master просто ВПЕРЕДИ origin, а `git pull --ff-only`
+#   на это отвечает «Already up to date» с кодом 0 (проверено). Громкий отказ
+#   приходит только после мержа PR, когда истории разойдутся, — позже и не
+#   там, где ошибка возникла.
 #
 # Наблюдено на прогоне 2026-08-22 (`docs/plans/2026-08-22-tdd-migration-proof-transcript.md`).
 base_branch: master
