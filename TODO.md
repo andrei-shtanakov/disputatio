@@ -286,7 +286,7 @@
   плагинов**, поэтому `pyrefly` исполняется перед `tdd-evidence` — цепочка
   RED → GREEN → review → pyrefly → evidence, и ошибка типизации останавливает
   задачу до фиксации evidence. Версия зафиксирована `uv.lock` (pyrefly 1.2.0).
-- [ ] Сквозной операторский remedy-путь под maestro @id:operator-remedy-path-under-maestro @trigger:"maestro выпущен с фиксом TASK_BLOCKED (maestro#212)"
+- [ ] Сквозной операторский remedy-путь под maestro @id:operator-remedy-path-under-maestro @trigger:"maestro выпущен с фиксом TASK_BLOCKED (maestro#212)" @epic:eco.disputatio
   — прогон 2 (2026-08-22) породил настоящий сценарий для `spec-runner tdd
   repair`: агент упёрся в залоченный тест с фактически неверным ассертом и сам
   назвал нужный remedy. Применить не удалось — автоповтор maestro стёр
@@ -297,7 +297,7 @@
   их никто не проходил. Проверить на следующем прогоне после релиза maestro с
   фиксом; до тех пор оператор, поймавший залоченный неверный ассерт, снова
   упрётся в стёртое состояние.
-- [ ] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot
+- [ ] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio
   — `docs/workstream-setup.md` §2 и операторский эталон подают
   `spec-runner.config.yaml` и `pyrefly.toml` как harness-пути (обоснование —
   spec-runner#137: агент работает в worktree и технически может изменить саму
