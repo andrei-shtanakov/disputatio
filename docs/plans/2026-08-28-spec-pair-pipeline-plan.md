@@ -148,15 +148,16 @@
   `NextAction {operation_id, kind: Literal["create_session","run_session",
   "finish_session","record_return","adopt_external","discard_round",
   "export"], args: dict, predecessor_operation_id: str | None}`,
-  `ImmutableEntry {sha256: str}`,
   `AppendOnlyEntry {prefix_bytes: int, prefix_sha256: str}`,
-  `IntegritySnapshot {session_id, round, immutable: dict[str,
-  ImmutableEntry], append_only: dict[str, AppendOnlyEntry]}` — два класса
-  файлов различены типом, а не строкой (§4.2 SPEC-002: prefix-property
-  журналов проверяется по длине+хешу префикса, неизменяемые — по равенству
-  хеша),
-  `PipelineState(ArtifactBase)` — все поля §4.2, включая `anchor_path: str`
-  (путь журнала целостности P9, вне `workspace_root`).
+  `IntegritySnapshot {session_id, round, operation_id,
+  immutable: dict[str, str], append_only: dict[str, AppendOnlyEntry]}` —
+  JSON-форма ровно как в §4.2 SPEC-002: неизменяемые файлы — плоское
+  `{path: sha256}`, журналы — `{path: {prefix_bytes, prefix_sha256}}`.
+  Модель объявляется здесь, но в манифест НЕ входит (§4.2: снапшоты живут
+  только в анкере) — её пишет и читает `IntegrityAnchor` задачи 16;
+  `PipelineState(ArtifactBase)` — все поля §4.2, включая `anchor_id: str`
+  (логическое имя анкера, = `pipeline_id`; физического пути в манифесте
+  нет — он машинно-зависим и резолвится из конфига).
 
 **Шаги:**
 - [ ] Red-тесты: round-trip сериализации; `test_transition_out_of_table_rejected`
@@ -255,9 +256,13 @@ class SessionLifecyclePolicy(Protocol):
   `events_path`, `manifest_path`); грамматика slug
   `[a-z0-9][a-z0-9._-]{0,63}` — валидация здесь.
 - `FilePipelineStateStore(workspace_root)` — реализация порта; save —
-  `atomic_write`; **guard неизменяемости**: save отклоняет (`ValueError`)
-  изменение уже ненулевого `outcome` и укорачивание append-only коллекций
-  (`transitions`, `spec_sessions`, `pair_sessions`, `operator_decisions`).
+  `atomic_write`; **guard истории**: save отклоняет (`ValueError`) любое
+  расхождение с prefix-equality для `transitions`, `operator_decisions`,
+  `spec_sessions`, `pair_sessions` — уже записанные элементы обязаны
+  совпадать поэлементно, новое допускается только в хвост (§4.2 SPEC-002:
+  append-only ≠ «длина не уменьшается»). Разрешённые правки прежнего
+  элемента ровно две: `outcome` с `null` на значение однократно (P3) и
+  `superseded_by`.
 - `PipelineEventType(StrEnum)` — закрытый словарь §4.1 SPEC-002, ровно
   шесть значений: `phase_change`, `session_started`, `session_finished`,
   `return_recorded`, `exported`, `error`.
@@ -265,10 +270,18 @@ class SessionLifecyclePolicy(Protocol):
   `operation_id` в payload; тип события — только из `PipelineEventType`
   (чужая строка → `ValueError`); на открытии — ремонт хвоста (последняя
   строка без `\n` или невалидный JSON → усечение).
+- `def read_pipeline_events(path: Path) -> list[PipelineEvent]` — **парный
+  читатель**, поставляемый вместе с sink'ом (P8: дедупликация — не
+  обязанность гипотетического потребителя): подавляет дубли по
+  `(operation_id, type)`, молча пропускает оборванный хвост.
 
 **Шаги:**
 - [ ] Red-тесты: атомарность (temp+rename — нет частичного файла);
   `test_outcome_rewrite_rejected`; `test_transitions_shrink_rejected`;
+  `test_transition_edited_in_place_rejected` (та же длина, изменён прежний
+  элемент — отказ); `test_operator_decision_edited_rejected`;
+  `test_superseded_by_and_first_outcome_allowed`;
+  `test_reader_dedupes_by_operation_id`;
   `test_tail_repair_truncates_partial_line`;
   `test_slug_grammar_rejected`;
   `test_event_vocabulary_closed` (все шесть типов §4.1 принимаются, седьмой
@@ -454,49 +467,19 @@ class SessionLifecyclePolicy(Protocol):
 
 ---
 
-### Задача 12: runtime — конфиг пайплайна и предусловия run
-
-**Файлы:**
-- Create: `src/disputatio/runtime/pipeline_config.py`
-- Test: `tests/runtime/test_pipeline_config.py`
-
-**Интерфейсы (производит):**
-- `PipelineConfig` (frozen dataclass): spec_path, plan_path,
-  max_architectural_returns=2, soft_max_pipeline_tokens=0,
-  soft_max_pipeline_wall_seconds=0, protected_branches=("master","main"),
-  checklists (override или вендоренный дефолт задачи 2), extra_gates,
-  `anchor_path: Path` — журнал целостности P9; дефолт —
-  `platformdirs`-подобный state-каталог пользователя (без новой
-  зависимости: `os.environ.get("XDG_STATE_HOME")` либо
-  `~/.local/state`) + `disputatio/anchors/<slug>.jsonl`.
-- `load_pipeline_config(path) -> PipelineConfig` — неизвестный ключ в
-  `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
-  («baseline не отключается»).
-- `check_run_preconditions(workspace_root, config, slug) -> None` —
-  чистое дерево, текущая ветка ∉ protected_branches, каталог пайплайна не
-  существует, **`anchor_path` резолвится вне `workspace_root`** (P9: анкер
-  внутри дерева автора анкером не является); нарушение → `ConfigError` с
-  подготовительной командой в тексте (`git switch -c docs/<slug>`).
-
-**Шаги:**
-- [ ] Red-тесты: парсинг примера §3.2; baseline-переопределение → отказ;
-  предусловия на tmp-git-репо: грязное дерево / protected ветка /
-  существующий каталог → отказ с точным текстом; `anchor_path` внутри
-  `workspace_root` → отказ; дефолтный `anchor_path` вычисляется вне
-  репозитория (XDG_STATE_HOME подменяется в тесте); ветка создаётся НЕ
-  нами (проверка, что функция не мутирует репо).
-- [ ] Реализация, suite, Commit:
-  `feat(runtime): конфиг пайплайна и fail-closed предусловия run`.
-
-Трассируемость: §3.1 (предусловия), §3.2, §6 (baseline).
-
----
-
-### Задача 13: runtime — расширение GitOps под adoption и reconciliation
+### Задача 12: runtime — расширение GitOps под adoption и reconciliation
 
 **Файлы:**
 - Modify: `src/disputatio/runtime/git.py` (протокол `GitOps` + реализация
-  `SubprocessGitOps` + приватные хелперы)
+  **`GitCli`** — единственная реализация в репо; `SubprocessGitOps` не
+  существует)
+- Modify (обязательно, иначе suite красный): все фейки `GitOps` в
+  `tests/runtime/**` — 20 файлов; структурная проверка
+  `assert isinstance(FakeGit(), GitOps)` в
+  `tests/runtime/test_git_preflight.py:213` падает сразу после расширения
+  `@runtime_checkable` протокола. Механическая правка: общий фейк-базис
+  `tests/runtime/_fakes.py` с четырьмя новыми методами, локальные фейки
+  наследуют его
 - Test: `tests/runtime/test_git_adoption.py`
 
 **Интерфейсы (потребляет):** существующий `GitOps` (`diff_head`,
@@ -537,6 +520,53 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   `feat(runtime): GitOps — head_sha, status_paths, commit_paths, trailer lookup`.
 
 Трассируемость: §3.1 (adoption), §7.3 (cleanup), §8.1 (сверка worktree).
+
+---
+
+### Задача 13: runtime — конфиг пайплайна и предусловия run
+
+**Файлы:**
+- Create: `src/disputatio/runtime/pipeline_config.py`
+- Test: `tests/runtime/test_pipeline_config.py`
+
+**Интерфейсы (производит):**
+- `PipelineConfig` (frozen dataclass): spec_path, plan_path,
+  max_architectural_returns=2, soft_max_pipeline_tokens=0,
+  soft_max_pipeline_wall_seconds=0, protected_branches=("master","main"),
+  checklists (override или вендоренный дефолт задачи 2), extra_gates,
+  `anchor_path: Path` — журнал целостности P9; дефолт —
+  `platformdirs`-подобный state-каталог пользователя (без новой
+  зависимости: `os.environ.get("XDG_STATE_HOME")` либо
+  `~/.local/state`) + `disputatio/anchors/<slug>.jsonl`.
+- `load_pipeline_config(path) -> PipelineConfig` — неизвестный ключ в
+  `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
+  («baseline не отключается»).
+- `check_run_preconditions(git: GitOps, workspace_root, config, slug)
+  -> None` — чистое дерево **включая untracked** (через
+  `GitOps.status_paths()` задачи 12; существующий `preflight` смотрит
+  `--untracked-files=no` и для §3.1 недостаточен), текущая ветка ∉
+  protected_branches, каталог пайплайна не существует, **канонизованный
+  `anchor_path` резолвится вне `workspace_root`** (P9); нарушение →
+  `ConfigError` с подготовительной командой в тексте
+  (`git switch -c docs/<slug>`).
+
+**Шаги:**
+- [ ] Red-тесты: парсинг примера §3.2; baseline-переопределение → отказ;
+  предусловия на tmp-git-репо: грязное дерево / protected ветка /
+  существующий каталог → отказ с точным текстом; untracked-файл в дереве
+  → отказ (то, чего не ловит `preflight`); ветка создаётся НЕ нами
+  (проверка, что функция не мутирует репо).
+- [ ] Red-тесты `anchor_path` (fail-closed, статические варианты — N7):
+  прямой путь внутрь `workspace_root` → отказ; относительный путь
+  резолвится от cwd и, попав внутрь дерева, → отказ; путь с `..`,
+  выводящий обратно внутрь дерева, → отказ; symlink, ведущий внутрь
+  дерева, → отказ (канонизация `expanduser`+`resolve`); дефолт
+  вычисляется вне репозитория (`XDG_STATE_HOME` подменяется в тесте);
+  та же проверка повторяется на `resume`, не только на `run`.
+- [ ] Реализация, suite, Commit:
+  `feat(runtime): конфиг пайплайна и fail-closed предусловия run`.
+
+Трассируемость: §3.1 (предусловия), §3.2, §6 (baseline).
 
 ---
 
@@ -589,15 +619,18 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 - Test: `tests/runtime/test_pipeline_runner.py`
 
 **Интерфейсы (потребляет):** `PipelineStateStore` (задачи 4, 6),
-`PipelineEventType`/sink (задача 6), `PipelineConfig` (задача 12),
-`ExportFn` (задача 14), `RoundBoundaryPolicy` (задачи 4, 9).
+`PipelineEventType`/sink (задача 6), расширенный `GitOps` (задача 12 —
+`record_return` делает reset, без порта его взять неоткуда),
+`PipelineConfig` (задача 13), `ExportFn` (задача 14),
+`RoundBoundaryPolicy` (задачи 4, 9).
 
 **Интерфейсы (производит):**
 ```python
 class PipelineRunner:
     def __init__(self, *, store: PipelineStateStore, sink,
-                 session_driver: SessionDriver, session_factory: SessionFactory,
-                 exporter: ExportFn, now: Callable[[], datetime],
+                 git: GitOps, session_driver: SessionDriver,
+                 session_factory: SessionFactory, exporter: ExportFn,
+                 now: Callable[[], datetime],
                  config: PipelineConfig) -> None: ...
     def run(self, slug: str, task_text: str) -> PipelineState: ...
     def advance(self, slug: str) -> PipelineState: ...
@@ -643,7 +676,14 @@ transition + outcome + superseded_by + chained `create_session`);
   (6) commit point записан, chained `create_session` не исполнен —
   преемник допроигран, предшественник не повторён;
   (7) `export` записан, экспорт прерван до `manifest.json`;
-  (8) `FAILED → FAILED` идемпотентен (P8 — без дубликата transition).
+  (8) `FAILED → FAILED` идемпотентен (P8 — без дубликата transition);
+  (9) `create_session`: снапшоты task/config/checklists записаны,
+  `entry_hashes` ещё нет — повтор даёт те же байты снапшотов;
+  (10) `run_session`: драйвер вернулся, результат не записан — повтор не
+  прогоняет сессию заново (durable-состояние сессии уже терминально);
+  (11) `finish_session`: интерпретация выполнена, запись outcome не
+  случилась — replay даёт тот же outcome (идемпотентность **каждого**
+  `kind`, §4.3 SPEC-002).
 - [ ] Commit: `feat(runtime): PipelineRunner — фазы, интенты, контуры, возврат`.
 
 Трассируемость: §2 (P1–P8), §4.2–4.3, §7.1–7.3, §10 (crash-минимум).
@@ -660,7 +700,7 @@ transition + outcome + superseded_by + chained `create_session`);
   `tests/runtime/test_pipeline_integrity.py`,
   `tests/runtime/test_pipeline_adopt.py`
 
-**Интерфейсы (потребляет):** расширенный `GitOps` (задача 13),
+**Интерфейсы (потребляет):** расширенный `GitOps` (задача 12),
 `IntegritySnapshot`/`ImmutableEntry`/`AppendOnlyEntry` (задача 3),
 `SessionLifecyclePolicy` (задачи 4, 9), `PipelineRunner` (задача 15).
 
@@ -677,13 +717,18 @@ transition + outcome + superseded_by + chained `create_session`);
   `append(snapshot) -> None` (fsync), `last(session_id) ->
   IntegritySnapshot | None`; `class PipelineIntegrityPolicy` —
   реализация `SessionLifecyclePolicy`: `before_author_turn` пишет снапшот
-  **и в анкер, и в манифест**, `after_author_turn` сверяет control plane
-  против **анкера** (не против поля манифеста: манифест автору достижим);
-  расхождение → исключение → `FAILED (invariant_violation)`.
+  **только в анкер** (N1: две файловые границы одной атомарной операцией
+  не согласовать, и штатный крах между записями читался бы как подмена;
+  манифест снапшота не хранит вовсе), `after_author_turn` сверяет control
+  plane против анкера; расхождение → исключение →
+  `FAILED (invariant_violation)`. Запись идемпотентна по
+  `{session_id, round, operation_id}`.
 - `adopt_external(...)` / `discard_round(...)` — интенты §3.1: scope по
-  `GitOps.status_paths()` (tracked + untracked; допустимы только
-  `spec_path`/`plan_path`, новый untracked документ легален, иначе отказ
-  целиком); patch → `adoptions/<operation_id>.patch`; чекпоинт —
+  `GitOps.status_paths()` (tracked + untracked за вычетом `.disputatio/`,
+  который пайплайн порождает сам; допустимы только `spec_path`/`plan_path`,
+  новый untracked документ легален, иначе отказ целиком;
+  **tracked-изменённый путь под `.disputatio/` — отказ**, узкое исключение
+  из исключения, §3.1); patch → `adoptions/<operation_id>.patch`; чекпоинт —
   `commit_paths([документы], "disputatio: operator adopt <slug>",
   trailer=operation_id)` с предварительным `find_commit_by_trailer`
   (идемпотентность); commit point — одна запись манифеста: decision +
@@ -702,14 +747,18 @@ transition + outcome + superseded_by + chained `create_session`);
   которого анкер вынесен из дерева); усечение журнала → `FAILED`;
   легальный append оркестратора проходит prefix-property; kill между
   before и after → resume ловит по анкеру; `anchor_path` внутри
-  `workspace_root` → отказ старта (тест уровня задачи 12, здесь —
-  регресс на конструировании политики).
+  `workspace_root` → отказ старта (тест уровня задачи 13, здесь —
+  регресс на конструировании политики); **крах между append'ом в анкер и
+  началом хода автора**: повтор пишет ту же строку (идемпотентность по
+  `{session_id, round, operation_id}`), сверка не считает это подменой.
 - [ ] Red-тесты adoption (маршрут): только `plan_path` в pair → новая
   pair-ревизия; `spec_path` в pair → spec-ревизия и reason
   `external_spec_adopt` даже без architectural finding; обе причины →
   один outcome `abandoned`, `record_return` не вызван; чужой tracked
   путь → отказ; чужой untracked путь → отказ; новый untracked
-  `plan_path` → принят и попал в чекпоинт.
+  `plan_path` → принят и попал в чекпоинт; **untracked-файлы самого
+  пайплайна под `.disputatio/` adoption не ломают** (иначе он не проходил
+  бы никогда), а tracked-изменённый путь под `.disputatio/` → отказ.
 - [ ] Red-тесты adoption (crash, по границам): (1) intent записан, patch не
   создан; (2) patch создан, чекпоинт не сделан; (3) чекпоинт сделан,
   commit point не записан — повтор находит коммит по trailer'у и второго
@@ -771,25 +820,25 @@ transition + outcome + superseded_by + chained `create_session`);
 
 | Раздел SPEC-002 | Задачи | Примечание |
 |---|---|---|
-| §2 P1–P8 | 3 (таблица, модели), 6 (guard неизменяемости), 15 (поведение) | — |
-| §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 10 (необязательный слой), 12 (проверка anchor_path), 16 (анкер и сверка) | якорь — файловая граница, адаптер не участвует |
-| §3.1 CLI и предусловия | 12, 17 | — |
-| §3.1 решения оператора | 13 (git-примитивы), 16 (протокол и маршруты) | — |
-| §3.2 конфиг | 12 | — |
+| §2 P1–P8 | 3 (таблица, модели), 6 (guard prefix-equality + читатель с дедупликацией по `operation_id`), 15 (поведение) | — |
+| §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 10 (необязательный слой), 13 (fail-closed `anchor_path`, включая `..`/symlink), 16 (анкер, единственная запись, сверка) | якорь — файловая граница, адаптер не участвует |
+| §3.1 CLI и предусловия | 13, 17 | — |
+| §3.1 решения оператора | 12 (git-примитивы), 16 (протокол и маршруты) | — |
+| §3.2 конфиг | 13 (парсинг), 15 (снапшоты в create_session) | — |
 | §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
-| §4.2 манифест | 3 (схема), 6 (хранилище), 15 (`budget_used`, transitions), 16 (`integrity_snapshot`, `operator_decisions`) | — |
-| §4.3 интенты и chaining | 3 (enum), 15 (границы краха core-kind'ов), 16 (границы краха операторских kind'ов) | — |
+| §4.2 манифест | 3 (схема, `anchor_id`), 6 (хранилище, prefix-equality), 15 (`budget_used`, transitions), 16 (`operator_decisions`) | снапшоты — не в манифесте, а в анкере (задача 16) |
+| §4.3 интенты и chaining | 3 (enum), 15 (11 границ краха core-kind'ов, включая `finish_session`), 16 (6 операторских границ) | идемпотентность каждого `kind` доказана поимённо |
 | §5.1 Mode.DOCUMENT, v2 | 1, 17 (анти-сикофантия) | — |
-| §5.2 схема ревью, V1–V8 | 1 (закрытые формы evidence), 2 (V1–V8), 17 (V6 сквозняком) | — |
-| §5.3 чеклисты | 2 (вендоренный дефолт), 12 (override) | — |
-| §6 doc-гейты, baseline | 7, 8, 12 (отказ отключения) | — |
+| §5.2 схема ревью, V1–V8 | 1 (закрытые формы evidence), 2 (машинная часть V1–V8), 11 (недетерминируемая часть V8 — требование промпта ревьюеру), 17 (V6 сквозняком) | V8 машинно enforced только там, где связь выводима (S1) |
+| §5.3 чеклисты | 2 (вендоренный дефолт), 13 (override) | — |
+| §6 doc-гейты, baseline | 7, 8, 13 (отказ отключения) | — |
 | §7.1 порты границ | 4 (объявление), 9 (вызовы в `drive`) | — |
 | §7.2 терминалы | 15 | — |
-| §7.3 возврат | 13 (git), 15 (reconciliation), 16 (гейт reset на resume) | — |
-| §8.1 resume, внешняя правка | 13 (git), 16 (порядок и классификация) | — |
+| §7.3 возврат | 12 (git-примитивы + обновление 20 файлов фейков), 15 (reconciliation, `GitOps` в конструкторе runner'а), 16 (гейт reset на resume) | — |
+| §8.1 resume, внешняя правка | 12 (git), 16 (порядок и классификация) | — |
 | §8.2 экспорт | 14 | — |
 | §9 раскладка по пакетам | структура файлов всех задач | contracts→events→verifier→context→adapters→runtime |
-| §10 тесты | 15 (core write-ahead границы, 8 сценариев), 16 (операторские границы, 6 сценариев), 17 (сквозные, 6 сценариев) + red-тесты задач 1–14 | — |
+| §10 тесты | 15 (11 core write-ahead границ), 16 (6 операторских границ + анкер), 17 (6 сквозных) + red-тесты задач 1–14 | перечислены поимённо, а не счётом |
 
 **Осознанно вне плана** (§11 SPEC-002): автопубликация PR, гейт
 трассируемости REQ-id, жёсткие пайплайн-лимиты, N-stage, discovery,
@@ -800,4 +849,9 @@ erratum SPEC-001, изоляция уровня ОС для автора.
 сохранены семантика и JSON-форма из SPEC-002): `ArtifactEvidence`,
 `GateEvidence`, `ChecklistItem`, `ImmutableEntry`, `AppendOnlyEntry`,
 `DocRef`, `BoundaryVerdict`, `PipelineConfig`, `PipelineEventType`,
-`DocVerifier`, `IntegrityAnchor`, `ExportFn`, `SessionDriver`.
+`DocVerifier`, `IntegrityAnchor`, `ExportFn`, `SessionDriver`,
+`ALLOWED_TRANSITIONS`, `SessionRecord`, `Transition`, `OperatorDecision`,
+`NextAction`, `EvidenceLink`, `AppendOnlyEntry`, `IntegritySnapshot`,
+`FilePipelineStateStore`, `PipelineEventSink`, `read_pipeline_events`,
+`PipelineIntegrityPolicy`, `PipelineRunner`, `validate_doc_review`,
+`SPEC_CHECKLIST`/`PAIR_CHECKLIST`.
