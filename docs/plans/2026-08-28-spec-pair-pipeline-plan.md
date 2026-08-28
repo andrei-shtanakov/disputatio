@@ -289,7 +289,11 @@ class SessionLifecyclePolicy(Protocol):
   `__init__(anchor_root: Path, anchor_id: str)` (файл —
   `<anchor_root>/<anchor_id>.jsonl`), `append(snapshot) -> None` (fsync,
   идемпотентно по `{session_id, round, operation_id}`),
-  `last(session_id, round) -> IntegritySnapshot | None`. Живёт в `events`,
+  **`last_record() -> IntegritySnapshot | None`** — последняя запись
+  журнала без аргументов: identity незавершённого хода приходит ИЗ неё.
+  Вариант `last(session_id, round)` был бы циклическим — §8.1 требует
+  сверку ДО чтения манифеста, а `session_id`/`round` брались бы из него
+  же, то есть из потенциально подменённого файла. Живёт в `events`,
   а не в `runtime`: §9 SPEC-002 и D1 отдают файловые append-only writer'ы
   этому пакету; `runtime` держит только политику, использующую анкер.
 
@@ -301,7 +305,8 @@ class SessionLifecyclePolicy(Protocol):
   `test_superseded_by_and_first_outcome_allowed`;
   `test_reader_dedupes_by_operation_id`;
   `test_anchor_append_idempotent` (повтор той же записи не удваивает
-  строку); `test_anchor_last_returns_latest`;
+  строку); `test_anchor_last_record_without_args` — возвращает последнюю
+  запись с полной identity, вызывающему не нужно знать session_id/round;
   `test_superseded_by_set_once` (повторная смена `r2`→`r3` — отказ);
   `test_tail_repair_truncates_partial_line`;
   `test_slug_grammar_rejected`;
@@ -773,7 +778,10 @@ transition + outcome + superseded_by + chained `create_session`);
 
 **Интерфейсы (производит):**
 - `resume(slug, *, decision: Literal["discard_round","adopt_external"]
-  | None = None)` — строгий порядок §8.1: (0) сверка по анкеру, (1) чтение
+  | None = None)` — строгий порядок §8.1: (0) сверка по
+  `IntegrityAnchor.last_record()`; файл анкера находится по `<anchor_root>`
+  из живой конфигурации и `<anchor_id>` = `slug` — оба входа вне рабочего
+  дерева, поэтому шаг исполним до чтения манифеста, (1) чтение
   манифеста (сессии с `outcome`/`superseded_by` ≠ null не возобновляются),
   (2) **read-only** обнаружение архитектурного дефекта, (3) сверка
   worktree, (4) мутирующая фаза, (5) session-resume с политиками.
@@ -816,7 +824,9 @@ transition + outcome + superseded_by + chained `create_session`);
   легальный append оркестратора проходит prefix-property; kill между
   before и after → resume ловит по анкеру; `anchor_path` внутри
   `workspace_root` → отказ старта (тест уровня задачи 13, здесь —
-  регресс на конструировании политики); **крах между append'ом в анкер и
+  регресс на конструировании политики); `test_resume_verifies_before_reading_manifest`
+  — spy на файловых чтениях: анкер прочитан раньше `pipeline.json`, а
+  identity взята из записи анкера; **крах между append'ом в анкер и
   началом хода автора**: повтор пишет ту же строку (идемпотентность по
   `{session_id, round, operation_id}`), сверка не считает это подменой.
 - [ ] Red-тесты adoption (маршрут): только `plan_path` в pair → новая
