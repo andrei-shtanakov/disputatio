@@ -460,9 +460,14 @@ class SessionLifecyclePolicy(Protocol):
 **Интерфейсы (производит):**
 - `drive(ctx, *, round_boundary: RoundBoundaryPolicy | None = None,
   lifecycle: SessionLifecyclePolicy | None = None) -> SessionState`.
-- Точка опроса boundary: после того как `apply_decision` записал
-  `CONTINUE` и write-ahead новую фазу, до исполнения её шага; `PARK` →
-  `drive` возвращает текущее нетерминальное состояние.
+- Точка опроса boundary: **после записи `review.json` и до вызова
+  `decide()`**. Не после `CONTINUE`: `decide()` идёт top-down
+  (`core/deciding.py:160`), и `BUDGET_HIT`/`DEADLOCK` возвращаются раньше
+  ветки `CONTINUE` (`deciding.py:214`) — на последнем разрешённом раунде
+  или при исчерпанном бюджете политика не была бы опрошена вовсе, а
+  архитектурная находка ушла бы в эскалацию вместо обязательного возврата
+  (P6). `PARK` → `decide()` не вызывается, `decision.json` не пишется,
+  `drive` возвращает текущее нетерминальное состояние (`DECIDING`).
 - Lifecycle: **обрамляется каждый вызов `adapter.run` автора, а не шаг
   `PROPOSING` целиком.** Точка интеграции — `run_with_schema_retry`
   (`runtime/retry.py`), где адаптер зовётся в цикле `while True`
@@ -483,8 +488,12 @@ class SessionLifecyclePolicy(Protocol):
   фаз/артефактов с эталоном (регресс-гарантия default'а).
 - [ ] Red-тест: `test_park_returns_before_next_step` — policy паркует на
   раунде 1 с architectural-ревью: drive вернул нетерминальное состояние,
-  фейковый автор раунда 2 НЕ вызывался, session.json write-ahead указывает
-  `PROPOSING`.
+  фейковый автор раунда 2 НЕ вызывался, `decision.json` раунда не создан,
+  session.json write-ahead указывает `DECIDING`.
+- [ ] Red-тест: `test_park_wins_over_stop_conditions` — architectural-ревью
+  на **последнем разрешённом раунде** (`max_rounds`) и, отдельным
+  параметром, при исчерпанном `max_total_tokens`: сессия паркуется, а не
+  уходит в `DEADLOCK`/`BUDGET_HIT` (P6 приоритетнее стоп-условий §5).
 - [ ] Red-тест: `test_lifecycle_called_per_adapter_run` — счётчик вызовов
   равен числу **вызовов адаптера**, а не раундов;
   `test_lifecycle_wraps_schema_retry_attempts` — первая попытка автора
@@ -780,9 +789,11 @@ intent'а, иначе крах на раннем `create_session` оставил
 `create_session` (снапшоты task/config/checklists с sha256, `entry_hashes`
 с маркером `absent`, `artifact_root = sessions/<revision>`);
 `run_session`; `finish_session` — интерпретация по **durable-состоянию**
-(`session.json` + `decision.json` последнего раунда, не по возврату
-драйвера); `record_return` (§7.3: `operation_id` из
-`{session_id, round, sha256(review.json)}`; commit — одна запись:
+(`session.json` + `decision.json` последнего раунда, если он есть: у
+припаркованного раунда решения нет, и это сам по себе признак `park`, а не
+терминала; не по возврату драйвера); `record_return` (§7.3: `operation_id`
+из `{session_id, round, sha256(review.json)}` — `decision.json` у
+припаркованного раунда не существует; commit — одна запись:
 transition + outcome + superseded_by + chained `create_session`);
 `export` — вызов `exporter`. Внутри: `_recompute_budget(state)` —
 `budget_used` пересчитывается из `session.json` **всех** сессий, включая
