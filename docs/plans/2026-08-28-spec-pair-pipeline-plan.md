@@ -227,15 +227,26 @@ class SessionLifecyclePolicy(Protocol):
 **Файлы:**
 - Modify: `src/disputatio/events/paths.py`, `state_store.py`,
   модуль bootstrap (`events/__init__.py` или где живёт `bootstrap_session`),
-  `src/disputatio/runtime/composition.py` (прокладка параметра)
+  `src/disputatio/runtime/composition.py` (прокладка параметра),
+  **`src/disputatio/runtime/config.py`** (`load_config` читает снапшот из
+  `artifact_root`, а не из `workspace_root`) и **`runtime/loop.py`**
+  (`resume_session` принимает `artifact_root` и передаёт его в
+  `load_config` до сборки runtime). Без этих двух файлов разделение
+  неполно: `resume_session` вызывает `load_config(root)` раньше
+  `build_runtime` (`loop.py:119`), а `load_config` строит путь как
+  `root/.disputatio/config.toml` (`config.py:227`, `paths.py:23`) — resume
+  вложенной сессии пайплайна упал бы `ConfigError` на чужом снапшоте
 - Test: `tests/events/test_artifact_root.py`
 
 **Интерфейсы (производит):**
 - Все функции `paths.*` и конструкторы (`FileStateStore`,
   event sink, bootstrap) принимают `artifact_root: Path`; git-слой
-  продолжает получать `workspace_root`. `build_runtime(config, root,
-  *, artifact_root: Path | None = None, **overrides)` — `None` ⇒
-  `artifact_root = root` (текущее поведение).
+  продолжает получать `workspace_root`. Сигнатуры:
+  `build_runtime(config, root, *, artifact_root: Path | None = None,
+  **overrides)`, `resume_session(root, session_id, *,
+  artifact_root: Path | None = None, **overrides)` и
+  `load_config(artifact_root)` — `None` ⇒ `artifact_root = root`
+  (текущее поведение байт-в-байт).
 - ADR-006 переформулирован в docstring: «один artifact_root — одна сессия».
 
 **Шаги:**
@@ -243,7 +254,11 @@ class SessionLifecyclePolicy(Protocol):
   (пути идентичны сегодняшним — снапшот-сравнение строк путей);
   `test_two_sessions_separate_artifact_roots_no_collision`
   (две сессии, один workspace: два разных session.json, git-операции — в
-  workspace); `test_resume_reads_from_artifact_root`.
+  workspace); `test_resume_reads_from_artifact_root` — **снапшот конфига
+  читается из `artifact_root`**: сессия во вложенном каталоге
+  возобновляется, когда `workspace_root/.disputatio/config.toml`
+  отсутствует или принадлежит другой сессии (сегодня это дало бы
+  `ConfigError`).
 - [ ] Реализация (механическая прокладка параметра), полный suite —
   регресс-гарантия default'а. Commit:
   `feat(events): artifact_root отделён от workspace_root (ADR-006 v2)`.
@@ -431,7 +446,8 @@ class SessionLifecyclePolicy(Protocol):
   `adapter.run`, `after_author_turn(state)` — сразу после возврата, до
   парсинга вывода; исключение политики → `FAILED` сессии (существующий
   механизм невосстановимой ошибки).
-- `resume_session(..., round_boundary=None, lifecycle=None)` — прокладка.
+- `resume_session(..., artifact_root=None, round_boundary=None,
+  lifecycle=None)` — прокладка (`artifact_root` пришёл из задачи 5).
 
 **Шаги:**
 - [ ] Red-тест: `test_drive_without_policies_byte_identical` — прогон
