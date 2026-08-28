@@ -714,8 +714,10 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   checklists (override или вендоренный дефолт задачи 2), extra_gates,
   `anchor_path: Path` — **каталог** журналов целостности P9
   (`anchor_root` в терминах §3.2 спеки), НЕ файл: сам журнал —
-  `<anchor_path>/<anchor_id>.jsonl`, где `anchor_id` = `pipeline_id`
-  из манифеста. Дефолт каталога — state-каталог пользователя без новой
+  `<anchor_path>/<fingerprint>/<anchor_id>.jsonl`, где `anchor_id` =
+  `pipeline_id` из манифеста, а `fingerprint` —
+  `sha256(канонический workspace_root)[:16]` (разводит одинаковые слаги
+  разных репозиториев). Дефолт каталога — state-каталог пользователя без новой
   зависимости: `os.environ.get("XDG_STATE_HOME")` либо `~/.local/state`,
   плюс `disputatio/anchors`.
 - `load_pipeline_config(path) -> PipelineConfig` — неизвестный ключ в
@@ -1072,7 +1074,7 @@ transition + outcome + superseded_by + chained `create_session`);
 | §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 6 (`IntegrityAnchor` в `events`), 10 (необязательный слой), 13 (fail-closed `anchor_root`), 16 (политика и сверка) | снапшот только в анкере; манифест несёт `anchor_id` |
 | §3.1 CLI и предусловия | 12 (`current_branch`, `status_entries`), 13 (узкий фильтр `.disputatio/**`), 17 (команды) | посторонний untracked блокирует старт: его уничтожил бы `clean()` |
 | §3.1 решения оператора | 12 (`status_entries` с классификацией tracked), 16 (фильтр `.disputatio/` и маршруты) | порт статус не режет — режет потребитель |
-| §3.2 конфиг | 13 (парсинг, `anchor_path` — каталог), 15 (снапшоты в `create_session`) | журнал — `<anchor_path>/<anchor_id>.jsonl` |
+| §3.2 конфиг | 13 (парсинг, `anchor_path` — каталог), 15 (снапшоты в `create_session`) | журнал — `<anchor_path>/<fingerprint>/<anchor_id>.jsonl` |
 | §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
 | §4.2 манифест | 3 (схема, `anchor_id`), 6 (хранилище, prefix-equality, анкер), 15 (`budget_used`, transitions), 16 (`operator_decisions`) | снапшоты — не в манифесте, а в анкере (задача 6) |
 | §4.3 интенты и chaining | 3 (enum), 15 (11 границ краха core-kind'ов, включая `finish_session`), 16 (6 операторских границ) | идемпотентность каждого `kind` доказана поимённо |
