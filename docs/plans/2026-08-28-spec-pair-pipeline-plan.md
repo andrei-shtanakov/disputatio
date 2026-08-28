@@ -287,13 +287,18 @@ class SessionLifecyclePolicy(Protocol):
   `(operation_id, type)`, молча пропускает оборванный хвост.
 - `class IntegrityAnchor` — append-only журнал P9 вне рабочего дерева:
   `__init__(anchor_root: Path, anchor_id: str)` (файл —
-  `<anchor_root>/<anchor_id>.jsonl`), `append(snapshot) -> None` (fsync,
-  идемпотентно по `{session_id, round, operation_id}`),
-  **`last_record() -> IntegritySnapshot | None`** — последняя запись
-  журнала без аргументов: identity незавершённого хода приходит ИЗ неё.
-  Вариант `last(session_id, round)` был бы циклическим — §8.1 требует
-  сверку ДО чтения манифеста, а `session_id`/`round` брались бы из него
-  же, то есть из потенциально подменённого файла. Живёт в `events`,
+  `<anchor_root>/<anchor_id>.jsonl`). Записи **двух видов**:
+  `AnchorRecord {kind: Literal["pre_turn","turn_completed"], session_id,
+  round, operation_id, immutable, append_only}` (у `turn_completed`
+  хеш-поля пусты — он несёт только identity).
+  `append_pre_turn(snapshot) -> None` и `append_completion(identity)
+  -> None` — обе fsync и идемпотентны по
+  `{kind, session_id, round, operation_id}`;
+  **`last_record() -> AnchorRecord | None`** — последняя запись без
+  аргументов: identity приходит ИЗ неё. Вариант `last(session_id, round)`
+  был бы циклическим — §8.1 требует сверку ДО чтения манифеста, а
+  `session_id`/`round` брались бы из него же, то есть из потенциально
+  подменённого файла. Живёт в `events`,
   а не в `runtime`: §9 SPEC-002 и D1 отдают файловые append-only writer'ы
   этому пакету; `runtime` держит только политику, использующую анкер.
 
@@ -307,6 +312,9 @@ class SessionLifecyclePolicy(Protocol):
   `test_anchor_append_idempotent` (повтор той же записи не удваивает
   строку); `test_anchor_last_record_without_args` — возвращает последнюю
   запись с полной identity, вызывающему не нужно знать session_id/round;
+  `test_anchor_completion_after_pre_turn` — после `append_completion`
+  последняя запись имеет `kind="turn_completed"`, журнал append-only
+  (прежняя `pre_turn`-строка на месте);
   `test_superseded_by_set_once` (повторная смена `r2`→`r3` — отказ);
   `test_tail_repair_truncates_partial_line`;
   `test_slug_grammar_rejected`;
@@ -778,10 +786,11 @@ transition + outcome + superseded_by + chained `create_session`);
 
 **Интерфейсы (производит):**
 - `resume(slug, *, decision: Literal["discard_round","adopt_external"]
-  | None = None)` — строгий порядок §8.1: (0) сверка по
-  `IntegrityAnchor.last_record()`; файл анкера находится по `<anchor_root>`
-  из живой конфигурации и `<anchor_id>` = `slug` — оба входа вне рабочего
-  дерева, поэтому шаг исполним до чтения манифеста, (1) чтение
+  | None = None)` — строгий порядок §8.1: (0) `last_record()`; сверка
+  выполняется, **только если `kind == "pre_turn"`** (ход прерван);
+  `turn_completed` и пустой журнал — пропуск. Файл анкера находится по
+  `<anchor_root>` из живой конфигурации и `<anchor_id>` = `slug` — оба
+  входа вне рабочего дерева, поэтому шаг исполним до чтения манифеста, (1) чтение
   манифеста (сессии с `outcome`/`superseded_by` ≠ null не возобновляются),
   (2) **read-only** обнаружение архитектурного дефекта, (3) сверка
   worktree, (4) мутирующая фаза, (5) session-resume с политиками.
@@ -789,13 +798,18 @@ transition + outcome + superseded_by + chained `create_session`);
   "unattributed"]`; `unattributed` без `decision` → `ExternalEditError`
   с дифом в тексте.
 - `class PipelineIntegrityPolicy` —
-  реализация `SessionLifecyclePolicy`: `before_author_turn` пишет снапшот
-  **только в анкер** (N1: две файловые границы одной атомарной операцией
-  не согласовать, и штатный крах между записями читался бы как подмена;
+  реализация `SessionLifecyclePolicy`: `before_author_turn` пишет
+  `pre_turn`-снапшот **только в анкер** (N1: две файловые границы одной
+  атомарной операцией не согласовать, и штатный крах между записями
+  читался бы как подмена;
   манифест снапшота не хранит вовсе), `after_author_turn` сверяет control
   plane против анкера; расхождение → исключение →
-  `FAILED (invariant_violation)`. Запись идемпотентна по
-  `{session_id, round, operation_id}`.
+  `FAILED (invariant_violation)`, успех → `append_completion` той же
+  identity. Без отметки завершения последняя запись успешного хода
+  осталась бы `pre_turn`, а runtime сразу после сверки законно пишет
+  артефакты раунда (`steps.py:210`) и двигает состояние — следующий
+  `resume` прочитал бы это как подмену. Записи идемпотентны по
+  `{kind, session_id, round, operation_id}`.
 - `adopt_external(...)` / `discard_round(...)` — интенты §3.1: scope по
   `GitOps.status_entries()` — порт отдаёт статус целиком, фильтрует
   потребитель: запись с `tracked=False` под `.disputatio/` игнорируется
@@ -822,7 +836,11 @@ transition + outcome + superseded_by + chained `create_session`);
   автору достижим, анкер нет, а снапшота в манифесте не существует, так
   что подделывать нечего; усечение журнала → `FAILED`;
   легальный append оркестратора проходит prefix-property; kill между
-  before и after → resume ловит по анкеру; `anchor_path` внутри
+  before и after → resume ловит по анкеру;
+  `test_resume_skips_verification_after_completed_turn` — ход завершён
+  успешно, runtime штатно записал артефакты и двинул `session.json`,
+  процесс убит до следующего `before_author_turn`: resume видит
+  `turn_completed` и НЕ трактует штатные записи как подмену; `anchor_path` внутри
   `workspace_root` → отказ старта (тест уровня задачи 13, здесь —
   регресс на конструировании политики); `test_resume_verifies_before_reading_manifest`
   — spy на файловых чтениях: анкер прочитан раньше `pipeline.json`, а
