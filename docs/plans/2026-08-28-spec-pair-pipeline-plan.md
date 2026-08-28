@@ -231,17 +231,30 @@ class SessionLifecyclePolicy(Protocol):
   **`src/disputatio/runtime/config.py`** (`load_config` читает снапшот из
   `artifact_root`, а не из `workspace_root`) и **`runtime/loop.py`**
   (`resume_session` принимает `artifact_root` и передаёт его в
-  `load_config` до сборки runtime). Без этих двух файлов разделение
-  неполно: `resume_session` вызывает `load_config(root)` раньше
+  `load_config` до сборки runtime), **`runtime/steps.py`** (`StepContext`
+  хранит оба корня раздельно), **`runtime/history.py`**,
+  **`runtime/layout.py`**, **`events/rounds.py`** (все строят пути
+  артефактов раунда из переданного корня). Полнота списка существенна:
+  разделения для `session.json` и конфига мало — `propose` читает историю
+  и пишет `proposal.md`/`changes.patch` по тому же корню (`steps.py:189`,
+  `steps.py:210`, `history.py:44`, `layout.py:33`, `rounds.py:26`), и две
+  ревизии с общим `workspace_root` разошлись бы по `session.json`, но
+  сложили раунды в один `rounds/`. Плюс `resume_session` вызывает
+  `load_config(root)` раньше
   `build_runtime` (`loop.py:119`), а `load_config` строит путь как
   `root/.disputatio/config.toml` (`config.py:227`, `paths.py:23`) — resume
   вложенной сессии пайплайна упал бы `ConfigError` на чужом снапшоте
 - Test: `tests/events/test_artifact_root.py`
 
 **Интерфейсы (производит):**
-- Все функции `paths.*` и конструкторы (`FileStateStore`,
-  event sink, bootstrap) принимают `artifact_root: Path`; git-слой
-  продолжает получать `workspace_root`. Сигнатуры:
+- Все функции `paths.*`, конструкторы (`FileStateStore`, event sink,
+  bootstrap) и **все построители путей артефактов раунда**
+  (`write_round_artifact`, `load_prior_round`, `finalize_round`, read-side
+  `layout.session_dir`) принимают `artifact_root: Path`; git-слой,
+  адаптеры и verifier продолжают получать `workspace_root`. `StepContext`
+  отдаёт два свойства раздельно — `workspace_root` и `artifact_root`;
+  единственный `root` упраздняется, чтобы вызывающий не мог перепутать их
+  молча. Сигнатуры:
   `build_runtime(config, root, *, artifact_root: Path | None = None,
   **overrides)`, `resume_session(root, session_id, *,
   artifact_root: Path | None = None, **overrides)` и
@@ -254,7 +267,11 @@ class SessionLifecyclePolicy(Protocol):
   (пути идентичны сегодняшним — снапшот-сравнение строк путей);
   `test_two_sessions_separate_artifact_roots_no_collision`
   (две сессии, один workspace: два разных session.json, git-операции — в
-  workspace); `test_resume_reads_from_artifact_root` — **снапшот конфига
+  workspace); `test_round_artifacts_go_to_artifact_root` — две сессии с
+  общим `workspace_root`: `rounds/001/proposal.md` каждой лежит в своём
+  `artifact_root`, `load_prior_round` второй не видит историю первой, а
+  `changes.patch` собран git'ом по `workspace_root`;
+  `test_resume_reads_from_artifact_root` — **снапшот конфига
   читается из `artifact_root`**: сессия во вложенном каталоге
   возобновляется, когда `workspace_root/.disputatio/config.toml`
   отсутствует или принадлежит другой сессии (сегодня это дало бы
