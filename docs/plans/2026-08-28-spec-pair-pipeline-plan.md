@@ -393,15 +393,25 @@ class SessionLifecyclePolicy(Protocol):
 
 **Интерфейсы (производит):**
 - `parse_doc_refs(text: str) -> list[DocRef]`;
-  `DocRef {kind: Literal["md_link","autolink","code_path","code_line_ref"],
-  target: str, line: int, anchor: str | None, expected_text: str | None}` —
+  `DocRef {kind: Literal["md_link","autolink","code_path","code_line_ref",
+  "declared_existing","declared_planned"], target: str, line: int,
+  anchor: str | None, expected_text: str | None}` — где
+  `declared_existing` — путь после `Modify:`/`Test:` в блоке файлов
+  задачи (утверждение о существующем), `declared_planned` — после
+  `Create:` (объявление намерения) —
   **только однозначно распознаваемые формы**: Markdown inline/reference
   ссылки, автоссылки, пути и `file.py:42` в inline-code. Всё прочее не
   порождает DocRef (эвристики запрещены).
 - `github_slug(heading: str, seen: dict[str, int]) -> str` — нормализация
   якорей: casefold, пробелы→дефисы, снятие пунктуации, Unicode как есть,
   percent-decoding входа, суффиксы `-1`, `-2` для повторов.
-- `def gate_doc_paths(doc: Path, repo_root: Path) -> GateResult`,
+- `def gate_doc_paths(doc: Path, repo_root: Path) -> GateResult` —
+  **`fail` только на утверждениях о существовании** (`md_link`,
+  `autolink`, `code_line_ref`, `declared_existing`); `declared_planned`
+  отсутствующим быть обязан (существует → `warning`: задача объявляет
+  создание того, что уже есть); прочий `code_path` при отсутствии —
+  `warning`. Иначе спека, проектирующая ещё не написанный модуль, не
+  сошлась бы никогда — а именно для этого пайплайн и нужен;
   `gate_doc_links(...)`, `gate_doc_anchors(...)` — status pass/fail,
   `tail` — JSON-строки `{code, target, line}` (машинно-читаемый результат),
   `reason` — человекочитаемая сводка; неоднозначные формы → отдельный
@@ -415,6 +425,12 @@ class SessionLifecyclePolicy(Protocol):
   inline-code путь, текст «похожий на путь» вне кода — НЕ распознан.
 - [ ] Red-тесты slugger'а: регистр, пробелы, Unicode-заголовок,
   повторяющиеся заголовки (`-1`), percent-encoded входная ссылка.
+- [ ] Red-тесты семантики утверждений: `Modify: <несуществующий>` → fail;
+  `Create: <несуществующий>` → pass (объявление намерения);
+  `Create: <уже существующий>` → warning; путь будущего модуля в
+  inline-code прозой → warning, не fail; `[текст](несуществующий.md)` →
+  fail. Кейс-эталон: сам этот план упоминает `pipeline_runner.py` под
+  `Create:` и обязан проходить гейт до реализации.
 - [ ] Red-тесты гейтов на fixture-репо (tmp_path): существующий/битый путь;
   разрешимая/битая относительная ссылка; существующий/битый якорь;
   symlink наружу → fail с `escape`; неоднозначная форма → pass + warning.
