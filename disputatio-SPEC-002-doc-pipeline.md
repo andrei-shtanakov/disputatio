@@ -53,7 +53,7 @@ SPEC_LOOP | PAIR_LOOP ──► ESCALATED ──► EXPORTING(partial) ──►
 | `IDLE` | `SPEC_LOOP` | `started` |
 | `SPEC_LOOP` | `PAIR_LOOP` | `spec_converged` |
 | `PAIR_LOOP` | `EXPORTING` | `pair_converged` |
-| `PAIR_LOOP` | `SPEC_LOOP` | `architectural_defect` |
+| `PAIR_LOOP` | `SPEC_LOOP` | `architectural_defect` \| `external_spec_adopt` |
 | `SPEC_LOOP` | `ESCALATED` | `session_deadlock` \| `session_budget_hit` \| `max_architectural_returns` \| `pipeline_budget_hit` |
 | `PAIR_LOOP` | `ESCALATED` | те же |
 | `ESCALATED` | `EXPORTING` | `export_partial` |
@@ -151,10 +151,15 @@ disp pipeline export  --slug <slug> [--partial]
   принятая правка не стирается.
 
 **Scope принимаемого дифа — fail-closed.** Adoption не обходит документную
-дисциплину: диф, затрагивающий любой tracked-путь вне
-`spec_path`/`plan_path`, отклоняется целиком (такую правку пайплайн не
-принимает — она разбирается вне его). Маршрут новой ревизии определяется
-путями дифа, а не только классификацией ревьюера:
+дисциплину. Scope вычисляется по полному `git status`, tracked и untracked
+вместе: правка или новый файл допустимы только по путям
+`spec_path`/`plan_path` (новый untracked документ — легальный случай,
+например план, которого ещё нет; его содержимое входит в канонический
+adoption patch и чекпоинт); любой иной путь — tracked или untracked —
+отклоняет adoption целиком (такую правку пайплайн не принимает — она
+разбирается вне его, посторонний untracked не переживает adoption молча).
+Маршрут новой ревизии определяется путями дифа, а не только классификацией
+ревьюера:
 
 - spec-контур: допустим только `spec_path` → новая spec-ревизия;
 - pair-контур, затронут только `plan_path` → новая pair-ревизия;
@@ -173,9 +178,17 @@ disp pipeline export  --slug <slug> [--partial]
   `operation_id`, git-чекпоинт распознаётся по trailer'у (падение после
   commit, до записи решения: resume видит intent, находит чекпоинт по
   trailer'у и продолжает без второго коммита); commit point — одна
-  атомарная запись манифеста: operator decision + `outcome: abandoned` +
-  `superseded_by` + chained `next_action = create_session` (либо
-  `record_return`, если маршрут — spec-ревизия);
+  атомарная запись манифеста, и она **единственная** пишет outcome (P3):
+  operator decision + `outcome: abandoned` + `superseded_by` + при маршруте
+  в spec-ревизию — pipeline-переход `PAIR_LOOP → SPEC_LOOP` с reason
+  `external_spec_adopt` в той же записи + chained `next_action =
+  create_session` новой ревизии напрямую. `record_return` в adoption-пути
+  **не участвует**: он определён исключительно для настоящего architectural
+  finding и никогда не перезаписывает уже записанный `abandoned`. Если
+  одновременно есть и внешняя правка `spec_path`, и обнаруженный
+  архитектурный дефект — commit point один, outcome один (`abandoned`),
+  reason — `external_spec_adopt`, а architectural evidence сохраняется в
+  том же transition/operator decision без второй записи outcome;
 - `discard_round`: intent до reset; reset идемпотентен; commit point —
   запись operator decision. Падение между reset'ом и записью не теряет
   факт санкции: intent с `operation_id` уже durable, replay дописывает
@@ -742,9 +755,12 @@ composition root пакета `runtime`:
   ревизии (base_commit = операторский чекпоинт) и resume; при обнаруженном
   архитектурном дефекте adopt не обходит P6 — после чекпоинта исполняется
   возврат в spec-ревизию;
-- adoption fail-closed: диф с tracked-путём вне `spec_path`/`plan_path` —
-  отказ целиком; правка `spec_path` в pair-контуре → spec-ревизия даже без
-  architectural finding; crash-тесты интента `adopt_external` на каждом шаге
+- adoption fail-closed: диф с путём (tracked или untracked) вне
+  `spec_path`/`plan_path` — отказ целиком; новый untracked документ по
+  `spec_path`/`plan_path` принят и входит в чекпоинт; правка `spec_path` в
+  pair-контуре → spec-ревизия даже без architectural finding (reason
+  `external_spec_adopt`, outcome ровно один — `abandoned`, `record_return`
+  не вызывается); crash-тесты интента `adopt_external` на каждом шаге
   (после записи patch-файла, после git-чекпоинта до commit point) — resume
   находит чекпоинт по trailer'у и не создаёт второй коммит; падение
   `discard_round` между reset'ом и записью решения не теряет provenance;
