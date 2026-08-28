@@ -136,8 +136,12 @@
   architectural_defect, external_spec_adopt, session_deadlock,
   session_budget_hit, max_architectural_returns, pipeline_budget_hit,
   export_partial, exported, session_failed, invariant_violation.
-- `ALLOWED_TRANSITIONS: Mapping[PipelinePhase, frozenset[PipelinePhase]]` —
-  закрытая таблица §2; `DONE` отсутствует в ключах-источниках.
+- `ALLOWED_TRANSITIONS: Mapping[tuple[PipelinePhase, PipelinePhase],
+  frozenset[TransitionReason]]` — закрытая таблица §2 **целиком, тройкой
+  `(from, to, reason)`**: §2 задаёт причины отдельно для каждого ребра, и
+  отображение `from → to` их не удерживает — `IDLE → SPEC_LOOP` с
+  `reason="exported"` прошло бы валидацию и легло в историю как
+  достоверная. `DONE` не встречается в ключах-источниках.
 - `SessionOutcome(StrEnum)`: converged, escalated, failed,
   architectural_defect, abandoned.
 - Модели: `EvidenceLink {session_id, round, finding_id}`,
@@ -163,7 +167,11 @@
 
 **Шаги:**
 - [ ] Red-тесты: round-trip сериализации; `test_transition_out_of_table_rejected`
-  (валидатор Transition против ALLOWED_TRANSITIONS);
+  (несуществующее ребро → ValidationError);
+  `test_transition_reason_bound_to_edge` — **корректное ребро с чужой
+  причиной отвергается**: `IDLE → SPEC_LOOP` c `reason="exported"`,
+  `PAIR_LOOP → SPEC_LOOP` c `reason="spec_converged"`; каждая пара из §2
+  со своей причиной проходит;
   `test_done_has_no_outgoing`; `test_outcome_immutable_by_convention`
   (модель frozen-подход: outcome задаётся один раз — проверка на уровне
   store в задаче 5, здесь — что поле Optional и enum закрыт);
@@ -387,8 +395,9 @@ class SessionLifecyclePolicy(Protocol):
 ### Задача 9: runtime — RoundBoundaryPolicy и SessionLifecyclePolicy в drive()
 
 **Файлы:**
-- Modify: `src/disputatio/runtime/loop.py`, `runtime/steps.py`
-  (точка вызова lifecycle вокруг авторского шага), `runtime/composition.py`
+- Modify: `src/disputatio/runtime/loop.py`, `runtime/retry.py`
+  (обрамление каждого `adapter.run` — точка интеграции lifecycle),
+  `runtime/steps.py` (проброс политики), `runtime/composition.py`
 - Test: `tests/runtime/test_round_boundary.py`,
   `tests/runtime/test_lifecycle_policy.py`
 
@@ -398,10 +407,17 @@ class SessionLifecyclePolicy(Protocol):
 - Точка опроса boundary: после того как `apply_decision` записал
   `CONTINUE` и write-ahead новую фазу, до исполнения её шага; `PARK` →
   `drive` возвращает текущее нетерминальное состояние.
-- Lifecycle: `before_author_turn(state)` непосредственно перед запуском
-  адаптера автора в шаге `PROPOSING`, `after_author_turn(state)` после
-  возврата адаптера, до чтения/парсинга его вывода; исключение политики →
-  `FAILED` сессии (существующий механизм невосстановимой ошибки).
+- Lifecycle: **обрамляется каждый вызов `adapter.run` автора, а не шаг
+  `PROPOSING` целиком.** Точка интеграции — `run_with_schema_retry`
+  (`runtime/retry.py`), где адаптер зовётся в цикле `while True`
+  (`retry.py:107-114`): при невалидной схеме внутри одного `PROPOSING`
+  ходов автора несколько, а P9 требует снапшот перед каждым. Обрамление
+  всего шага одной парой оставило бы подмену control plane между
+  retry-попытками незамеченной — вторая попытка успела бы вернуть байты
+  на место. Поэтому `before_author_turn(state)` — непосредственно перед
+  `adapter.run`, `after_author_turn(state)` — сразу после возврата, до
+  парсинга вывода; исключение политики → `FAILED` сессии (существующий
+  механизм невосстановимой ошибки).
 - `resume_session(..., round_boundary=None, lifecycle=None)` — прокладка.
 
 **Шаги:**
@@ -412,8 +428,12 @@ class SessionLifecyclePolicy(Protocol):
   раунде 1 с architectural-ревью: drive вернул нетерминальное состояние,
   фейковый автор раунда 2 НЕ вызывался, session.json write-ahead указывает
   `PROPOSING`.
-- [ ] Red-тест: `test_lifecycle_called_each_proposing` — счётчик вызовов
-  = числу раундов; `test_lifecycle_error_fails_session`.
+- [ ] Red-тест: `test_lifecycle_called_per_adapter_run` — счётчик вызовов
+  равен числу **вызовов адаптера**, а не раундов;
+  `test_lifecycle_wraps_schema_retry_attempts` — первая попытка автора
+  возвращает невалидный по схеме вывод: пар before/after ровно две в одном
+  раунде, и сверка второй пары выполняется **до** запуска второй попытки
+  (spy фиксирует порядок); `test_lifecycle_error_fails_session`.
 - [ ] Реализация, suite, Commit:
   `feat(runtime): границы раунда и lifecycle-политики в drive()`.
 
