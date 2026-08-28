@@ -173,8 +173,9 @@ adoption patch и чекпоинт); любой иной путь — tracked и
 падение посреди многошаговой мутации было бы неразрешимо):
 
 - `adopt_external`: intent записывается **до** первой мутации
-  (`operation_id` детерминирован из sha256 дифа + identity припаркованного
-  чекпоинта); исполнение идемпотентно — patch-файл пишется по имени
+  (`operation_id` детерминирован из sha256 дифа + identity активного
+  session/round-чекпоинта — adopt применим и к in-flight сессии, не только
+  к припаркованной); исполнение идемпотентно — patch-файл пишется по имени
   `operation_id`, git-чекпоинт распознаётся по trailer'у (падение после
   commit, до записи решения: resume видит intent, находит чекпоинт по
   trailer'у и продолжает без второго коммита); commit point — одна
@@ -185,10 +186,13 @@ adoption patch и чекпоинт); любой иной путь — tracked и
   create_session` новой ревизии напрямую. `record_return` в adoption-пути
   **не участвует**: он определён исключительно для настоящего architectural
   finding и никогда не перезаписывает уже записанный `abandoned`. Если
-  одновременно есть и внешняя правка `spec_path`, и обнаруженный
-  архитектурный дефект — commit point один, outcome один (`abandoned`),
-  reason — `external_spec_adopt`, а architectural evidence сохраняется в
-  том же transition/operator decision без второй записи outcome;
+  маршрут в spec вызван обеими причинами сразу или только дефектом —
+  commit point всё равно один, outcome один (`abandoned`), а `reason`
+  перехода выбирается по причине маршрута: изменение `spec_path` →
+  `external_spec_adopt`; только архитектурный дефект при plan-only дифе →
+  `architectural_defect`; обе причины → `external_spec_adopt` как основной,
+  архитектурные находки — в evidence того же transition/operator decision,
+  без второй записи outcome;
 - `discard_round`: intent до reset; reset идемпотентен; commit point —
   запись operator decision. Падение между reset'ом и записью не теряет
   факт санкции: intent с `operation_id` уже durable, replay дописывает
