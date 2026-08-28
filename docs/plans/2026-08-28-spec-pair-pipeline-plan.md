@@ -46,8 +46,15 @@
 
 **Интерфейсы (производит):**
 - `Mode.DOCUMENT = "document"` (только в v2-контексте).
-- `class EvidenceRef(ArtifactChild): kind: Literal["artifact","gate"];
-  ref: str; lines: str | None = None`
+- Evidence — **дискриминированный union двух закрытых форм** (§5.2 SPEC-002
+  перечисляет ровно две; одна модель с опциональным `lines` пропускала бы
+  `artifact` без строк и `gate` со строками):
+  `class ArtifactEvidence(ArtifactChild): kind: Literal["artifact"];
+  ref: str; lines: str  # обязателен, формат "N" или "N-M"`,
+  `class GateEvidence(ArtifactChild): kind: Literal["gate"]; ref: str`
+  (поля `lines` нет — лишнее поле отвергается `extra="forbid"` базовой
+  модели), `EvidenceRef = Annotated[ArtifactEvidence | GateEvidence,
+  Field(discriminator="kind")]`.
 - `class ChecklistItem(ArtifactChild): id: str;
   status: Literal["pass","fail","not_applicable"];
   evidence: list[EvidenceRef]  # min_length=1
@@ -65,10 +72,16 @@
   `"schema": "disputatio/v1"` v2-ридером — ок),
   `test_v1_strict_rejects_document_mode` (v1-тег + mode=document —
   ValidationError), `test_checklist_item_requires_evidence` (пустой
-  evidence — ValidationError), `test_defect_class_optional_default_none`.
-- [ ] Запустить, убедиться в падении: `uv run pytest tests/contracts/test_schema_v2.py -q`.
+  evidence — ValidationError), `test_defect_class_optional_default_none`,
+  `test_artifact_evidence_requires_lines` (artifact без `lines` —
+  ValidationError), `test_gate_evidence_rejects_lines` (gate с `lines` —
+  ValidationError), `test_evidence_lines_format` (`"34-41"`, `"12"` — ок;
+  `"abc"`, `"41-34"` — ValidationError).
+- [ ] Запустить, убедиться в падении:
+  `uv run pytest tests/contracts/test_schema_v2.py -q`.
 - [ ] Минимальная реализация; suite + pyrefly + ruff.
-- [ ] Commit: `feat(contracts): схема disputatio/v2 — Mode.DOCUMENT, checklist, defect_class`.
+- [ ] Commit:
+  `feat(contracts): схема disputatio/v2 — Mode.DOCUMENT, checklist, defect_class`.
 
 Трассируемость: SPEC-002 §5.1, §5.2 (структуры).
 
@@ -135,8 +148,15 @@
   `NextAction {operation_id, kind: Literal["create_session","run_session",
   "finish_session","record_return","adopt_external","discard_round",
   "export"], args: dict, predecessor_operation_id: str | None}`,
-  `IntegritySnapshot {session_id, round, hashes: dict[str, str]}`,
-  `PipelineState(ArtifactBase)` — все поля §4.2.
+  `ImmutableEntry {sha256: str}`,
+  `AppendOnlyEntry {prefix_bytes: int, prefix_sha256: str}`,
+  `IntegritySnapshot {session_id, round, immutable: dict[str,
+  ImmutableEntry], append_only: dict[str, AppendOnlyEntry]}` — два класса
+  файлов различены типом, а не строкой (§4.2 SPEC-002: prefix-property
+  журналов проверяется по длине+хешу префикса, неизменяемые — по равенству
+  хеша),
+  `PipelineState(ArtifactBase)` — все поля §4.2, включая `anchor_path: str`
+  (путь журнала целостности P9, вне `workspace_root`).
 
 **Шаги:**
 - [ ] Red-тесты: round-trip сериализации; `test_transition_out_of_table_rejected`
@@ -184,7 +204,8 @@ class SessionLifecyclePolicy(Protocol):
 - [ ] Red-тест: structural-check фейков через `isinstance` (паттерн ADR-004,
   как у существующих портов).
 - [ ] Реализация, suite, Commit:
-  `feat(contracts): порты PipelineStateStore, RoundBoundaryPolicy, SessionLifecyclePolicy`.
+  `feat(contracts): порты PipelineStateStore, RoundBoundaryPolicy,
+  SessionLifecyclePolicy`.
 
 Трассируемость: §7.1, §9 (строка contracts).
 
@@ -237,15 +258,21 @@ class SessionLifecyclePolicy(Protocol):
   `atomic_write`; **guard неизменяемости**: save отклоняет (`ValueError`)
   изменение уже ненулевого `outcome` и укорачивание append-only коллекций
   (`transitions`, `spec_sessions`, `pair_sessions`, `operator_decisions`).
+- `PipelineEventType(StrEnum)` — закрытый словарь §4.1 SPEC-002, ровно
+  шесть значений: `phase_change`, `session_started`, `session_finished`,
+  `return_recorded`, `exported`, `error`.
 - `PipelineEventSink` — best-effort/zero-or-more: `emit(event)` с
-  `operation_id` в payload; на открытии — ремонт хвоста (последняя строка
-  без `\n` или невалидный JSON → усечение).
+  `operation_id` в payload; тип события — только из `PipelineEventType`
+  (чужая строка → `ValueError`); на открытии — ремонт хвоста (последняя
+  строка без `\n` или невалидный JSON → усечение).
 
 **Шаги:**
 - [ ] Red-тесты: атомарность (temp+rename — нет частичного файла);
   `test_outcome_rewrite_rejected`; `test_transitions_shrink_rejected`;
   `test_tail_repair_truncates_partial_line`;
-  `test_slug_grammar_rejected`.
+  `test_slug_grammar_rejected`;
+  `test_event_vocabulary_closed` (все шесть типов §4.1 принимаются, седьмой
+  — `ValueError`).
 - [ ] Реализация, suite, Commit:
   `feat(events): FilePipelineStateStore + пути пайплайна + best-effort sink`.
 
@@ -376,22 +403,25 @@ class SessionLifecyclePolicy(Protocol):
 - Test: `tests/adapters/test_path_write_deny.py`
 
 **Интерфейсы (производит):**
-- У адаптеров классовый атрибут/метод
-  `supports_path_write_deny: bool` и параметр конструктора
-  `deny_write_paths: tuple[str, ...] = ()`; `claude_code` мапит в свои
-  permission-deny правила (той же механикой, что read-only ревьюер —
-  см. `permissions.py`), адаптер без поддержки при непустом
-  `deny_write_paths` кидает `ConfigError` на конструировании (fail-closed).
+- `AdapterCapabilities` (`adapters/permissions.py`) получает поля
+  `path_write_deny: bool = False` и `deny_write_paths: tuple[str, ...] = ()`;
+  `build_role_argv(Role.AUTHOR, caps)` перестаёт быть безусловным `[]`:
+  при `path_write_deny and deny_write_paths` возвращает deny-аргументы
+  `claude_code`, иначе — прежний `[]`.
+- Слой **необязательный** (P9 в редакции после pair-ревью: якорь доверия —
+  файловая граница `integrity_anchor`, не адаптер). Адаптер без capability
+  допускается и старт не роняет; `ConfigError` тут не возникает вовсе.
 
 **Шаги:**
-- [ ] Red-тесты: claude_code собирает CLI-аргументы с deny на
-  `.disputatio/**` (проверка построенной команды, без запуска CLI);
-  неподдерживающий адаптер + deny → `ConfigError`;
-  пустой deny → поведение неизменно.
+- [ ] Red-тесты: `claude_code` c `path_write_deny=True` и
+  `deny_write_paths=(".disputatio/**",)` собирает argv с deny-правилом
+  (проверка построенной команды, без запуска CLI); адаптер без capability
+  с теми же `deny_write_paths` — argv автора пуст, исключения нет;
+  `test_author_argv_unchanged_by_default` (регресс: дефолт = прежнее `[]`).
 - [ ] Реализация, suite, Commit:
-  `feat(adapters): capability path_write_deny (fail-closed)`.
+  `feat(adapters): необязательная capability path_write_deny`.
 
-Трассируемость: §9 (adapters), P9 (якорь доверия).
+Трассируемость: §9 (adapters), P9 (слой глубины, не якорь).
 
 ---
 
@@ -434,20 +464,27 @@ class SessionLifecyclePolicy(Protocol):
 - `PipelineConfig` (frozen dataclass): spec_path, plan_path,
   max_architectural_returns=2, soft_max_pipeline_tokens=0,
   soft_max_pipeline_wall_seconds=0, protected_branches=("master","main"),
-  checklists (override или вендоренный дефолт задачи 2), extra_gates.
+  checklists (override или вендоренный дефолт задачи 2), extra_gates,
+  `anchor_path: Path` — журнал целостности P9; дефолт —
+  `platformdirs`-подобный state-каталог пользователя (без новой
+  зависимости: `os.environ.get("XDG_STATE_HOME")` либо
+  `~/.local/state`) + `disputatio/anchors/<slug>.jsonl`.
 - `load_pipeline_config(path) -> PipelineConfig` — неизвестный ключ в
   `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
   («baseline не отключается»).
 - `check_run_preconditions(workspace_root, config, slug) -> None` —
   чистое дерево, текущая ветка ∉ protected_branches, каталог пайплайна не
-  существует; нарушение → `ConfigError` с подготовительной командой в
-  тексте (`git switch -c docs/<slug>`).
+  существует, **`anchor_path` резолвится вне `workspace_root`** (P9: анкер
+  внутри дерева автора анкером не является); нарушение → `ConfigError` с
+  подготовительной командой в тексте (`git switch -c docs/<slug>`).
 
 **Шаги:**
 - [ ] Red-тесты: парсинг примера §3.2; baseline-переопределение → отказ;
   предусловия на tmp-git-репо: грязное дерево / protected ветка /
-  существующий каталог → отказ с точным текстом; ветка создаётся НЕ нами
-  (проверка, что функция не мутирует репо).
+  существующий каталог → отказ с точным текстом; `anchor_path` внутри
+  `workspace_root` → отказ; дефолтный `anchor_path` вычисляется вне
+  репозитория (XDG_STATE_HOME подменяется в тесте); ветка создаётся НЕ
+  нами (проверка, что функция не мутирует репо).
 - [ ] Реализация, suite, Commit:
   `feat(runtime): конфиг пайплайна и fail-closed предусловия run`.
 
@@ -455,200 +492,312 @@ class SessionLifecyclePolicy(Protocol):
 
 ---
 
-### Задача 13: runtime — runner: фазы, интенты, контуры
+### Задача 13: runtime — расширение GitOps под adoption и reconciliation
 
 **Файлы:**
-- Create: `src/disputatio/runtime/pipeline_runner.py`
-- Test: `tests/runtime/test_pipeline_runner.py` (fake-сессии: runner
-  получает `session_driver: Callable` — инъекция, реальный drive
-  подключается в задаче 16)
+- Modify: `src/disputatio/runtime/git.py` (протокол `GitOps` + реализация
+  `SubprocessGitOps` + приватные хелперы)
+- Test: `tests/runtime/test_git_adoption.py`
 
-**Интерфейсы (производит):**
-- `class PipelineRunner: __init__(self, *, store: PipelineStateStore,
-  sink, session_driver, session_factory, now, config: PipelineConfig)`.
-- `run(slug, task_text)` / `advance()` — цикл §4.3: intent → действие →
-  результат/преемник; полный machinery: `create_session` (снапшоты
-  task/config/checklists c sha256, entry_hashes c маркером `absent`,
-  artifact_root = `sessions/<revision>`), `run_session`, `finish_session`
-  (интерпретация терминалов по durable-состоянию §7.2 — читает
-  session.json/decision.json, не возврат driver'а), `record_return`
-  (reconciliation §7.3: детерминированный operation_id из
-  `{session_id, round, sha256(review.json)}`; commit — одна запись:
-  transition+outcome+superseded_by+chained create_session), `export`
-  (задача 15).
-- Внутри: `_interpret(session_record) -> SessionOutcome`;
-  `budget_used` пересчитывается из session.json всех сессий при каждом
-  save; soft-лимиты проверяются между сессиями → ESCALATED;
-  `max_architectural_returns` → ESCALATED; RoundBoundaryPolicy для pair =
-  «есть blocker/major c defect_class=architectural → PARK».
+**Интерфейсы (потребляет):** существующий `GitOps` (`diff_head`,
+`commit_round`, `reset_hard`, `clean`), приватные `_checked`, `_run`,
+`_env`, `_find_round_commit` — все в `runtime/git.py`.
 
-**Шаги (по одному red→green→commit на группу):**
-- [ ] Happy-path: spec converged → pair converged → EXPORTING → DONE;
-  манифест: фазы, transitions, хеши снапшотов.
-- [ ] Возврат: pair паркуется (fake-ревью со смешанными находками arch +
-  exec) → приоритет P6, spec-r2 создан, старые ревизии `superseded_by`,
-  outcome pair-r1 = architectural_defect, spec-r1 остался converged;
-  pair-r2 стартует без carried issues (проверка args создания).
-- [ ] Эскалации: session DONE-через-DEADLOCK → ESCALATED (причина из
-  decision.json); session FAILED → FAILED (P7: экспорт не вызван);
-  превышение max_architectural_returns и soft-лимитов между сессиями.
-- [ ] Crash-тесты: kill (исключение fake-driver'а) на каждом kind
-  интента; resume-объект (`advance()` заново по манифесту) допроигрывает
-  без дубликатов: «каталог сессии создан, session_started не записан»;
-  «reset выполнен, transition не записан» (идемпотентный повтор);
-  chained-intent: падение на create_session после commit'а возврата —
-  преемник допроигран, предшественник не повторён;
-  `FAILED → FAILED` идемпотентен (P8 — нет дубликата transition).
-- [ ] Commit: `feat(runtime): PipelineRunner — фазы, интенты, контуры, возврат`.
+**Интерфейсы (производит):** протокол `GitOps` расширяется четырьмя
+методами (у операторских решений §3.1 SPEC-002 нет другого пути к git;
+делать `subprocess` прямо в `pipeline_resume.py` нельзя — это второй слой
+доступа к git мимо порта, INV-11):
 
-Трассируемость: §2 (P1–P8), §4.2–4.3, §7.1–7.3.
-
----
-
-### Задача 14: runtime — pipeline-resume, P9, операторские решения
-
-**Файлы:**
-- Create: `src/disputatio/runtime/pipeline_resume.py`,
-  `src/disputatio/runtime/pipeline_integrity.py`
-- Test: `tests/runtime/test_pipeline_resume.py`,
-  `tests/runtime/test_pipeline_integrity.py`
-
-**Интерфейсы (производит):**
-- `resume(slug, *, decision: Literal["discard_round","adopt_external"]
-  | None = None)` — строгий порядок §8.1: (0) P9-сверка по
-  `integrity_snapshot`, (1) манифест (outcome/superseded_by ≠ null — не
-  возобновлять), (2) read-only обнаружение дефекта, (3) сверка worktree,
-  (4) мутирующая фаза, (5) session-resume c политиками.
-- Модель внешней правки: `classify_worktree(...) ->
-  Literal["clean","legal_patch","unattributed"]` — HEAD+чистое / диф
-  байт-в-байт = changes.patch / прочее; `unattributed` без `decision` →
-  `ExternalEditError` с дифом в тексте.
-- `PipelineIntegrityPolicy` — реализация `SessionLifecyclePolicy`:
-  before = записать `integrity_snapshot` (атомарный save манифеста),
-  after = сверка (равенство хешей / prefix-property журналов),
-  расхождение → исключение → `FAILED (invariant_violation)`.
-- Операторские решения — интенты §3.1: `discard_round` (intent до reset,
-  commit = OperatorDecision); `adopt_external` — scope по полному
-  `git status` (tracked+untracked; только spec_path/plan_path, новый
-  untracked документ легален; иначе отказ целиком), patch →
-  `adoptions/<operation_id>.patch`, git-чекпоинт c trailer'ом
-  `Disputatio-Operation: <operation_id>` (идемпотентный поиск по
-  trailer'у), commit point — одна запись: decision + abandoned +
-  superseded_by + transition (`external_spec_adopt` при spec_path,
-  `architectural_defect` при только-дефекте, обе причины →
-  external_spec_adopt + дефект в evidence) + chained create_session с
-  base_commit = чекпоинт.
+```python
+def head_sha(self) -> str: ...
+def status_paths(self) -> tuple[str, ...]:
+    """Пути изменённого и untracked (`git status --porcelain -uall`),
+    относительно корня; `.disputatio/` исключён тем же pathspec, что diff."""
+def commit_paths(self, paths: Sequence[str], subject: str,
+                 *, trailer: str) -> str:
+    """Коммитит РОВНО перечисленные пути (`git add -- <paths>`) с телом
+    `subject\n\nDisputatio-Operation: <trailer>`; возвращает sha."""
+def find_commit_by_trailer(self, trailer: str) -> str | None:
+    """`git log --format=%H%x00%B` + поиск строки трейлера — идемпотентный
+    повтор adoption не создаёт второй коммит. Поиск по subject не годится:
+    subject одинаков у всех adoption'ов пайплайна."""
+```
 
 **Шаги:**
-- [ ] Red-тесты порядка: дефект + грязное неатрибутируемое дерево →
-  остановка ДО любых мутаций (ни reset, ни replay — spy на git-слое);
-  припаркованная/abandoned сессия не resume-ится; легальный
-  changes.patch-диф проходит.
-- [ ] Red-тесты P9: подмена манифеста «автором» между before/after →
-  FAILED; усечение журнала → FAILED; легальный append проходит; kill
-  между before и after → resume ловит по durable snapshot'у;
-  адаптер без path_write_deny в document-режиме → отказ preflight.
-- [ ] Red-тесты adoption: маршрутизация по путям (§3.1 — три случая +
-  чужой tracked/untracked путь → отказ); правка переживает первый
-  PROPOSING новой ревизии (base_commit) и resume; crash после patch,
-  после git-чекпоинта, до commit point — по одному тесту, чекпоинт не
-  дублируется; discard: падение между reset и записью решения не теряет
-  provenance; outcome ровно один (`abandoned`), record_return не вызван.
-- [ ] Реализация, suite, Commit:
-  `feat(runtime): pipeline-resume, P9-целостность, операторские решения`.
+- [ ] Red-тесты на реальном tmp-git-репо (паттерн существующих тестов
+  `runtime/git`): `head_sha` совпадает с `git rev-parse HEAD`;
+  `status_paths` видит modified и untracked, не видит `.disputatio/`;
+  `commit_paths` коммитит только указанное (посторонний грязный файл
+  остаётся вне коммита и в дереве); trailer попадает в тело;
+  `find_commit_by_trailer` находит свой коммит и возвращает `None` для
+  чужого; два adoption'а с разными trailer'ами различимы.
+- [ ] Реализация; проверить, что фейки `GitOps` в существующих тестах
+  обновлены (протокол расширился) — suite зелёный.
+- [ ] Commit:
+  `feat(runtime): GitOps — head_sha, status_paths, commit_paths, trailer lookup`.
 
-Трассируемость: §3.1 (решения), §8.1, P9, P3.
+Трассируемость: §3.1 (adoption), §7.3 (cleanup), §8.1 (сверка worktree).
 
 ---
 
-### Задача 15: runtime — экспорт готовой пары
+### Задача 14: runtime — экспорт готовой пары
+
+*(Идёт до runner'а намеренно: runner исполняет intent `export`, и без
+готового экспортёра его задача либо импортировала бы несуществующий
+модуль, либо заводила незапланированную заглушку.)*
 
 **Файлы:**
 - Create: `src/disputatio/runtime/pipeline_export.py`
 - Test: `tests/runtime/test_pipeline_export.py`
 
+**Интерфейсы (потребляет):** `PipelineState` (задача 3), `GitOps.head_sha`
+(задача 13).
+
 **Интерфейсы (производит):**
-- `export_pipeline(state, *, workspace_root, partial: bool = False) -> Path`:
-  `result/` = `pr_title.txt`, `pr_body.md` (сводка чеклистов/evidence,
-  история контуров), `publish.txt` (remote/branch из `git remote get-url`
-  + текущей ветки, shell-quoting через `shlex.quote`; remote неопределим →
-  шаблон `<REMOTE>` с явной строкой-предупреждением), `manifest.json` —
-  **последним** (commit marker), перечисляет полный набор файлов с sha256;
-  старт экспорта удаляет из result/ файлы вне нового набора; канонические
-  байты — сортированные ключи, `created_at`/`at` — фиксированные метки
-  фактов, времени экспорта нет.
-- CLI-коды: DONE-конвергенция → 0, ESCALATED → ненулевой; FAILED —
-  экспорт только `--partial`.
+- `def export_pipeline(state: PipelineState, *, workspace_root: Path,
+  remote_url: str | None, branch: str | None, partial: bool = False)
+  -> Path` — сигнатура и есть тот «порт», который runner получает
+  инъекцией (`exporter: ExportFn` в задаче 15);
+  `ExportFn = Callable[..., Path]` объявляется здесь же.
+- `result/`: `pr_title.txt`, `pr_body.md` (сводка чеклистов/evidence,
+  история контуров), `publish.txt` (`git push` + `gh pr create --draft`;
+  quoting — `shlex.quote`; `remote_url is None or branch is None` →
+  шаблон с `<REMOTE>`/`<BRANCH>` и строкой-предупреждением),
+  `manifest.json` — **последним** (commit marker) с полным набором файлов
+  и их sha256; старт экспорта удаляет из `result/` файлы вне нового
+  набора; канонические байты: сортированные ключи, метки фактов
+  (`created_at`, `at`) сохраняются, времени экспорта нет.
 
 **Шаги:**
 - [ ] Red-тесты: идемпотентность (два вызова — байт-в-байт, включая
-  manifest); commit marker (обрыв до manifest — набор невалиден по
+  `manifest.json`); commit marker (обрыв до манифеста — набор невалиден по
   манифесту, повтор чинит и убирает stale-файл); честный partial
   (`converged: false`, причина эскалации, открытые находки);
-  publish.txt при отсутствующем remote — шаблон с предупреждением,
-  quoting ветки со спецсимволом.
+  `publish.txt` без remote — шаблон с предупреждением; ветка со
+  спецсимволом заквочена.
 - [ ] Реализация, suite, Commit:
   `feat(runtime): идемпотентный экспорт пары с commit marker`.
 
-Трассируемость: §8.2, P7, m1/m7-правки (§4.2 про метки).
+Трассируемость: §8.2, P7.
 
 ---
 
-### Задача 16: CLI `disp pipeline` + сквозные интеграционные тесты
+### Задача 15: runtime — runner: фазы, интенты, контуры
+
+**Файлы:**
+- Create: `src/disputatio/runtime/pipeline_runner.py`
+- Test: `tests/runtime/test_pipeline_runner.py`
+
+**Интерфейсы (потребляет):** `PipelineStateStore` (задачи 4, 6),
+`PipelineEventType`/sink (задача 6), `PipelineConfig` (задача 12),
+`ExportFn` (задача 14), `RoundBoundaryPolicy` (задачи 4, 9).
+
+**Интерфейсы (производит):**
+```python
+class PipelineRunner:
+    def __init__(self, *, store: PipelineStateStore, sink,
+                 session_driver: SessionDriver, session_factory: SessionFactory,
+                 exporter: ExportFn, now: Callable[[], datetime],
+                 config: PipelineConfig) -> None: ...
+    def run(self, slug: str, task_text: str) -> PipelineState: ...
+    def advance(self, slug: str) -> PipelineState: ...
+```
+`SessionDriver = Callable[[Path, str, RoundBoundaryPolicy | None],
+SessionState]` — инъекция: в тестах фейк со скриптованными артефактами,
+реальный `drive`/`resume_session` подключается в задаче 17.
+
+Механика: цикл §4.3 (intent → действие → результат либо chained-преемник);
+`create_session` (снапшоты task/config/checklists с sha256, `entry_hashes`
+с маркером `absent`, `artifact_root = sessions/<revision>`);
+`run_session`; `finish_session` — интерпретация по **durable-состоянию**
+(`session.json` + `decision.json` последнего раунда, не по возврату
+драйвера); `record_return` (§7.3: `operation_id` из
+`{session_id, round, sha256(review.json)}`; commit — одна запись:
+transition + outcome + superseded_by + chained `create_session`);
+`export` — вызов `exporter`. Внутри: `_recompute_budget(state)` —
+`budget_used` пересчитывается из `session.json` **всех** сессий, включая
+припаркованные, при каждой записи манифеста; soft-лимиты проверяются между
+сессиями; `max_architectural_returns` → `ESCALATED`; pair-политика границы
+раунда = «есть blocker/major с `defect_class: architectural` → `PARK`».
+
+**Шаги:**
+- [ ] Happy-path: spec converged → pair converged → EXPORTING → DONE;
+  манифест: фазы, transitions, хеши снапшотов, вызов `exporter` ровно один.
+- [ ] Возврат: pair паркуется (смешанное ревью arch + exec) → приоритет P6,
+  spec-r2 создан, перекрытые ревизии получают `superseded_by`, outcome
+  pair-r1 = `architectural_defect`, spec-r1 остался `converged`; pair-r2
+  стартует без carried issues (проверка args создания).
+- [ ] Бюджет: `test_budget_recomputed_no_double_count` — повторный
+  `run_session` (replay после краха) не удваивает `tokens`/`wall_seconds`;
+  припаркованная сессия входит в агрегат.
+- [ ] Эскалации: DONE-через-DEADLOCK → `ESCALATED` (причина из
+  `decision.json`); session `FAILED` → `FAILED` (P7: `exporter` не вызван);
+  превышение `max_architectural_returns`; soft-лимит между сессиями.
+- [ ] Crash-тесты — по одному на **каждую write-ahead границу внутри**
+  многошаговых kind'ов, а не на kind целиком (§10 SPEC-002):
+  (1) intent `create_session` записан, каталог не создан;
+  (2) каталог создан, `session_started` не записан;
+  (3) `run_session` записан, драйвер упал до записи результата;
+  (4) `record_return`: intent записан, reset не выполнен;
+  (5) reset выполнен, commit point не записан (идемпотентный повтор);
+  (6) commit point записан, chained `create_session` не исполнен —
+  преемник допроигран, предшественник не повторён;
+  (7) `export` записан, экспорт прерван до `manifest.json`;
+  (8) `FAILED → FAILED` идемпотентен (P8 — без дубликата transition).
+- [ ] Commit: `feat(runtime): PipelineRunner — фазы, интенты, контуры, возврат`.
+
+Трассируемость: §2 (P1–P8), §4.2–4.3, §7.1–7.3, §10 (crash-минимум).
+
+---
+
+### Задача 16: runtime — pipeline-resume, анкер P9, операторские решения
+
+**Файлы:**
+- Create: `src/disputatio/runtime/pipeline_resume.py`,
+  `src/disputatio/runtime/pipeline_integrity.py`,
+  `src/disputatio/runtime/pipeline_adopt.py`
+- Test: `tests/runtime/test_pipeline_resume.py`,
+  `tests/runtime/test_pipeline_integrity.py`,
+  `tests/runtime/test_pipeline_adopt.py`
+
+**Интерфейсы (потребляет):** расширенный `GitOps` (задача 13),
+`IntegritySnapshot`/`ImmutableEntry`/`AppendOnlyEntry` (задача 3),
+`SessionLifecyclePolicy` (задачи 4, 9), `PipelineRunner` (задача 15).
+
+**Интерфейсы (производит):**
+- `resume(slug, *, decision: Literal["discard_round","adopt_external"]
+  | None = None)` — строгий порядок §8.1: (0) сверка по анкеру, (1) чтение
+  манифеста (сессии с `outcome`/`superseded_by` ≠ null не возобновляются),
+  (2) **read-only** обнаружение архитектурного дефекта, (3) сверка
+  worktree, (4) мутирующая фаза, (5) session-resume с политиками.
+- `classify_worktree(git: GitOps, state) -> Literal["clean","legal_patch",
+  "unattributed"]`; `unattributed` без `decision` → `ExternalEditError`
+  с дифом в тексте.
+- `class IntegrityAnchor:` — append-only журнал вне `workspace_root`:
+  `append(snapshot) -> None` (fsync), `last(session_id) ->
+  IntegritySnapshot | None`; `class PipelineIntegrityPolicy` —
+  реализация `SessionLifecyclePolicy`: `before_author_turn` пишет снапшот
+  **и в анкер, и в манифест**, `after_author_turn` сверяет control plane
+  против **анкера** (не против поля манифеста: манифест автору достижим);
+  расхождение → исключение → `FAILED (invariant_violation)`.
+- `adopt_external(...)` / `discard_round(...)` — интенты §3.1: scope по
+  `GitOps.status_paths()` (tracked + untracked; допустимы только
+  `spec_path`/`plan_path`, новый untracked документ легален, иначе отказ
+  целиком); patch → `adoptions/<operation_id>.patch`; чекпоинт —
+  `commit_paths([документы], "disputatio: operator adopt <slug>",
+  trailer=operation_id)` с предварительным `find_commit_by_trailer`
+  (идемпотентность); commit point — одна запись манифеста: decision +
+  `abandoned` + `superseded_by` + transition (`external_spec_adopt` при
+  затронутом `spec_path`; `architectural_defect`, если причина только
+  дефект; обе причины → `external_spec_adopt`, находки в evidence) +
+  chained `create_session` с `base_commit` = sha чекпоинта.
+
+**Шаги:**
+- [ ] Red-тесты порядка: дефект + грязное неатрибутируемое дерево →
+  остановка **до любых мутаций** (spy на `GitOps`: ни `reset_hard`, ни
+  `commit_paths` не вызваны); припаркованная/`abandoned` сессия не
+  возобновляется; легальный `changes.patch`-диф проходит.
+- [ ] Red-тесты анкера: подмена манифеста **вместе с его
+  `integrity_snapshot`** ловится сверкой против анкера (сценарий, ради
+  которого анкер вынесен из дерева); усечение журнала → `FAILED`;
+  легальный append оркестратора проходит prefix-property; kill между
+  before и after → resume ловит по анкеру; `anchor_path` внутри
+  `workspace_root` → отказ старта (тест уровня задачи 12, здесь —
+  регресс на конструировании политики).
+- [ ] Red-тесты adoption (маршрут): только `plan_path` в pair → новая
+  pair-ревизия; `spec_path` в pair → spec-ревизия и reason
+  `external_spec_adopt` даже без architectural finding; обе причины →
+  один outcome `abandoned`, `record_return` не вызван; чужой tracked
+  путь → отказ; чужой untracked путь → отказ; новый untracked
+  `plan_path` → принят и попал в чекпоинт.
+- [ ] Red-тесты adoption (crash, по границам): (1) intent записан, patch не
+  создан; (2) patch создан, чекпоинт не сделан; (3) чекпоинт сделан,
+  commit point не записан — повтор находит коммит по trailer'у и второго
+  не создаёт; (4) commit point записан, chained `create_session` не
+  исполнен; (5) `discard_round`: intent записан, reset не выполнен;
+  (6) reset выполнен, decision не записан — provenance не потеряна.
+- [ ] Red-тест сохранности: принятая правка переживает первый `PROPOSING`
+  новой ревизии (`base_commit` = чекпоинт) и повторный resume.
+- [ ] Реализация, suite, Commit:
+  `feat(runtime): pipeline-resume, анкер целостности, операторские решения`.
+
+Трассируемость: §3.1, §8.1, P3, P9.
+
+---
+
+### Задача 17: CLI `disp pipeline` + сквозные интеграционные тесты
 
 **Файлы:**
 - Modify: `src/disputatio/cli.py`, `src/disputatio/runtime/composition.py`
-- Test: `tests/integration/test_pipeline_e2e.py`
+- Create: `tests/integration/__init__.py` (каталога нет — создаётся этой
+  задачей), `tests/integration/test_pipeline_e2e.py`
+
+**Интерфейсы (потребляет):** всё предыдущее; здесь же реальный
+`session_driver` = `drive`/`resume_session` с политиками (задача 9).
 
 **Интерфейсы (производит):**
-- Команды §3.1: `disp pipeline run|resume|status|export` (status — только
-  чтение манифеста, тест: никаких записей на диск); composition root
-  собирает runner из реальных реализаций (v2-валидация ревью doc-сессий
-  включается по Mode.DOCUMENT в существующем слое schema-retry).
-- Сквозные тесты на fake-адаптерах (скриптованные ответы автора/ревьюера):
-  1. полный happy-path двух контуров до `result/` c проверкой manifest;
-  2. архитектурный возврат со смешанным ревью → spec-r2 → полная pair-r2
-     без наследства (P5/P6);
-  3. анти-сикофантия раунда 1 для document: скриптованный approve
-     раунда 1 не даёт сходимости — форс содержательного цикла;
-  4. V6-гарантия: скриптованный approve с fail-пунктом чеклиста гибнет в
-     schema-retry и до `decide()` не доходит (spy на decide —
-     импорт-обёртка в тесте, `core/deciding.py` не тронут);
-  5. verification fail (битая ссылка в спеке) → ревью состоялось, но
-     converged заблокирован до починки.
-- [ ] Red → green по одному сценарию за шаг; suite; Commit:
-  `feat(runtime): CLI disp pipeline + сквозные сценарии`.
-- [ ] Финал: `docs/workstream-setup.md` не трогаем (вне scope);
-  `TODO.md` — пункт `spec-pair-polish-automation` пометить прогрессом
-  ссылкой на PR пары (отдельным коммитом в PR пары не входит — правка
-  TODO делается в самом PR реализации).
+- Команды §3.1: `disp pipeline run|resume|status|export`; `resume`
+  принимает `--discard-round`/`--adopt-external` (взаимоисключающи);
+  коды выхода: DONE-конвергенция → 0, `ESCALATED` → ненулевой, `FAILED` →
+  ненулевой без автоэкспорта.
+- Composition root собирает runner из реальных реализаций; валидация
+  `validate_doc_review` включается по `Mode.DOCUMENT` в существующем слое
+  schema-retry.
 
-Трассируемость: §3.1 (CLI), §10 (интеграционный минимум), V6.
+**Шаги (по одному сценарию за шаг, red → green):**
+- [ ] `test_status_is_read_only` — `status` не пишет на диск (снимок mtime
+  и содержимого каталога до/после).
+- [ ] Happy-path двух контуров на fake-адаптерах до `result/` с проверкой
+  `manifest.json`.
+- [ ] Архитектурный возврат со смешанным ревью → spec-r2 → полная pair-r2
+  без наследства (P5/P6).
+- [ ] Анти-сикофантия раунда 1 для `Mode.DOCUMENT`: скриптованный approve
+  раунда 1 не даёт сходимости.
+- [ ] V6-гарантия: approve с fail-пунктом чеклиста гибнет в schema-retry и
+  до `decide()` не доходит (spy — обёртка вокруг `decide` в composition
+  тестового прогона; `core/deciding.py` не редактируется).
+- [ ] Verification fail (битая ссылка в спеке): ревью состоялось, но
+  `CONVERGED` заблокирован до починки.
+- [ ] Commit: `feat(runtime): CLI disp pipeline + сквозные сценарии`.
+
+Трассируемость: §3.1 (CLI), §5.1 (анти-сикофантия), §10, V6.
 
 ---
 
 ## Матрица трассируемости SPEC-002 → задачи
 
-| Раздел SPEC-002 | Задачи |
-|---|---|
-| §2 FSM, P1–P9 | 3 (таблица/модели), 6 (P3/P8-guard), 13 (P1–P8), 14 (P9) |
-| §3.1 CLI, предусловия, решения оператора | 12, 14, 16 |
-| §3.2 конфиг | 12 |
-| §4.1 layout, artifact_root | 5, 6 |
-| §4.2 манифест | 3, 6, 13 |
-| §4.3 интенты, chaining | 3, 13, 14 |
-| §5.1 Mode.DOCUMENT, v2 | 1, 16 |
-| §5.2 схема ревью, V1–V8 | 1, 2, 16 (V6) |
-| §5.3 чеклисты | 2, 12 (override) |
-| §6 doc-гейты, baseline | 7, 8, 12 (отказ отключения) |
-| §7.1 порты границ | 4, 9 |
-| §7.2 терминалы | 13 |
-| §7.3 возврат | 13, 14 (cleanup-гейт) |
-| §8.1 resume, внешняя правка | 14 |
-| §8.2 экспорт | 15 |
-| §9 раскладка | вся структура файлов плана |
-| §10 тесты | распределены по задачам 1–16 |
+Читать как обязательство: строка означает, что перечисленные задачи
+покрывают раздел **целиком**; частичное покрытие названо явно.
 
-Не покрывается планом (вне v1, §11 SPEC-002): автопубликация PR, гейт
+| Раздел SPEC-002 | Задачи | Примечание |
+|---|---|---|
+| §2 P1–P8 | 3 (таблица, модели), 6 (guard неизменяемости), 15 (поведение) | — |
+| §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 10 (необязательный слой), 12 (проверка anchor_path), 16 (анкер и сверка) | якорь — файловая граница, адаптер не участвует |
+| §3.1 CLI и предусловия | 12, 17 | — |
+| §3.1 решения оператора | 13 (git-примитивы), 16 (протокол и маршруты) | — |
+| §3.2 конфиг | 12 | — |
+| §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
+| §4.2 манифест | 3 (схема), 6 (хранилище), 15 (`budget_used`, transitions), 16 (`integrity_snapshot`, `operator_decisions`) | — |
+| §4.3 интенты и chaining | 3 (enum), 15 (границы краха core-kind'ов), 16 (границы краха операторских kind'ов) | — |
+| §5.1 Mode.DOCUMENT, v2 | 1, 17 (анти-сикофантия) | — |
+| §5.2 схема ревью, V1–V8 | 1 (закрытые формы evidence), 2 (V1–V8), 17 (V6 сквозняком) | — |
+| §5.3 чеклисты | 2 (вендоренный дефолт), 12 (override) | — |
+| §6 doc-гейты, baseline | 7, 8, 12 (отказ отключения) | — |
+| §7.1 порты границ | 4 (объявление), 9 (вызовы в `drive`) | — |
+| §7.2 терминалы | 15 | — |
+| §7.3 возврат | 13 (git), 15 (reconciliation), 16 (гейт reset на resume) | — |
+| §8.1 resume, внешняя правка | 13 (git), 16 (порядок и классификация) | — |
+| §8.2 экспорт | 14 | — |
+| §9 раскладка по пакетам | структура файлов всех задач | contracts→events→verifier→context→adapters→runtime |
+| §10 тесты | 15 (core write-ahead границы, 8 сценариев), 16 (операторские границы, 6 сценариев), 17 (сквозные, 6 сценариев) + red-тесты задач 1–14 | — |
+
+**Осознанно вне плана** (§11 SPEC-002): автопубликация PR, гейт
 трассируемости REQ-id, жёсткие пайплайн-лимиты, N-stage, discovery,
-erratum SPEC-001.
+erratum SPEC-001, изоляция уровня ОС для автора.
+
+**Имена, введённые планом, а не спекой** (implementation details, не
+нормативные интерфейсы; переименование при реализации допустимо, если
+сохранены семантика и JSON-форма из SPEC-002): `ArtifactEvidence`,
+`GateEvidence`, `ChecklistItem`, `ImmutableEntry`, `AppendOnlyEntry`,
+`DocRef`, `BoundaryVerdict`, `PipelineConfig`, `PipelineEventType`,
+`DocVerifier`, `IntegrityAnchor`, `ExportFn`, `SessionDriver`.
