@@ -817,9 +817,14 @@ transition + outcome + superseded_by + chained `create_session`);
 - `resume(slug, *, decision: Literal["discard_round","adopt_external"]
   | None = None)` — строгий порядок §8.1: (0) `last_record()`; сверка
   выполняется, **только если `kind == "pre_turn"`** (ход прерван);
-  `turn_completed` и пустой журнал — пропуск. Файл анкера находится по
-  `<anchor_root>` из живой конфигурации и `<anchor_id>` = `slug` — оба
-  входа вне рабочего дерева, поэтому шаг исполним до чтения манифеста, (1) чтение
+  `turn_completed` и пустой существующий журнал — пропуск, а
+  **отсутствие файла анкера — `ConfigError`** с требованием указать
+  `--config`: иначе пайплайн с нестандартным `anchor_path` смотрел бы в
+  дефолтный журнал, не находил записей и молча пропускал P9. Файл анкера
+  находится по `<anchor_root>` из живой конфигурации (`--config`, иначе
+  дефолтный поиск — снапшот в каталоге пайплайна не годится, он в
+  недоверенном дереве) и `<anchor_id>` = `slug` — оба входа вне рабочего
+  дерева, поэтому шаг исполним до чтения манифеста, (1) чтение
   манифеста (сессии с `outcome`/`superseded_by` ≠ null не возобновляются),
   (2) **read-only** обнаружение архитектурного дефекта, (3) сверка
   worktree, (4) мутирующая фаза, (5) session-resume с политиками.
@@ -915,7 +920,10 @@ transition + outcome + superseded_by + chained `create_session`);
 `session_driver` = `drive`/`resume_session` с политиками (задача 9).
 
 **Интерфейсы (производит):**
-- Команды §3.1: `disp pipeline run|resume|status|export`; `resume`
+- Команды §3.1: `disp pipeline run|resume|status|export`; **`--config
+  <toml>` принимают все четыре**, не только `run`: `resume` обязан найти
+  анкер по `anchor_root` до чтения манифеста, а снапшот конфига лежит в
+  недоверенном дереве и для этого не годится. `resume` дополнительно
   принимает `--discard-round`/`--adopt-external` (взаимоисключающи);
   коды выхода: DONE-конвергенция → 0, `ESCALATED` → ненулевой, `FAILED` →
   ненулевой без автоэкспорта.
@@ -926,6 +934,9 @@ transition + outcome + superseded_by + chained `create_session`);
 **Шаги (по одному сценарию за шаг, red → green):**
 - [ ] `test_status_is_read_only` — `status` не пишет на диск (снимок mtime
   и содержимого каталога до/после).
+- [ ] `test_resume_custom_anchor_requires_config` — `run` с нестандартным
+  `anchor_path`, затем `resume` без `--config`: отказ с внятным текстом,
+  а не молчаливый пропуск P9; тот же `resume` с `--config` проходит.
 - [ ] Happy-path двух контуров на fake-адаптерах до `result/` с проверкой
   `manifest.json`.
 - [ ] Архитектурный возврат со смешанным ревью → spec-r2 → полная pair-r2
