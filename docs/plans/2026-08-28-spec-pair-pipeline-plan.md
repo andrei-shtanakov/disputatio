@@ -572,14 +572,18 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
   («baseline не отключается»).
 - `check_run_preconditions(git: GitOps, workspace_root, config, slug)
-  -> None` — чистое дерево **по tracked-файлам** (через
-  `GitOps.status_entries()` задачи 12: блокируют только записи с
-  `tracked=True`). Untracked не блокируют — это осознанное решение
-  существующего `preflight` (`runtime/git.py:136-139`: «`.disputatio/` сама
-  untracked, а требование “удалите черновики” сделало бы инструмент
-  недружелюбным»), и разворот его отверг бы `run` при любом уже
-  существующем пайплайне, вопреки обещанию §4.1 о сосуществовании
-  `<slug>`. Текущая ветка (`GitOps.current_branch()`) ∉
+  -> None` — чистое дерево через `GitOps.status_entries()` задачи 12 с тем
+  же узким фильтром, что в задаче 16: блокирует **любая** запись, кроме
+  untracked-путей под `.disputatio/` (собственный control plane; §4.1 —
+  пайплайны сосуществуют под разными `<slug>`). То есть tracked-изменение
+  блокирует всегда, посторонний untracked — тоже, а `.disputatio/**` с
+  `tracked=False` — нет. Пропускать посторонний untracked **нельзя**:
+  первый `PROPOSING` вызывает `reset_hard` + `clean()`
+  (`runtime/steps.py:186-187`), а `clean()` работает по всему дереву минус
+  каталог сессии (`runtime/git.py:421-425`) — файл был бы молча уничтожен
+  без санкции оператора. Прецедент `preflight` не наследуется: его
+  терпимость к untracked рассчитана на единственный ожидаемый untracked —
+  `.disputatio/`. Текущая ветка (`GitOps.current_branch()`) ∉
   protected_branches — в detached HEAD (`None`) старт отклоняется,
   каталог пайплайна не существует, **канонизованный
   `anchor_path` резолвится вне `workspace_root`** (P9); нарушение →
@@ -590,11 +594,11 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 - [ ] Red-тесты: парсинг примера §3.2; baseline-переопределение → отказ;
   предусловия на tmp-git-репо: грязное дерево / protected ветка /
   существующий каталог → отказ с точным текстом; **tracked-изменение →
-  отказ, untracked-файл → НЕ отказ**;
-  `test_run_allowed_with_other_pipeline` — в `.disputatio/pipelines/` уже
-  лежит другой `<slug>`, новый `run` разрешён (§4.1: пайплайны
-  сосуществуют); ветка создаётся НЕ нами (проверка, что функция не мутирует
-  репо).
+  отказ; посторонний untracked (`notes.txt` в корне) → отказ** — иначе его
+  уничтожил бы `clean()` первого `PROPOSING`;
+  `test_run_allowed_with_other_pipeline` — untracked-каталог другого
+  `<slug>` под `.disputatio/pipelines/` старт НЕ блокирует (§4.1);
+  ветка создаётся НЕ нами (проверка, что функция не мутирует репо).
 - [ ] Red-тесты `anchor_path` (fail-closed, статические варианты — N7):
   прямой путь внутрь `workspace_root` → отказ; относительный путь
   резолвится от cwd и, попав внутрь дерева, → отказ; путь с `..`,
@@ -851,6 +855,9 @@ transition + outcome + superseded_by + chained `create_session`);
   тестового прогона; `core/deciding.py` не редактируется).
 - [ ] Verification fail (битая ссылка в спеке): ревью состоялось, но
   `CONVERGED` заблокирован до починки.
+- [ ] Сохранность постороннего untracked: файл `notes.txt` в корне →
+  `run` отказывает до создания чего-либо; после его удаления `run`
+  проходит и `clean()` первого `PROPOSING` уничтожать нечего.
 - [ ] Commit: `feat(runtime): CLI disp pipeline + сквозные сценарии`.
 
 Трассируемость: §3.1 (CLI), §5.1 (анти-сикофантия), §10, V6.
@@ -866,7 +873,7 @@ transition + outcome + superseded_by + chained `create_session`);
 |---|---|---|
 | §2 P1–P8 | 3 (таблица, модели), 6 (guard prefix-equality + читатель с дедупликацией по `operation_id`), 15 (поведение) | — |
 | §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 6 (`IntegrityAnchor` в `events`), 10 (необязательный слой), 13 (fail-closed `anchor_root`), 16 (политика и сверка) | снапшот только в анкере; манифест несёт `anchor_id` |
-| §3.1 CLI и предусловия | 12 (`current_branch`, `status_entries`), 13 (проверки), 17 (команды) | detached HEAD — отказ |
+| §3.1 CLI и предусловия | 12 (`current_branch`, `status_entries`), 13 (узкий фильтр `.disputatio/**`), 17 (команды) | посторонний untracked блокирует старт: его уничтожил бы `clean()` |
 | §3.1 решения оператора | 12 (`status_entries` с классификацией tracked), 16 (фильтр `.disputatio/` и маршруты) | порт статус не режет — режет потребитель |
 | §3.2 конфиг | 13 (парсинг, `anchor_path` — каталог), 15 (снапшоты в `create_session`) | журнал — `<anchor_path>/<anchor_id>.jsonl` |
 | §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
@@ -896,7 +903,7 @@ erratum SPEC-001, изоляция уровня ОС для автора.
 `DocVerifier`, `IntegrityAnchor` (имя плановое, пакет нормативный —
 `events`, §9), `ExportFn`, `SessionDriver`,
 `ALLOWED_TRANSITIONS`, `SessionRecord`, `Transition`, `OperatorDecision`,
-`NextAction`, `EvidenceLink`, `AppendOnlyEntry`, `IntegritySnapshot`,
+`NextAction`, `EvidenceLink`, `IntegritySnapshot`,
 `StatusEntry`,
 `FilePipelineStateStore`, `PipelineEventSink`, `read_pipeline_events`,
 `PipelineIntegrityPolicy`, `PipelineRunner`, `validate_doc_review`,
