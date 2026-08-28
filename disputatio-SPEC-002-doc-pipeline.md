@@ -193,9 +193,10 @@ SPEC_LOOP | PAIR_LOOP ──► ESCALATED ──► EXPORTING(partial) ──►
 
 ```
 disp pipeline run     --slug <slug> [--task <файл|строка>] [--config <toml>]
-disp pipeline resume  --slug <slug> [--discard-round | --adopt-external]
-disp pipeline status  --slug <slug>     # строго read-only
-disp pipeline export  --slug <slug> [--partial]
+disp pipeline resume  --slug <slug> [--config <toml>]
+                      [--discard-round | --adopt-external]
+disp pipeline status  --slug <slug> [--config <toml>]   # строго read-only
+disp pipeline export  --slug <slug> [--config <toml>] [--partial]
 ```
 
 Флаги `resume` — два исхода остановки на неатрибутируемом dirty state
@@ -756,8 +757,8 @@ session-resume, запущенный первым, продолжил бы се�
    манифеста. Делается до чтения манифеста и артефактов сессии, которые
    могли быть подменены. Сверка применяется, **только если последняя
    запись — `pre_turn`** (ход прерван на середине); `turn_completed` или
-   пустой журнал означают, что сверять нечего — штатные записи runtime
-   после успешного хода подменой не являются;
+   пустой **существующий** журнал означают, что сверять нечего — штатные
+   записи runtime после успешного хода подменой не являются;
 1. **чтение манифеста**; сессии с `outcome ≠ null` или `superseded_by ≠
    null` не возобновляются никогда;
 2. **read-only обнаружение**: инспекция последнего durable-раунда активной
