@@ -524,8 +524,8 @@ class SessionLifecyclePolicy(Protocol):
   `assert isinstance(FakeGit(), GitOps)` в
   `tests/runtime/test_git_preflight.py:213` падает сразу после расширения
   `@runtime_checkable` протокола. Механическая правка: общий фейк-базис
-  `tests/runtime/_fakes.py` со **всеми пятью** новыми методами (счёт важен:
-  базис с четырьмя оставит structural-check красным), локальные фейки
+  `tests/runtime/_fakes.py` со **всеми шестью** новыми методами (счёт
+  важен: неполный базис оставит structural-check красным), локальные фейки
   наследуют его
 - Test: `tests/runtime/test_git_adoption.py`
 
@@ -533,7 +533,7 @@ class SessionLifecyclePolicy(Protocol):
 `commit_round`, `reset_hard`, `clean`), приватные `_checked`, `_run`,
 `_env`, `_find_round_commit` — все в `runtime/git.py`.
 
-**Интерфейсы (производит):** протокол `GitOps` расширяется **пятью**
+**Интерфейсы (производит):** протокол `GitOps` расширяется **шестью**
 методами (у операторских решений §3.1 SPEC-002 нет другого пути к git;
 делать `subprocess` прямо в `pipeline_resume.py` нельзя — это второй слой
 доступа к git мимо порта, INV-11):
@@ -556,6 +556,16 @@ def commit_paths(self, paths: Sequence[str], subject: str,
                  *, trailer: str) -> str:
     """Коммитит РОВНО перечисленные пути (`git add -- <paths>`) с телом
     `subject\n\nDisputatio-Operation: <trailer>`; возвращает sha."""
+def diff_readonly(self) -> str:
+    """Тот же канонический дифф, что `diff_head`, но БЕЗ мутации индекса.
+    `diff_head` начинает с `git add --intent-to-add -- :/`
+    (`runtime/git.py:341`) — иначе untracked не попадут в патч; для
+    классификации дерева на resume это недопустимо: фаза объявлена
+    read-only, а intent-to-add оставил бы новый файл в индексе и изменил
+    бы вывод последующего `git status` у пользователя. Реализация — тот
+    же `add -N` + `diff`, но поверх одноразового индекса
+    (`GIT_INDEX_FILE` на временную копию), настоящий индекс не трогается;
+    флаги диффа и pathspec те же, поэтому байты совпадают с `diff_head`."""
 def find_commit_by_trailer(self, trailer: str) -> str | None:
     """`git log --format=%H%x00%B` + поиск строки трейлера — идемпотентный
     повтор adoption не создаёт второй коммит. Поиск по subject не годится:
@@ -573,12 +583,15 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   `commit_paths` коммитит только указанное (посторонний грязный файл
   остаётся вне коммита и в дереве); trailer попадает в тело;
   `find_commit_by_trailer` находит свой коммит и возвращает `None` для
-  чужого; два adoption'а с разными trailer'ами различимы.
+  чужого; два adoption'а с разными trailer'ами различимы;
+  `test_diff_readonly_does_not_touch_index` — байты совпадают с
+  `diff_head`, но `git status --porcelain` до и после идентичен (после
+  `diff_head` — отличается: файл встал как intent-to-add).
 - [ ] Реализация; проверить, что фейки `GitOps` в существующих тестах
   обновлены (протокол расширился) — suite зелёный.
 - [ ] Commit:
   `feat(runtime): GitOps — head_sha, current_branch, status_entries,
-  commit_paths, trailer lookup`.
+  diff_readonly, commit_paths, trailer lookup`.
 
 Трассируемость: §3.1 (adoption), §7.3 (cleanup), §8.1 (сверка worktree).
 
@@ -795,7 +808,10 @@ transition + outcome + superseded_by + chained `create_session`);
   (2) **read-only** обнаружение архитектурного дефекта, (3) сверка
   worktree, (4) мутирующая фаза, (5) session-resume с политиками.
 - `classify_worktree(git: GitOps, state) -> Literal["clean","legal_patch",
-  "unattributed"]`; `unattributed` без `decision` → `ExternalEditError`
+  "unattributed"]` — берёт дифф через `git.diff_readonly()`, не через
+  `diff_head`: классификация обязана быть по-настоящему read-only, иначе
+  шаг 3 §8.1 сам мутировал бы индекс до решения оператора;
+  `unattributed` без `decision` → `ExternalEditError`
   с дифом в тексте.
 - `class PipelineIntegrityPolicy` —
   реализация `SessionLifecyclePolicy`: `before_author_turn` пишет
@@ -829,7 +845,9 @@ transition + outcome + superseded_by + chained `create_session`);
 **Шаги:**
 - [ ] Red-тесты порядка: дефект + грязное неатрибутируемое дерево →
   остановка **до любых мутаций** (spy на `GitOps`: ни `reset_hard`, ни
-  `commit_paths` не вызваны); припаркованная/`abandoned` сессия не
+  `commit_paths` не вызваны; плюс `git status --porcelain` до и после
+  вызова идентичен — индекс не тронут, что `diff_head` нарушил бы);
+  припаркованная/`abandoned` сессия не
   возобновляется; легальный `changes.patch`-диф проходит.
 - [ ] Red-тесты анкера: **подмена манифеста ловится сверкой против
   анкера** — сценарий, ради которого анкер вынесен из дерева: манифест
