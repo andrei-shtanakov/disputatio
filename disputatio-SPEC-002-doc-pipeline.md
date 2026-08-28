@@ -115,11 +115,29 @@ SPEC_LOOP | PAIR_LOOP ──► ESCALATED ──► EXPORTING(partial) ──►
   подменённых артефактов (§8.1 шаг 0). Причина: право записи автора
   распространяется на рабочую директорию, а `.disputatio` намеренно
   исключён из диффа раунда — запись автора туда невидима и для
-  `changes.patch`, и для `doc-scope`. Якорь доверия самого манифеста —
-  **обязательный** для режима `document` adapter-level запрет записи автора
-  в `.disputatio/**` через новую capability контракта адаптеров (§9):
-  адаптер без неё в v1 не допускается автором doc-сессии (fail-closed на
-  старте); P9-сверка — второй слой поверх него.
+  `changes.patch`, и для `doc-scope`.
+
+  **Гарантия — обнаружение, а не предотвращение**, и якорь доверия —
+  файловая граница, а не обещание адаптера. Adapter-level запрет записи по
+  путям якорем быть не может: автору нужен Bash для работы над
+  репозиторием, а deny на инструменты правки файлов не покрывает запись
+  через shell — то есть автор, перезаписавший разом и манифест, и снапшот
+  внутри него, лишил бы сверку опоры. Поэтому **`integrity_anchor` —
+  append-only журнал pre-turn снапшотов — хранится вне рабочего дерева
+  автора**, по пути `anchor_path` (§3.2; дефолт — пользовательский
+  state-каталог, ключ — `pipeline_id`). Путь, резолвящийся внутрь
+  `workspace_root`, — отказ старта (fail-closed): анкер, лежащий в дереве
+  автора, анкером не является. Манифест хранит `anchor_path` и сверяется
+  против журнала; расхождение — `invariant_violation`, кто бы его ни внёс.
+
+  **Модель угроз честная.** P9 ловит непреднамеренную запись, дрейф модели
+  и осечку инструмента в пределах рабочего дерева — то, что реально
+  случается. Агент, целенаправленно ищущий control plane за пределами
+  своего workspace, произвольным shell'ом не сдерживается ничем, кроме
+  изоляции уровня ОС; она — вне v1 (§11). Adapter-level path-deny остаётся
+  **необязательным** слоем глубины: адаптер, умеющий его, объявляет
+  capability и получает deny на `.disputatio/**`; адаптер без неё
+  допускается (отказ по этому признаку был бы платой без гарантии).
 
 ---
 
@@ -208,7 +226,8 @@ adoption patch и чекпоинт); любой иной путь — tracked и
   при неподходящей ветке `run` отказывает и печатает подготовительную команду
   (`git switch -c docs/<slug>`);
 - каталог `.disputatio/pipelines/<slug>/` не существует (существует —
-  использовать `resume`).
+  использовать `resume`);
+- `anchor_path` резолвится **вне** `workspace_root` (P9) — иначе отказ.
 
 `pipeline_id = slug` (грамматика `[a-z0-9][a-z0-9._-]{0,63}`); коллизия — отказ.
 
@@ -222,6 +241,9 @@ max_architectural_returns = 2      # возвраты PAIR→SPEC; spec-r1 не 
 soft_max_pipeline_tokens = 0       # 0 = выключено; см. §7.2
 soft_max_pipeline_wall_seconds = 0
 protected_branches = ["master", "main"]
+# anchor_path — журнал целостности P9; ОБЯЗАН быть вне workspace_root,
+# дефолт — пользовательский state-каталог по ключу pipeline_id
+# anchor_path = "~/.local/state/disputatio/anchors"
 # checklists.spec / checklists.pair — переопределение дефолтов (§5.3)
 # gates — дополнительные doc-гейты сверх обязательного baseline (§6)
 
@@ -321,8 +343,14 @@ operational-манифест несёт метки **фактов** (`created_at
 - `operator_decisions` — append-only: `{operation_id, kind: discard_round |
   adopt_external, at, worktree_diff_sha256}` — provenance вмешательств
   оператора (§3.1);
-- `integrity_snapshot` — pre-turn snapshot P9 текущего хода автора
-  (`{session_id, round, hashes}`) или `null`;
+- `anchor_path` — путь к `integrity_anchor` (P9), вне `workspace_root`;
+- `integrity_snapshot` — pre-turn snapshot P9 текущего хода автора или
+  `null`. Форма записи различает два класса файлов явно, а не строкой:
+  `{session_id, round, immutable: {path: sha256},
+  append_only: {path: {prefix_bytes, prefix_sha256}}}` — по
+  `prefix_bytes`/`prefix_sha256` проверяется prefix-property журнала,
+  по `sha256` — равенство неизменяемого файла. Та же запись дописывается
+  в `integrity_anchor`;
 - `next_action` — write-ahead intent (§4.3) или `null`.
 
 ### 4.3 Write-ahead intent (`next_action`)
@@ -722,7 +750,7 @@ composition root пакета `runtime`:
 | `events` | файловые реализации: `PipelineStateStore` (атомарная запись), пути `pipelines/<slug>/…`, pipeline event sink (best-effort/zero-or-more, `operation_id`, ремонт оборванного хвоста), разделение `workspace_root`/`artifact_root` в построителе путей. Runtime-логики здесь нет |
 | `verifier` | пять doc-гейтов §6 (baseline) + расширяемая регистрация будущих |
 | `context` | сборщики промптов doc-автора и doc-ревьюера (чеклист контура, находки как данные) |
-| `adapters` | **контракт расширяется**: новая capability `path_write_deny` — адаптер объявляет, умеет ли запрещать автору запись по путям; для `claude_code` — маппинг в permission-deny, для адаптера без поддержки — fail-closed отказ preflight'а режима `document` (P9). Это изменение контракта, а не опциональный слой |
+| `adapters` | аддитивно и **необязательно**: `AdapterCapabilities` получает `path_write_deny: bool` (умеет ли CLI запрещать запись по путям) и `deny_write_paths`; `claude_code` мапит в свои deny-правила. Адаптер без поддержки допускается — якорь P9 даёт файловая граница `integrity_anchor`, не адаптер |
 | `core` | без изменений (V6) |
 | `runtime` | runner пайплайна, обработчики контуров, reconciliation §7.3, resume §8.1, опрос `RoundBoundaryPolicy` и вызовы `SessionLifecyclePolicy` в `drive()`, экспорт §8.2; composition root собирает всё перечисленное |
 
@@ -748,9 +776,11 @@ composition root пакета `runtime`:
 - P9: запись автора в control-plane файл (манифест, артефакт раунда,
   усечение event log) → `FAILED (invariant_violation)`; легальный append
   оркестратора в журнал проходит prefix-property; kill во время хода автора
-  → resume ловит подмену по записанному pre-turn snapshot'у до чтения
-  артефактов; старт doc-сессии с author-адаптером без deny на
-  `.disputatio/**` — отказ fail-closed;
+  → resume ловит подмену по анкеру до чтения артефактов; **подмена
+  манифеста вместе с его `integrity_snapshot` ловится анкером** (сценарий,
+  ради которого анкер вынесен из дерева); `anchor_path` внутри
+  `workspace_root` → отказ старта; адаптер без `path_write_deny`
+  допускается и не роняет старт;
 - atomic chaining `next_action`: commit возврата заменяет intent преемником
   в одной записи, `predecessor_operation_id` сохранён; resume после падения
   на chained-intent'е допроигрывает преемника без повтора предшественника;
@@ -817,6 +847,9 @@ composition root пакета `runtime`:
 - Обобщение до N-stage пайплайна — только при появлении второго реального
   потребителя; его требования дадут основания для модели вместо угадывания.
 - discovery-стадия перед спекой (правило помечает её опциональной) — вне v1.
+- Изоляция уровня ОС для автора (контейнер/mount namespace/сэндбокс), при
+  которой control plane физически недостижим произвольным shell'ом. В v1
+  P9 честно обещает обнаружение, а не предотвращение (P9, модель угроз).
 - Erratum SPEC-001 §2/§5.5: выровнять нормативный текст про `ESCALATED` с
   фактической семантикой реализации (резолюция пользователя — после DONE,
   интерактивного шага в сессии нет) — отдельным изменением SPEC-001, не
