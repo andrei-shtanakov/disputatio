@@ -10,8 +10,10 @@
 
 **Архитектура:** пайплайн поверх стандартных resumable-сессий; runner ведёт
 контуры через два новых runtime-порта (`RoundBoundaryPolicy`,
-`SessionLifecyclePolicy`); всё состояние — write-ahead манифест
-`disputatio/pipeline/v1`; doc-артефакты — схема `disputatio/v2`.
+`SessionLifecyclePolicy`). Состояние пайплайна — write-ahead манифест
+`disputatio/pipeline/v1`; состояние целостности (P9) живёт отдельно — в
+анкере вне рабочего дерева, и в манифест не дублируется; doc-артефакты —
+схема `disputatio/v2`.
 
 **Стек:** Python 3.12+, pydantic, pytest (anyio), uv, pyrefly, ruff.
 
@@ -154,7 +156,7 @@
   JSON-форма ровно как в §4.2 SPEC-002: неизменяемые файлы — плоское
   `{path: sha256}`, журналы — `{path: {prefix_bytes, prefix_sha256}}`.
   Модель объявляется здесь, но в манифест НЕ входит (§4.2: снапшоты живут
-  только в анкере) — её пишет и читает `IntegrityAnchor` задачи 16;
+  только в анкере) — её пишет и читает `IntegrityAnchor` задачи 6;
   `PipelineState(ArtifactBase)` — все поля §4.2, включая `anchor_id: str`
   (логическое имя анкера, = `pipeline_id`; физического пути в манифесте
   нет — он машинно-зависим и резолвится из конфига).
@@ -489,7 +491,8 @@ class SessionLifecyclePolicy(Protocol):
   `assert isinstance(FakeGit(), GitOps)` в
   `tests/runtime/test_git_preflight.py:213` падает сразу после расширения
   `@runtime_checkable` протокола. Механическая правка: общий фейк-базис
-  `tests/runtime/_fakes.py` с четырьмя новыми методами, локальные фейки
+  `tests/runtime/_fakes.py` со **всеми пятью** новыми методами (счёт важен:
+  базис с четырьмя оставит structural-check красным), локальные фейки
   наследуют его
 - Test: `tests/runtime/test_git_adoption.py`
 
@@ -497,7 +500,7 @@ class SessionLifecyclePolicy(Protocol):
 `commit_round`, `reset_hard`, `clean`), приватные `_checked`, `_run`,
 `_env`, `_find_round_commit` — все в `runtime/git.py`.
 
-**Интерфейсы (производит):** протокол `GitOps` расширяется четырьмя
+**Интерфейсы (производит):** протокол `GitOps` расширяется **пятью**
 методами (у операторских решений §3.1 SPEC-002 нет другого пути к git;
 делать `subprocess` прямо в `pipeline_resume.py` нельзя — это второй слой
 доступа к git мимо порта, INV-11):
@@ -569,11 +572,16 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
   («baseline не отключается»).
 - `check_run_preconditions(git: GitOps, workspace_root, config, slug)
-  -> None` — чистое дерево **включая untracked** (через
-  `GitOps.status_entries()` задачи 12; существующий `preflight` смотрит
-  `--untracked-files=no` и для §3.1 недостаточен), текущая ветка
-  (`GitOps.current_branch()`) ∉ protected_branches — в detached HEAD
-  (`None`) старт отклоняется, каталог пайплайна не существует, **канонизованный
+  -> None` — чистое дерево **по tracked-файлам** (через
+  `GitOps.status_entries()` задачи 12: блокируют только записи с
+  `tracked=True`). Untracked не блокируют — это осознанное решение
+  существующего `preflight` (`runtime/git.py:136-139`: «`.disputatio/` сама
+  untracked, а требование “удалите черновики” сделало бы инструмент
+  недружелюбным»), и разворот его отверг бы `run` при любом уже
+  существующем пайплайне, вопреки обещанию §4.1 о сосуществовании
+  `<slug>`. Текущая ветка (`GitOps.current_branch()`) ∉
+  protected_branches — в detached HEAD (`None`) старт отклоняется,
+  каталог пайплайна не существует, **канонизованный
   `anchor_path` резолвится вне `workspace_root`** (P9); нарушение →
   `ConfigError` с подготовительной командой в тексте
   (`git switch -c docs/<slug>`).
@@ -581,9 +589,12 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 **Шаги:**
 - [ ] Red-тесты: парсинг примера §3.2; baseline-переопределение → отказ;
   предусловия на tmp-git-репо: грязное дерево / protected ветка /
-  существующий каталог → отказ с точным текстом; untracked-файл в дереве
-  → отказ (то, чего не ловит `preflight`); ветка создаётся НЕ нами
-  (проверка, что функция не мутирует репо).
+  существующий каталог → отказ с точным текстом; **tracked-изменение →
+  отказ, untracked-файл → НЕ отказ**;
+  `test_run_allowed_with_other_pipeline` — в `.disputatio/pipelines/` уже
+  лежит другой `<slug>`, новый `run` разрешён (§4.1: пайплайны
+  сосуществуют); ветка создаётся НЕ нами (проверка, что функция не мутирует
+  репо).
 - [ ] Red-тесты `anchor_path` (fail-closed, статические варианты — N7):
   прямой путь внутрь `workspace_root` → отказ; относительный путь
   резолвится от cwd и, попав внутрь дерева, → отказ; путь с `..`,
@@ -774,9 +785,10 @@ transition + outcome + superseded_by + chained `create_session`);
   остановка **до любых мутаций** (spy на `GitOps`: ни `reset_hard`, ни
   `commit_paths` не вызваны); припаркованная/`abandoned` сессия не
   возобновляется; легальный `changes.patch`-диф проходит.
-- [ ] Red-тесты анкера: подмена манифеста **вместе с его
-  `integrity_snapshot`** ловится сверкой против анкера (сценарий, ради
-  которого анкер вынесен из дерева); усечение журнала → `FAILED`;
+- [ ] Red-тесты анкера: **подмена манифеста ловится сверкой против
+  анкера** — сценарий, ради которого анкер вынесен из дерева: манифест
+  автору достижим, анкер нет, а снапшота в манифесте не существует, так
+  что подделывать нечего; усечение журнала → `FAILED`;
   легальный append оркестратора проходит prefix-property; kill между
   before и after → resume ловит по анкеру; `anchor_path` внутри
   `workspace_root` → отказ старта (тест уровня задачи 13, здесь —
@@ -858,7 +870,7 @@ transition + outcome + superseded_by + chained `create_session`);
 | §3.1 решения оператора | 12 (`status_entries` с классификацией tracked), 16 (фильтр `.disputatio/` и маршруты) | порт статус не режет — режет потребитель |
 | §3.2 конфиг | 13 (парсинг, `anchor_path` — каталог), 15 (снапшоты в `create_session`) | журнал — `<anchor_path>/<anchor_id>.jsonl` |
 | §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
-| §4.2 манифест | 3 (схема, `anchor_id`), 6 (хранилище, prefix-equality), 15 (`budget_used`, transitions), 16 (`operator_decisions`) | снапшоты — не в манифесте, а в анкере (задача 16) |
+| §4.2 манифест | 3 (схема, `anchor_id`), 6 (хранилище, prefix-equality, анкер), 15 (`budget_used`, transitions), 16 (`operator_decisions`) | снапшоты — не в манифесте, а в анкере (задача 6) |
 | §4.3 интенты и chaining | 3 (enum), 15 (11 границ краха core-kind'ов, включая `finish_session`), 16 (6 операторских границ) | идемпотентность каждого `kind` доказана поимённо |
 | §5.1 Mode.DOCUMENT, v2 | 1, 17 (анти-сикофантия) | — |
 | §5.2 схема ревью, V1–V8 | 1 (закрытые формы evidence), 2 (машинная часть V1–V8), 11 (недетерминируемая часть V8 — требование промпта ревьюеру), 17 (V6 сквозняком) | V8 машинно enforced только там, где связь выводима (S1) |
