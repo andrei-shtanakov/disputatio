@@ -64,16 +64,26 @@
 - `Review.checklist: list[ChecklistItem] | None = None` (аддитивно),
   `Issue.defect_class: Literal["architectural","execution"] | None = None`.
 - Версионирование: `ArtifactBase` получает поддержку тега
-  `disputatio/v2`; правило «v2-reader принимает v1» — валидатор принимает
-  оба тега, писатель doc-сессии ставит v2, develop/analyze продолжают v1
-  (§5.1 SPEC-002).
+  `disputatio/v2`; писатель doc-сессии ставит v2, develop/analyze
+  продолжают v1 (§5.1 SPEC-002). **Набор допустимых полей связан с
+  тегом**, а не только с типом: `model_validator(mode="after")` на
+  `Review` отвергает `checklist` и любой `issues[].defect_class`, если
+  `schema == "disputatio/v1"`. Без этой связки объявление полей
+  optional'ными в общей модели тихо расширило бы принимаемый v1-payload
+  (`base.py:37` — `extra="forbid"` ловит только неизвестные ключи, а эти
+  стали бы известными), и обещание «v1 не переопределяется» оказалось бы
+  неправдой. «v2-reader принимает v1» означает: v1-payload без v2-полей
+  валиден и под v2-ридером.
 
 **Шаги:**
 - [ ] Red-тесты: `test_mode_document_exists`,
   `test_v2_reader_accepts_v1_payload` (загрузить фикстуру session.json с
   `"schema": "disputatio/v1"` v2-ридером — ок),
   `test_v1_strict_rejects_document_mode` (v1-тег + mode=document —
-  ValidationError), `test_checklist_item_requires_evidence` (пустой
+  ValidationError), `test_v1_rejects_checklist` (v1-тег + непустой
+  `checklist` — ValidationError), `test_v1_rejects_defect_class` (v1-тег +
+  `issues[].defect_class` — ValidationError),
+  `test_v2_accepts_plain_v1_payload` (v2-тег, ни одного v2-поля — ок), `test_checklist_item_requires_evidence` (пустой
   evidence — ValidationError), `test_defect_class_optional_default_none`,
   `test_artifact_evidence_requires_lines` (artifact без `lines` —
   ValidationError), `test_gate_evidence_rejects_lines` (gate с `lines` —
