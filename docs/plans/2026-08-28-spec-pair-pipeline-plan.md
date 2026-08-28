@@ -83,7 +83,8 @@
   ValidationError), `test_v1_rejects_checklist` (v1-тег + непустой
   `checklist` — ValidationError), `test_v1_rejects_defect_class` (v1-тег +
   `issues[].defect_class` — ValidationError),
-  `test_v2_accepts_plain_v1_payload` (v2-тег, ни одного v2-поля — ок), `test_checklist_item_requires_evidence` (пустой
+  `test_v2_accepts_plain_v1_payload` (v2-тег, ни одного v2-поля — ок),
+  `test_checklist_item_requires_evidence` (пустой
   evidence — ValidationError), `test_defect_class_optional_default_none`,
   `test_artifact_evidence_requires_lines` (artifact без `lines` —
   ValidationError), `test_gate_evidence_rejects_lines` (gate с `lines` —
@@ -771,7 +772,11 @@ class PipelineRunner:
 SessionState]` — инъекция: в тестах фейк со скриптованными артефактами,
 реальный `drive`/`resume_session` подключается в задаче 17.
 
-Механика: цикл §4.3 (intent → действие → результат либо chained-преемник);
+Механика: `run` начинается с **durable-создания пустого анкера**
+(`IntegrityAnchor` задачи 6) — до первой записи манифеста и до любого
+intent'а, иначе крах на раннем `create_session` оставил бы пайплайн
+невозобновимым (отсутствие анкера = отказ resume); далее цикл §4.3
+(intent → действие → результат либо chained-преемник);
 `create_session` (снапшоты task/config/checklists с sha256, `entry_hashes`
 с маркером `absent`, `artifact_root = sessions/<revision>`);
 `run_session`; `finish_session` — интерпретация по **durable-состоянию**
@@ -786,6 +791,8 @@ transition + outcome + superseded_by + chained `create_session`);
 раунда = «есть blocker/major с `defect_class: architectural` → `PARK`».
 
 **Шаги:**
+- [ ] `test_run_creates_anchor_before_any_mutation` — после падения на
+  первом же intent'е файл анкера существует и пуст, `resume` не отказывает.
 - [ ] Happy-path: spec converged → pair converged → EXPORTING → DONE;
   манифест: фазы, transitions, хеши снапшотов task/config/checklists
   (integrity-снапшотов в манифесте нет), вызов `exporter` ровно один.
@@ -847,7 +854,10 @@ transition + outcome + superseded_by + chained `create_session`);
   `turn_completed` и пустой существующий журнал — пропуск, а
   **отсутствие файла анкера — `ConfigError`** с требованием указать
   `--config`: иначе пайплайн с нестандартным `anchor_path` смотрел бы в
-  дефолтный журнал, не находил записей и молча пропускал P9. Файл анкера
+  дефолтный журнал, не находил записей и молча пропускал P9. Ложным этот
+  отказ не бывает, потому что `run` создаёт пустой анкер первым действием
+  (задача 15), до любой сохраняемой мутации: крах на раннем
+  `create_session` оставляет журнал существующим и пустым. Файл анкера
   находится по `<anchor_root>` из живой конфигурации (`--config`, иначе
   дефолтный поиск — снапшот в каталоге пайплайна не годится, он в
   недоверенном дереве) и `<anchor_id>` = `slug` — оба входа вне рабочего
