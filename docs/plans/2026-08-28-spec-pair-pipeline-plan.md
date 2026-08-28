@@ -247,7 +247,8 @@ class SessionLifecyclePolicy(Protocol):
 **Файлы:**
 - Create: `src/disputatio/events/pipeline_store.py`,
   `src/disputatio/events/pipeline_paths.py`,
-  `src/disputatio/events/pipeline_events.py`
+  `src/disputatio/events/pipeline_events.py`,
+  `src/disputatio/events/integrity_anchor.py`
 - Test: `tests/events/test_pipeline_store.py`
 
 **Интерфейсы (производит):**
@@ -274,6 +275,13 @@ class SessionLifecyclePolicy(Protocol):
   читатель**, поставляемый вместе с sink'ом (P8: дедупликация — не
   обязанность гипотетического потребителя): подавляет дубли по
   `(operation_id, type)`, молча пропускает оборванный хвост.
+- `class IntegrityAnchor` — append-only журнал P9 вне рабочего дерева:
+  `__init__(anchor_root: Path, anchor_id: str)` (файл —
+  `<anchor_root>/<anchor_id>.jsonl`), `append(snapshot) -> None` (fsync,
+  идемпотентно по `{session_id, round, operation_id}`),
+  `last(session_id, round) -> IntegritySnapshot | None`. Живёт в `events`,
+  а не в `runtime`: §9 SPEC-002 и D1 отдают файловые append-only writer'ы
+  этому пакету; `runtime` держит только политику, использующую анкер.
 
 **Шаги:**
 - [ ] Red-тесты: атомарность (temp+rename — нет частичного файла);
@@ -282,6 +290,9 @@ class SessionLifecyclePolicy(Protocol):
   элемент — отказ); `test_operator_decision_edited_rejected`;
   `test_superseded_by_and_first_outcome_allowed`;
   `test_reader_dedupes_by_operation_id`;
+  `test_anchor_append_idempotent` (повтор той же записи не удваивает
+  строку); `test_anchor_last_returns_latest`;
+  `test_superseded_by_set_once` (повторная смена `r2`→`r3` — отказ);
   `test_tail_repair_truncates_partial_line`;
   `test_slug_grammar_rejected`;
   `test_event_vocabulary_closed` (все шесть типов §4.1 принимаются, седьмой
@@ -493,9 +504,18 @@ class SessionLifecyclePolicy(Protocol):
 
 ```python
 def head_sha(self) -> str: ...
-def status_paths(self) -> tuple[str, ...]:
-    """Пути изменённого и untracked (`git status --porcelain -uall`),
-    относительно корня; `.disputatio/` исключён тем же pathspec, что diff."""
+def current_branch(self) -> str | None:
+    """`git rev-parse --abbrev-ref HEAD`; `None` в detached HEAD.
+    Нужен предусловию protected-ветки §3.1 — операции определения ветки в
+    `runtime/git.py` сегодня нет вообще (проверено grep'ом), а без порта
+    задача 13 полезла бы в subprocess мимо него."""
+def status_entries(self) -> tuple[StatusEntry, ...]:
+    """`git status --porcelain -uall` целиком, БЕЗ исключения путей:
+    `StatusEntry {path: str, tracked: bool}`. Исключение `.disputatio/`
+    делает потребитель (задача 16), а не порт: узкое правило §3.1 требует
+    отличить собственные untracked control-файлы (легальны) от
+    tracked-изменённых под `.disputatio/` (отказ), и порт, вырезающий их
+    сам, эту информацию уничтожил бы."""
 def commit_paths(self, paths: Sequence[str], subject: str,
                  *, trailer: str) -> str:
     """Коммитит РОВНО перечисленные пути (`git add -- <paths>`) с телом
@@ -509,7 +529,11 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 **Шаги:**
 - [ ] Red-тесты на реальном tmp-git-репо (паттерн существующих тестов
   `runtime/git`): `head_sha` совпадает с `git rev-parse HEAD`;
-  `status_paths` видит modified и untracked, не видит `.disputatio/`;
+  `current_branch` совпадает с `git rev-parse --abbrev-ref HEAD` и даёт
+  `None` в detached HEAD; `status_entries` видит modified и untracked,
+  **включая пути под `.disputatio/`**, и корректно проставляет `tracked`
+  (untracked control-файл → `tracked=False`; закоммиченный и изменённый
+  файл под `.disputatio/` → `tracked=True`);
   `commit_paths` коммитит только указанное (посторонний грязный файл
   остаётся вне коммита и в дереве); trailer попадает в тело;
   `find_commit_by_trailer` находит свой коммит и возвращает `None` для
@@ -517,7 +541,8 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 - [ ] Реализация; проверить, что фейки `GitOps` в существующих тестах
   обновлены (протокол расширился) — suite зелёный.
 - [ ] Commit:
-  `feat(runtime): GitOps — head_sha, status_paths, commit_paths, trailer lookup`.
+  `feat(runtime): GitOps — head_sha, current_branch, status_entries,
+  commit_paths, trailer lookup`.
 
 Трассируемость: §3.1 (adoption), §7.3 (cleanup), §8.1 (сверка worktree).
 
@@ -534,18 +559,21 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
   max_architectural_returns=2, soft_max_pipeline_tokens=0,
   soft_max_pipeline_wall_seconds=0, protected_branches=("master","main"),
   checklists (override или вендоренный дефолт задачи 2), extra_gates,
-  `anchor_path: Path` — журнал целостности P9; дефолт —
-  `platformdirs`-подобный state-каталог пользователя (без новой
-  зависимости: `os.environ.get("XDG_STATE_HOME")` либо
-  `~/.local/state`) + `disputatio/anchors/<slug>.jsonl`.
+  `anchor_path: Path` — **каталог** журналов целостности P9
+  (`anchor_root` в терминах §3.2 спеки), НЕ файл: сам журнал —
+  `<anchor_path>/<anchor_id>.jsonl`, где `anchor_id` = `pipeline_id`
+  из манифеста. Дефолт каталога — state-каталог пользователя без новой
+  зависимости: `os.environ.get("XDG_STATE_HOME")` либо `~/.local/state`,
+  плюс `disputatio/anchors`.
 - `load_pipeline_config(path) -> PipelineConfig` — неизвестный ключ в
   `[pipeline.gates]`, совпадающий с baseline-именем, → `ConfigError`
   («baseline не отключается»).
 - `check_run_preconditions(git: GitOps, workspace_root, config, slug)
   -> None` — чистое дерево **включая untracked** (через
-  `GitOps.status_paths()` задачи 12; существующий `preflight` смотрит
-  `--untracked-files=no` и для §3.1 недостаточен), текущая ветка ∉
-  protected_branches, каталог пайплайна не существует, **канонизованный
+  `GitOps.status_entries()` задачи 12; существующий `preflight` смотрит
+  `--untracked-files=no` и для §3.1 недостаточен), текущая ветка
+  (`GitOps.current_branch()`) ∉ protected_branches — в detached HEAD
+  (`None`) старт отклоняется, каталог пайплайна не существует, **канонизованный
   `anchor_path` резолвится вне `workspace_root`** (P9); нарушение →
   `ConfigError` с подготовительной командой в тексте
   (`git switch -c docs/<slug>`).
@@ -581,7 +609,7 @@ def find_commit_by_trailer(self, trailer: str) -> str | None:
 - Test: `tests/runtime/test_pipeline_export.py`
 
 **Интерфейсы (потребляет):** `PipelineState` (задача 3), `GitOps.head_sha`
-(задача 13).
+(задача 12).
 
 **Интерфейсы (производит):**
 - `def export_pipeline(state: PipelineState, *, workspace_root: Path,
@@ -655,7 +683,8 @@ transition + outcome + superseded_by + chained `create_session`);
 
 **Шаги:**
 - [ ] Happy-path: spec converged → pair converged → EXPORTING → DONE;
-  манифест: фазы, transitions, хеши снапшотов, вызов `exporter` ровно один.
+  манифест: фазы, transitions, хеши снапшотов task/config/checklists
+  (integrity-снапшотов в манифесте нет), вызов `exporter` ровно один.
 - [ ] Возврат: pair паркуется (смешанное ревью arch + exec) → приоритет P6,
   spec-r2 создан, перекрытые ревизии получают `superseded_by`, outcome
   pair-r1 = `architectural_defect`, spec-r1 остался `converged`; pair-r2
@@ -694,14 +723,17 @@ transition + outcome + superseded_by + chained `create_session`);
 
 **Файлы:**
 - Create: `src/disputatio/runtime/pipeline_resume.py`,
-  `src/disputatio/runtime/pipeline_integrity.py`,
+  `src/disputatio/runtime/pipeline_integrity.py` (только политика —
+  журнал живёт в `events`, задача 6),
   `src/disputatio/runtime/pipeline_adopt.py`
 - Test: `tests/runtime/test_pipeline_resume.py`,
   `tests/runtime/test_pipeline_integrity.py`,
   `tests/runtime/test_pipeline_adopt.py`
 
 **Интерфейсы (потребляет):** расширенный `GitOps` (задача 12),
-`IntegritySnapshot`/`ImmutableEntry`/`AppendOnlyEntry` (задача 3),
+`IntegritySnapshot`/`AppendOnlyEntry` (задача 3; `ImmutableEntry` в
+модели нет — immutable-часть плоская `dict[str, str]`),
+`IntegrityAnchor` (задача 6, пакет `events`),
 `SessionLifecyclePolicy` (задачи 4, 9), `PipelineRunner` (задача 15).
 
 **Интерфейсы (производит):**
@@ -713,9 +745,7 @@ transition + outcome + superseded_by + chained `create_session`);
 - `classify_worktree(git: GitOps, state) -> Literal["clean","legal_patch",
   "unattributed"]`; `unattributed` без `decision` → `ExternalEditError`
   с дифом в тексте.
-- `class IntegrityAnchor:` — append-only журнал вне `workspace_root`:
-  `append(snapshot) -> None` (fsync), `last(session_id) ->
-  IntegritySnapshot | None`; `class PipelineIntegrityPolicy` —
+- `class PipelineIntegrityPolicy` —
   реализация `SessionLifecyclePolicy`: `before_author_turn` пишет снапшот
   **только в анкер** (N1: две файловые границы одной атомарной операцией
   не согласовать, и штатный крах между записями читался бы как подмена;
@@ -724,11 +754,13 @@ transition + outcome + superseded_by + chained `create_session`);
   `FAILED (invariant_violation)`. Запись идемпотентна по
   `{session_id, round, operation_id}`.
 - `adopt_external(...)` / `discard_round(...)` — интенты §3.1: scope по
-  `GitOps.status_paths()` (tracked + untracked за вычетом `.disputatio/`,
-  который пайплайн порождает сам; допустимы только `spec_path`/`plan_path`,
-  новый untracked документ легален, иначе отказ целиком;
-  **tracked-изменённый путь под `.disputatio/` — отказ**, узкое исключение
-  из исключения, §3.1); patch → `adoptions/<operation_id>.patch`; чекпоинт —
+  `GitOps.status_entries()` — порт отдаёт статус целиком, фильтрует
+  потребитель: запись с `tracked=False` под `.disputatio/` игнорируется
+  (это собственные untracked-файлы пайплайна), запись с `tracked=True`
+  под `.disputatio/` — **отказ** (внешняя правка control plane, §3.1);
+  в остатке допустимы только `spec_path`/`plan_path`, новый untracked
+  документ легален, иначе отказ целиком; patch →
+  `adoptions/<operation_id>.patch`; чекпоинт —
   `commit_paths([документы], "disputatio: operator adopt <slug>",
   trailer=operation_id)` с предварительным `find_commit_by_trailer`
   (идемпотентность); commit point — одна запись манифеста: decision +
@@ -821,10 +853,10 @@ transition + outcome + superseded_by + chained `create_session`);
 | Раздел SPEC-002 | Задачи | Примечание |
 |---|---|---|
 | §2 P1–P8 | 3 (таблица, модели), 6 (guard prefix-equality + читатель с дедупликацией по `operation_id`), 15 (поведение) | — |
-| §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 10 (необязательный слой), 13 (fail-closed `anchor_path`, включая `..`/symlink), 16 (анкер, единственная запись, сверка) | якорь — файловая граница, адаптер не участвует |
-| §3.1 CLI и предусловия | 13, 17 | — |
-| §3.1 решения оператора | 12 (git-примитивы), 16 (протокол и маршруты) | — |
-| §3.2 конфиг | 13 (парсинг), 15 (снапшоты в create_session) | — |
+| §2 P9 | 3 (форма снапшота), 4 + 9 (lifecycle-seam), 6 (`IntegrityAnchor` в `events`), 10 (необязательный слой), 13 (fail-closed `anchor_root`), 16 (политика и сверка) | снапшот только в анкере; манифест несёт `anchor_id` |
+| §3.1 CLI и предусловия | 12 (`current_branch`, `status_entries`), 13 (проверки), 17 (команды) | detached HEAD — отказ |
+| §3.1 решения оператора | 12 (`status_entries` с классификацией tracked), 16 (фильтр `.disputatio/` и маршруты) | порт статус не режет — режет потребитель |
+| §3.2 конфиг | 13 (парсинг, `anchor_path` — каталог), 15 (снапшоты в `create_session`) | журнал — `<anchor_path>/<anchor_id>.jsonl` |
 | §4.1 layout, artifact_root | 5, 6 | включая закрытый словарь событий |
 | §4.2 манифест | 3 (схема, `anchor_id`), 6 (хранилище, prefix-equality), 15 (`budget_used`, transitions), 16 (`operator_decisions`) | снапшоты — не в манифесте, а в анкере (задача 16) |
 | §4.3 интенты и chaining | 3 (enum), 15 (11 границ краха core-kind'ов, включая `finish_session`), 16 (6 операторских границ) | идемпотентность каждого `kind` доказана поимённо |
@@ -837,7 +869,7 @@ transition + outcome + superseded_by + chained `create_session`);
 | §7.3 возврат | 12 (git-примитивы + обновление 20 файлов фейков), 15 (reconciliation, `GitOps` в конструкторе runner'а), 16 (гейт reset на resume) | — |
 | §8.1 resume, внешняя правка | 12 (git), 16 (порядок и классификация) | — |
 | §8.2 экспорт | 14 | — |
-| §9 раскладка по пакетам | структура файлов всех задач | contracts→events→verifier→context→adapters→runtime |
+| §9 раскладка по пакетам | структура файлов всех задач; `IntegrityAnchor` — в `events` (задача 6), `runtime` держит только политику (задача 16) | contracts→events→verifier→context→adapters→runtime |
 | §10 тесты | 15 (11 core write-ahead границ), 16 (6 операторских границ + анкер), 17 (6 сквозных) + red-тесты задач 1–14 | перечислены поимённо, а не счётом |
 
 **Осознанно вне плана** (§11 SPEC-002): автопубликация PR, гейт
@@ -847,11 +879,13 @@ erratum SPEC-001, изоляция уровня ОС для автора.
 **Имена, введённые планом, а не спекой** (implementation details, не
 нормативные интерфейсы; переименование при реализации допустимо, если
 сохранены семантика и JSON-форма из SPEC-002): `ArtifactEvidence`,
-`GateEvidence`, `ChecklistItem`, `ImmutableEntry`, `AppendOnlyEntry`,
+`GateEvidence`, `ChecklistItem`, `AppendOnlyEntry`,
 `DocRef`, `BoundaryVerdict`, `PipelineConfig`, `PipelineEventType`,
-`DocVerifier`, `IntegrityAnchor`, `ExportFn`, `SessionDriver`,
+`DocVerifier`, `IntegrityAnchor` (имя плановое, пакет нормативный —
+`events`, §9), `ExportFn`, `SessionDriver`,
 `ALLOWED_TRANSITIONS`, `SessionRecord`, `Transition`, `OperatorDecision`,
 `NextAction`, `EvidenceLink`, `AppendOnlyEntry`, `IntegritySnapshot`,
+`StatusEntry`,
 `FilePipelineStateStore`, `PipelineEventSink`, `read_pipeline_events`,
 `PipelineIntegrityPolicy`, `PipelineRunner`, `validate_doc_review`,
 `SPEC_CHECKLIST`/`PAIR_CHECKLIST`.
