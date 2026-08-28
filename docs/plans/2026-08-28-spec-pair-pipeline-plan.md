@@ -343,8 +343,13 @@ class SessionLifecyclePolicy(Protocol):
   обязанность гипотетического потребителя): подавляет дубли по
   `(operation_id, type)`, молча пропускает оборванный хвост.
 - `class IntegrityAnchor` — append-only журнал P9 вне рабочего дерева:
-  `__init__(anchor_root: Path, anchor_id: str)` (файл —
-  `<anchor_root>/<anchor_id>.jsonl`). Записи **двух видов**:
+  `__init__(anchor_root: Path, workspace_root: Path, anchor_id: str)`
+  (файл — `<anchor_root>/<fingerprint>/<anchor_id>.jsonl`, где
+  `fingerprint = sha256(канонический workspace_root)[:16]`: общий
+  `anchor_root` на пользователя плюс `anchor_id` = слаг иначе свели бы два
+  репозитория со слагом `docs` в один журнал);
+  `create_empty() -> None` — **fail-closed**: существующий файл не
+  усекается, а поднимает ошибку. Записи **двух видов**:
   `AnchorRecord {kind: Literal["pre_turn","turn_completed"], session_id,
   round, operation_id, immutable, append_only}` (у `turn_completed`
   хеш-поля пусты — он несёт только identity).
@@ -372,6 +377,10 @@ class SessionLifecyclePolicy(Protocol):
   `test_anchor_completion_after_pre_turn` — после `append_completion`
   последняя запись имеет `kind="turn_completed"`, журнал append-only
   (прежняя `pre_turn`-строка на месте);
+  `test_anchor_path_includes_workspace_fingerprint` — два разных
+  `workspace_root` с одним `anchor_id` дают разные файлы, записи не
+  смешиваются; `test_create_empty_refuses_existing` — повторный
+  `create_empty` не усекает журнал, а отказывает;
   `test_superseded_by_set_once` (повторная смена `r2`→`r3` — отказ);
   `test_tail_repair_truncates_partial_line`;
   `test_slug_grammar_rejected`;
@@ -824,9 +833,10 @@ SessionState]` — инъекция: в тестах фейк со скрипт�
 реальный `drive`/`resume_session` подключается в задаче 17.
 
 Механика: `run` начинается с **durable-создания пустого анкера**
-(`IntegrityAnchor` задачи 6) — до первой записи манифеста и до любого
-intent'а, иначе крах на раннем `create_session` оставил бы пайплайн
-невозобновимым (отсутствие анкера = отказ resume); далее цикл §4.3
+(`IntegrityAnchor.create_empty()` задачи 6) — до первой записи манифеста и
+до любого intent'а, иначе крах на раннем `create_session` оставил бы
+пайплайн невозобновимым (отсутствие анкера = отказ resume); существующий
+файл анкера отвергает старт, а не переиспользуется; далее цикл §4.3
 (intent → действие → результат либо chained-преемник);
 `create_session` (снапшоты task/config/checklists с sha256, `entry_hashes`
 с маркером `absent`, `artifact_root = sessions/<revision>`);
@@ -845,7 +855,11 @@ transition + outcome + superseded_by + chained `create_session`);
 
 **Шаги:**
 - [ ] `test_run_creates_anchor_before_any_mutation` — после падения на
-  первом же intent'е файл анкера существует и пуст, `resume` не отказывает.
+  первом же intent'е файл анкера существует и пуст, `resume` не отказывает;
+  `test_run_refuses_existing_anchor` — повторный `run` с тем же слагом в
+  том же репозитории отвергается до любых мутаций;
+  `test_same_slug_two_repos_no_collision` — тот же слаг в двух
+  `workspace_root` даёт два независимых анкера.
 - [ ] Happy-path: spec converged → pair converged → EXPORTING → DONE;
   манифест: фазы, transitions, хеши снапшотов task/config/checklists
   (integrity-снапшотов в манифесте нет), вызов `exporter` ровно один.
