@@ -507,8 +507,17 @@ class SessionLifecyclePolicy(Protocol):
   retry-попытками незамеченной — вторая попытка успела бы вернуть байты
   на место. Поэтому `before_author_turn(state)` — непосредственно перед
   `adapter.run`, `after_author_turn(state)` — сразу после возврата, до
-  парсинга вывода; исключение политики → `FAILED` сессии (существующий
-  механизм невосстановимой ошибки).
+  парсинга вывода.
+- **Fail-closed обработка ошибки политики — новая работа, а не
+  «существующий механизм».** Единственный `transition(FAILED)` сегодня
+  живёт в исчерпании schema-retry (`core/machine.py:153`), а исключение
+  шага уходит из `drive()` наружу мимо перехода — это прямо записано в
+  контракте `_run_step` (`loop.py:207`). Durable-состояние осталось бы
+  `PROPOSING`, и следующий `resume` считал бы сессию активной, то есть
+  подмену control plane никто не заметил бы во второй раз. Поэтому задача
+  явно добавляет: исключение `SessionLifecyclePolicy` перехватывается,
+  сессия durable-переводится в `FAILED` (write-ahead + событие, причина
+  `invariant_violation`), и только после этого ошибка пробрасывается.
 - `resume_session(..., artifact_root=None, round_boundary=None,
   lifecycle=None)` — прокладка (`artifact_root` пришёл из задачи 5).
 
@@ -529,7 +538,10 @@ class SessionLifecyclePolicy(Protocol):
   `test_lifecycle_wraps_schema_retry_attempts` — первая попытка автора
   возвращает невалидный по схеме вывод: пар before/after ровно две в одном
   раунде, и сверка второй пары выполняется **до** запуска второй попытки
-  (spy фиксирует порядок); `test_lifecycle_error_fails_session`.
+  (spy фиксирует порядок); `test_lifecycle_error_fails_session` —
+  проверяет не только выброшенное исключение, но и **записанный
+  `session.json`**: `state == FAILED`, причина `invariant_violation`;
+  повторный `resume` не считает сессию активной.
 - [ ] Реализация, suite, Commit:
   `feat(runtime): границы раунда и lifecycle-политики в drive()`.
 
