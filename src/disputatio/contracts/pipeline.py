@@ -147,11 +147,18 @@ class SessionOutcome(StrEnum):
 class PipelineArtifactBase(BaseModel):
     """Корень артефактов семейства `disputatio/pipeline/v1` (§4.2).
 
-    Единственное значение схемы в семействе не нуждается в
-    default-подстановке между версиями — в отличие от `ArtifactBase`,
-    где выбор дефолта между `disputatio/v1`/`v2` вообще имеет смысл
-    (существующий код продолжает получать v1). `schema` здесь просто
-    поле с фиксированным значением по умолчанию.
+    Единственное значение схемы в семействе не нуждается в выборе между
+    версиями — в отличие от `ArtifactBase`, где дефолт `disputatio/v1`
+    существует ради старых develop/analyze вызывающих мест. Но конструктор
+    и парсинг обязаны различаться так же, как у `ArtifactBase` (см.
+    `base.py`): `pipeline.json` читается с диска на каждом resume (§8), и
+    именно там отсутствующий/повреждённый ключ `schema` обязан падать
+    `ValidationError`, а не тихо доопределяться значением по умолчанию —
+    иначе манифест без тега схемы читался бы как валидный. Поэтому default
+    живёт не в самом поле (`Field(default=...)` сработал бы одинаково и в
+    конструкторе, и в `model_validate`), а в кастомном `__init__`: маркер
+    `__pydantic_base_init__` возвращает `model_validate` на прямой путь
+    мимо `__init__`, где `schema_` — обязательное поле без дефолта.
     """
 
     model_config = ConfigDict(
@@ -162,10 +169,21 @@ class PipelineArtifactBase(BaseModel):
     )
 
     schema_: Literal["disputatio/pipeline/v1"] = Field(
-        default=SCHEMA_PIPELINE_V1,
-        alias="schema",
-        serialization_alias="schema",
+        alias="schema", serialization_alias="schema"
     )
+
+    def __init__(self, /, **data: Any) -> None:
+        # Конструктор — единственный путь с default-подстановкой (удобство
+        # для программного кода пайплайна); model_validate — строгий путь
+        # для payload'ов с диска (§8 SPEC-002).
+        if "schema" not in data and "schema_" not in data:
+            data["schema"] = SCHEMA_PIPELINE_V1
+        super().__init__(**data)
+
+    # Без маркера pydantic-core прогнал бы model_validate через этот же
+    # __init__ — подстановка сработала бы и при парсинге. С маркером
+    # (как у ArtifactBase.__init__) валидация идёт прямым путём мимо него.
+    __init__.__pydantic_base_init__ = True  # type: ignore[missing-attribute]
 
 
 class FileRef(ArtifactChild):

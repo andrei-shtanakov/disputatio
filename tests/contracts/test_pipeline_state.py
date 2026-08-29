@@ -107,6 +107,35 @@ def test_serialization_contains_schema_and_from_keys() -> None:
     assert "from_" not in dumped["transitions"][0]
 
 
+def test_model_validate_without_schema_key_rejected() -> None:
+    """`pipeline.json` читается через `model_validate` на каждом resume (§8):
+    отсутствующий ключ `schema` обязан падать `ValidationError`, а не тихо
+    доопределяться значением по умолчанию — иначе повреждённый/усечённый
+    манифест без тега схемы читался бы как валидный."""
+    payload = _pipeline_state_payload()
+    del payload["schema"]
+    with pytest.raises(ValidationError):
+        PipelineState.model_validate(payload)
+
+
+def test_model_validate_with_schema_key_accepted() -> None:
+    """С явным корректным тегом `model_validate` проходит и отдаёт данные."""
+    payload = _pipeline_state_payload()
+    state = PipelineState.model_validate(payload)
+    assert state.schema_ == SCHEMA_PIPELINE_V1
+    assert state.pipeline_id == "pipe-1"
+    assert state.phase == PipelinePhase.SPEC_LOOP
+
+
+def test_constructor_still_defaults_schema() -> None:
+    """Конструктор (не `model_validate`) по-прежнему подставляет схему сам —
+    удобство для программного кода пайплайна сохранено (§4.2 PipelineState)."""
+    payload = _pipeline_state_payload()
+    del payload["schema"]
+    state = PipelineState(**payload)
+    assert state.schema_ == SCHEMA_PIPELINE_V1
+
+
 # --- transition table ---------------------------------------------------
 
 
