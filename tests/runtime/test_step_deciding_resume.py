@@ -261,7 +261,8 @@ def _context(root: Path, git: SpyGit) -> StepContext:
     sink = FakeSink()
     fsm = SessionFsm(_state(), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

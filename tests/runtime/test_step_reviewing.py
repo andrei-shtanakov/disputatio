@@ -576,7 +576,8 @@ def _make_harness(
     fsm = SessionFsm(_state(), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     reviewer = SpyReviewer(log=log, reply=reply)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

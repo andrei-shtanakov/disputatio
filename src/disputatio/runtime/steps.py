@@ -110,6 +110,11 @@ class StepContext:
     `EventSink` не зависит и `gate_started` эмитить не может, а событие
     «гейт пошёл» обязано уйти в журнал ДО прогона — то есть до того, как у
     оркестратора появится хоть один `GateResult` ([DESIGN-004]).
+
+    Корней у шага два, и берутся они порознь (SPEC-002 §4.1): git идёт по
+    `workspace_root`, артефакты и история — по `artifact_root`. Единого
+    `root` здесь нет намеренно: пока имя было одно, выбор корня не был
+    решением, и вызывающий не мог перепутать их иначе как молча.
     """
 
     deps: RuntimeDeps
@@ -118,9 +123,14 @@ class StepContext:
     gates: tuple[GateSpec, ...] = field(default=())
 
     @property
-    def root(self) -> Path:
-        """Рабочий git-репозиторий сессии."""
-        return self.deps.root
+    def workspace_root(self) -> Path:
+        """Рабочий git-репозиторий сессии: сброс, дифф, коммит раунда."""
+        return self.deps.workspace_root
+
+    @property
+    def artifact_root(self) -> Path:
+        """Журнал сессии: `.disputatio/` со состоянием, раундами, экспортом."""
+        return self.deps.artifact_root
 
     @property
     def round(self) -> int:
@@ -180,13 +190,14 @@ async def propose(ctx: StepContext) -> AgentTurn:
     """
     _require_author(ctx)
     round_no = ctx.round
-    root = ctx.root
+    workspace = ctx.workspace_root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
-    ctx.deps.git.reset_hard(base_rev(root, round_no, base_commit=ctx.base_commit))
+    _purge_partial_artifacts(artifacts, round_no)
+    ctx.deps.git.reset_hard(base_rev(workspace, round_no, base_commit=ctx.base_commit))
     ctx.deps.git.clean()
 
-    prior = load_prior_round(root, round_no - 1)
+    prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
     outcome = await run_with_schema_retry(
         ctx,
@@ -207,9 +218,9 @@ async def propose(ctx: StepContext) -> AgentTurn:
         raise _exhausted(failures)
     _, turn = outcome
 
-    write_round_artifact(root, round_no, PROPOSAL_NAME, turn.text)
+    write_round_artifact(artifacts, round_no, PROPOSAL_NAME, turn.text)
     diff = ctx.deps.git.diff_head()
-    write_round_artifact(root, round_no, CHANGES_PATCH_NAME, diff)
+    write_round_artifact(artifacts, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
     return turn
@@ -240,7 +251,7 @@ def verify(ctx: StepContext) -> None:
     """
     round_no = ctx.round
 
-    _purge_partial_artifacts(ctx.root, round_no)
+    _purge_partial_artifacts(ctx.artifact_root, round_no)
     for spec in ctx.gates:
         _emit_gate_event(
             ctx, EventType.GATE_STARTED, {"name": spec.name, "cmd": spec.cmd}
@@ -260,7 +271,7 @@ def verify(ctx: StepContext) -> None:
         )
 
     write_round_artifact(
-        ctx.root,
+        ctx.artifact_root,
         round_no,
         VERIFICATION_NAME,
         report.model_dump_json(by_alias=True),
@@ -307,11 +318,11 @@ async def review(ctx: StepContext) -> AgentTurn:
     начисление попало бы в retry-петлю и обнулило бы лимит I4 (ADR-004).
     """
     round_no = ctx.round
-    root = ctx.root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
-    verification = _round_verification(root, round_no)
-    prior = load_prior_round(root, round_no - 1)
+    _purge_partial_artifacts(artifacts, round_no)
+    verification = _round_verification(artifacts, round_no)
+    prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
     outcome = await run_with_schema_retry(
         ctx,
@@ -319,8 +330,8 @@ async def review(ctx: StepContext) -> AgentTurn:
         build_prompt=lambda: build_reviewer_prompt(
             task=ctx.fsm.state.task,
             round=round_no,
-            proposal_path=_relative_artifact(root, round_no, PROPOSAL_NAME),
-            patch_path=_relative_artifact(root, round_no, CHANGES_PATCH_NAME),
+            proposal_path=_relative_artifact(ctx, round_no, PROPOSAL_NAME),
+            patch_path=_relative_artifact(ctx, round_no, CHANGES_PATCH_NAME),
             verification=verification,
             prior_review=prior.review,
             prior_decision=prior.decision,
@@ -335,7 +346,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     review_model, turn = outcome
 
     write_round_artifact(
-        root,
+        artifacts,
         round_no,
         REVIEW_NAME,
         review_model.model_dump_json(by_alias=True),
@@ -380,9 +391,9 @@ def decide_step(ctx: StepContext) -> None:
     тестом шага.
     """
     round_no = ctx.round
-    root = ctx.root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
+    _purge_partial_artifacts(artifacts, round_no)
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
         round=round_no,
@@ -391,16 +402,16 @@ def decide_step(ctx: StepContext) -> None:
         open_issues_carried=list(draft.open_issues_carried),
         next_round_directive=draft.next_round_directive,
     )
-    _write_decision(root, round_no, decision)
+    _write_decision(artifacts, round_no, decision)
 
     if not is_partial(draft.outcome):
-        finalize_round(root, round_no)
+        finalize_round(artifacts, round_no)
         ctx.deps.git.commit_round(round_no)
 
     ctx.fsm.apply_decision(draft)
 
 
-def _purge_partial_artifacts(root: Path, round_no: int) -> None:
+def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
     """Убирает огрызки прерванной записи из `rounds/NNN/` ([REQ-015]).
 
     `events.atomic_write` обещает атомарность ОДНОЙ записи, а не уборку
@@ -428,7 +439,7 @@ def _purge_partial_artifacts(root: Path, round_no: int) -> None:
     уборка обязана быть тотальной: у шага VERIFYING нет и не должно быть
     формы, способной отменить его собственный переход ([REQ-004]).
     """
-    directory = round_dir(root, round_no)
+    directory = round_dir(artifact_root, round_no)
     for pattern in TEMP_ARTIFACT_PATTERNS:
         leftovers = sorted(path for path in directory.glob(pattern) if path.is_file())
         for leftover in leftovers:
@@ -447,24 +458,24 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
     отсутствие сохраняет как `None` — для ядра «правок не было» и
     «сравнивать не с чем» это разные входы.
     """
-    root = ctx.root
+    artifacts = ctx.artifact_root
     round_no = ctx.round
     state = ctx.fsm.state
     return DecidingInputs(
         round=round_no,
         mode=state.task.mode,
-        review=_round_review(root, round_no),
-        verification=_round_verification(root, round_no),
-        carried_issues=carried_issues(root, round_no - 1),
-        patch_current=load_patch(root, round_no) or "",
-        patch_two_back=load_patch(root, round_no - 2),
-        issue_history=issue_history(root, round_no),
+        review=_round_review(artifacts, round_no),
+        verification=_round_verification(artifacts, round_no),
+        carried_issues=carried_issues(artifacts, round_no - 1),
+        patch_current=load_patch(artifacts, round_no) or "",
+        patch_two_back=load_patch(artifacts, round_no - 2),
+        issue_history=issue_history(artifacts, round_no),
         budget_used=state.budget_used,
         limits=state.limits,
     )
 
 
-def _write_decision(root: Path, round_no: int, decision: Decision) -> None:
+def _write_decision(artifact_root: Path, round_no: int, decision: Decision) -> None:
     """Пишет `decision.json`; уже финализированный раунд — не ошибка шага.
 
     Маркер I3 ставит сам шаг, и ставит его ДО перехода — значит между ним и
@@ -484,10 +495,13 @@ def _write_decision(root: Path, round_no: int, decision: Decision) -> None:
     """
     try:
         write_round_artifact(
-            root, round_no, DECISION_NAME, decision.model_dump_json(by_alias=True)
+            artifact_root,
+            round_no,
+            DECISION_NAME,
+            decision.model_dump_json(by_alias=True),
         )
     except RoundImmutableError:
-        if load_decision(root, round_no) != decision:
+        if load_decision(artifact_root, round_no) != decision:
             raise
 
 
@@ -531,7 +545,7 @@ def _exhausted(failures: Sequence[Exception]) -> Exception:
     return failures[-1]
 
 
-def _round_review(root: Path, round_no: int) -> Review:
+def _round_review(artifact_root: Path, round_no: int) -> Review:
     """Ревью раунда `round_no`; его отсутствие — ошибка порядка.
 
     `AssertionError` по той же причине, что и у отчёта проверок: войти в
@@ -539,7 +553,7 @@ def _round_review(root: Path, round_no: int) -> Review:
     переход не даёт. Значит пустое место здесь означает сломанную
     диспетчеризацию цикла, а не действие пользователя.
     """
-    review_model = load_review(root, round_no)
+    review_model = load_review(artifact_root, round_no)
     if review_model is None:
         raise AssertionError(
             f"нет review.json раунда {round_no:03d}: шаг DECIDING вызван до "
@@ -549,7 +563,7 @@ def _round_review(root: Path, round_no: int) -> Review:
     return review_model
 
 
-def _round_verification(root: Path, round_no: int) -> VerificationReport:
+def _round_verification(artifact_root: Path, round_no: int) -> VerificationReport:
     """Отчёт проверок раунда `round_no`; его отсутствие — ошибка порядка.
 
     `AssertionError`, а не доменная ошибка: `VERIFYING` всегда
@@ -557,7 +571,7 @@ def _round_verification(root: Path, round_no: int) -> VerificationReport:
     раньше, чем отчёт лёг на диск. Значит пустое место здесь означает
     сломанную диспетчеризацию цикла, а не действие пользователя.
     """
-    report = load_verification(root, round_no)
+    report = load_verification(artifact_root, round_no)
     if report is None:
         raise AssertionError(
             f"нет verification.json раунда {round_no:03d}: шаг REVIEWING "
@@ -567,15 +581,26 @@ def _round_verification(root: Path, round_no: int) -> VerificationReport:
     return report
 
 
-def _relative_artifact(root: Path, round_no: int, name: str) -> str:
-    """Путь артефакта раунда относительно `root`, POSIX-разделителями.
+def _relative_artifact(ctx: StepContext, round_no: int, name: str) -> str:
+    """Путь артефакта раунда относительно рабочего корня, POSIX-разделителями.
+
+    Единственное место шага, где встречаются оба корня (SPEC-002 §4.1):
+    артефакт лежит под `artifact_root`, а читает его ревьюер, запущенный из
+    `workspace_root`, — значит и назван он должен быть от рабочего корня.
 
     Относительный — не косметика: абсолютный путь машины оркестратора
-    бесполезен ревьюеру, работающему из `root`, и заодно утёк бы в промпт
-    раскладкой файловой системы. `as_posix` фиксирует разделитель: промпт
-    обязан быть одинаковым на любой ОС (NFR-002).
+    бесполезен ревьюеру и заодно утёк бы в промпт раскладкой файловой
+    системы. `as_posix` фиксирует разделитель: промпт обязан быть одинаковым
+    на любой ОС (NFR-002).
+
+    Отсюда предусловие разведённых корней: `artifact_root` обязан лежать
+    ВНУТРИ `workspace_root` — так его и размещает §4.1
+    (`pipelines/<slug>/sessions/<revision>/`). Журнал снаружи репозитория
+    назвать ревьюеру относительным путём нечем, и `relative_to` откажет
+    здесь, громко, а не подсунет ему путь в чужое дерево.
     """
-    return round_artifact(root, round_no, name).relative_to(root).as_posix()
+    artifact = round_artifact(ctx.artifact_root, round_no, name)
+    return artifact.relative_to(ctx.workspace_root).as_posix()
 
 
 def _require_accepted(acceptance: ReviewAcceptance, round_no: int) -> None:

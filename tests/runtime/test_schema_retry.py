@@ -325,7 +325,8 @@ def _deps(
 ) -> RuntimeDeps:
     """`RuntimeDeps` с замороженными часами: журнал детерминирован."""
     return RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=author,

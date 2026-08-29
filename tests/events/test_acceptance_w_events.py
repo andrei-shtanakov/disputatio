@@ -26,6 +26,16 @@ ACCEPTANCE_TASK = "TASK-009"
 ALL_TASKS = (*COMPLETED_TASKS, ACCEPTANCE_TASK)
 ALL_REQUIREMENTS = tuple(f"REQ-{n:03d}" for n in range(1, 13))
 
+POST_WAVE_MODULES = frozenset({"test_artifact_root.py"})
+"""Модули `tests/events/`, пришедшие ПОСЛЕ приёмки волны 1.
+
+`test_artifact_root.py` пинит разделение `workspace_root`/`artifact_root`
+(SPEC-002 §4.1) — требование другой спеки, у которой ни claim'ов TASK-001…009,
+ни REQ-001…012 нет и быть не может. Список именной, а не шаблон вроде
+«новее такой-то даты»: пропуск по признаку сделал бы приёмку волны 1
+необязательной для любого нового модуля, а она обязана оставаться закрытой.
+"""
+
 # REQ → тесты, которые его пиньят. Пары `(модуль, имя теста)`, а не node-id:
 # implicit-concat строк внутри коллекции валит `ruff check` (ISC004).
 REQUIREMENT_COVERAGE: dict[str, tuple[tuple[str, str], ...]] = {
@@ -235,8 +245,14 @@ def test_every_milestone_module_is_present_and_non_empty() -> None:
 
 
 def test_no_test_module_is_orphaned_from_evidence() -> None:
-    """Каждый тест-модуль либо заклеймлен задачей, либо стоит в матрице REQ."""
-    on_disk = {path.name for path in TESTS_DIR.glob("test_*.py")}
+    """Каждый тест-модуль либо заклеймлен задачей, либо стоит в матрице REQ.
+
+    Модули более поздних спек из проверки исключены поимённо
+    (`POST_WAVE_MODULES`): evidence волны 1 закрыта и переписыванию не
+    подлежит, а вписать SPEC-002 в матрицу REQ-001…REQ-012 значило бы выдать
+    его покрытие за покрытие принятой волны.
+    """
+    on_disk = {path.name for path in TESTS_DIR.glob("test_*.py")} - POST_WAVE_MODULES
     claimed = {
         Path(str(_load_json(path)["test_path"])).name
         for path in CLAIMS_DIR.glob("TASK-*.json")

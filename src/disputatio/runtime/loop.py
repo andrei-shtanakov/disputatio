@@ -86,7 +86,13 @@ NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
 """Безусловные рёбра раунда. `DECIDING`/`EXPORTING` отсутствуют намеренно."""
 
 
-async def resume_session(root: Path, session_id: str, **overrides: Any) -> SessionState:
+async def resume_session(
+    root: Path,
+    session_id: str,
+    *,
+    artifact_root: Path | None = None,
+    **overrides: Any,
+) -> SessionState:
     """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
 
     Собственной «логики восстановления» здесь нет и быть не должно — есть
@@ -95,6 +101,14 @@ async def resume_session(root: Path, session_id: str, **overrides: Any) -> Sessi
     а не из `config.to_session_state`. Заведись у resume хоть один свой шаг
     («пропустить фазу», «переиграть раунд», «подтянуть конфиг»), и
     восстановленная сессия перестала бы быть той же самой сессией.
+
+    `artifact_root` — журнал сессии (SPEC-002 §4.1); `None` означает
+    «журнал в рабочем репозитории», то есть путь до разделения. Параметр
+    объявлен ЗДЕСЬ, а не только у `build_runtime`, потому что снапшот
+    читается ДО сборки портов: доедь `artifact_root` до сессии только через
+    `overrides`, и `load_config` всё равно смотрел бы в рабочий корень —
+    вложенная сессия падала бы `ConfigError` на чужом (или отсутствующем)
+    снапшоте, ещё не дойдя до собственного состояния.
 
     Порядок подготовки значим дважды:
 
@@ -116,14 +130,15 @@ async def resume_session(root: Path, session_id: str, **overrides: Any) -> Sessi
     `overrides` передаются в `build_runtime` как есть: подмена любого порта
     фейком не требует ни отдельного пути, ни правок цикла ([REQ-001]).
     """
-    config = load_config(root)
-    deps = build_runtime(config, root, **overrides)
+    journal_root = artifact_root if artifact_root is not None else root
+    config = load_config(journal_root)
+    deps = build_runtime(config, root, artifact_root=journal_root, **overrides)
     try:
         state = deps.store.load(session_id)
     except KeyError as exc:
         raise SessionNotFound(
-            f"сессии {session_id!r} нет в {root}: session.json отсутствует "
-            "либо принадлежит другой сессии"
+            f"сессии {session_id!r} нет в {journal_root}: session.json "
+            "отсутствует либо принадлежит другой сессии"
         ) from exc
     fsm = SessionFsm(state, store=deps.store, sink=deps.sink, now=deps.now)
     return await drive(

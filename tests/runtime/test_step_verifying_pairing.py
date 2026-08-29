@@ -234,7 +234,8 @@ def _make_harness(root: Path) -> Harness:
     fsm_sink = SpySink()
     store = FakeStore()
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=step_sink,
         author=NoAgent(),
@@ -337,7 +338,8 @@ def test_verifier_is_asked_for_the_session_round(tmp_path: Path) -> None:
 
     ctx = StepContext(
         deps=RuntimeDeps(
-            root=harness.root,
+            workspace_root=harness.root,
+            artifact_root=harness.root,
             store=FakeStore(),
             sink=harness.step_sink,
             author=NoAgent(),

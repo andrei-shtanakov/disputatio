@@ -239,7 +239,8 @@ def _harness(
     adapter = ScriptedAdapter(replies=replies)
     other: Any = NoAgent()
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=adapter if phase is SessionPhase.PROPOSING else other,

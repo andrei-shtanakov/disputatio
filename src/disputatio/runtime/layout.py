@@ -5,6 +5,11 @@
 и в публичный `__init__` не входит, а §4.2 запрещает импорт подмодулей чужих
 пакетов. Поэтому здесь — собственный, строго read-only набор функций путей.
 
+Корень тот же, что у писателя, — `artifact_root`, журнал сессии, а не рабочий
+git-репозиторий (SPEC-002 §4.1). Зеркало обязано отражать и это: read-side,
+считающий пути от рабочего корня, читал бы историю чужой сессии там, где
+писатель уже разошёлся.
+
 Дублирование раскладки не декларативно, а проверяемо: `write_round_artifact`
 **возвращает** записанный `Path`, и тест шага требует равенства этого пути
 пути отсюда для каждого артефакта, который runtime реально пишет. Разъедься
@@ -30,32 +35,32 @@ REVIEW_NAME: Final = "review.json"
 DECISION_NAME: Final = "decision.json"
 
 
-def session_dir(root: Path) -> Path:
-    """Корневая директория сессии: `root/.disputatio`."""
-    return root / SESSION_DIR_NAME
+def session_dir(artifact_root: Path) -> Path:
+    """Корневая директория сессии: `artifact_root/.disputatio`."""
+    return artifact_root / SESSION_DIR_NAME
 
 
-def config_toml(root: Path) -> Path:
+def config_toml(artifact_root: Path) -> Path:
     """Путь к снапшоту конфига сессии `config.toml` ([DESIGN-014]).
 
     Read-side зеркало `events.paths.config_toml_path`: писатель снапшота
     (`write_config_snapshot`) текст только принимает, а resume обязан его
     прочитать — и прочитать оттуда же, куда он записан ([REQ-014]).
     """
-    return session_dir(root) / CONFIG_TOML_NAME
+    return session_dir(artifact_root) / CONFIG_TOML_NAME
 
 
-def rounds_dir(root: Path) -> Path:
+def rounds_dir(artifact_root: Path) -> Path:
     """Директория всех раундов `rounds/`."""
-    return session_dir(root) / ROUNDS_DIR_NAME
+    return session_dir(artifact_root) / ROUNDS_DIR_NAME
 
 
-def round_dir(root: Path, round_no: int) -> Path:
+def round_dir(artifact_root: Path, round_no: int) -> Path:
     """Директория раунда `rounds/NNN` — паддинг тот же, что у писателя."""
-    return rounds_dir(root) / f"{round_no:03d}"
+    return rounds_dir(artifact_root) / f"{round_no:03d}"
 
 
-def round_artifact(root: Path, round_no: int, name: str) -> Path:
+def round_artifact(artifact_root: Path, round_no: int, name: str) -> Path:
     """Путь артефакта `name` внутри раунда `round_no`.
 
     Имя не валидируется: проверку «простое имя файла» делает писатель, у
@@ -63,4 +68,4 @@ def round_artifact(root: Path, round_no: int, name: str) -> Path:
     инвариант не вправе — разъехавшись, две проверки дали бы два разных
     ответа на один вопрос.
     """
-    return round_dir(root, round_no) / name
+    return round_dir(artifact_root, round_no) / name

@@ -357,7 +357,8 @@ def _context(
     sink = FakeSink()
     fsm = SessionFsm(_state(phase), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent() if author is None else author,

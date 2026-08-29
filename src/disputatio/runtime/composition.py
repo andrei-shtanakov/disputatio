@@ -47,9 +47,21 @@ ADAPTER_FACTORIES: Mapping[str, AdapterFactory] = {
 
 @dataclass(frozen=True, slots=True)
 class RuntimeDeps:
-    """Связка портов с реализациями — результат единственной композиции."""
+    """Связка портов с реализациями — результат единственной композиции.
 
-    root: Path
+    Корней два, и они названы порознь (SPEC-002 §4.1). `workspace_root` —
+    рабочий git-репозиторий: из него запускаются агентские CLI, по нему
+    считается `changes.patch` и по нему же прогоняются гейты. `artifact_root`
+    — журнал сессии: `.disputatio/` со состоянием, событиями, раундами и
+    экспортом. До разделения это был один параметр `root`, и он не
+    различался; пайплайн кладёт несколько сессий под ОДИН репозиторий, и
+    единственное поле свело бы их в общий `session.json`. Имени `root` здесь
+    больше нет намеренно: молча перепутать два корня можно было только пока
+    один из них назывался как оба.
+    """
+
+    workspace_root: Path
+    artifact_root: Path
     store: StateStore
     sink: EventSink
     author: AgentAdapter
@@ -69,6 +81,7 @@ def build_runtime(
     config: RuntimeConfig,
     root: Path,
     *,
+    artifact_root: Path | None = None,
     git: GitOps,
     sink: EventSink | None = None,
     store: StateStore | None = None,
@@ -84,15 +97,31 @@ def build_runtime(
     указывающий на несуществующий класс, превратился бы в отложенный
     `ImportError` в момент старта сессии.
 
+    `root` — рабочий git-репозиторий; `artifact_root` — журнал сессии
+    (SPEC-002 §4.1). `None` означает `artifact_root = root`, то есть
+    раскладку до разделения байт-в-байт: `disp run`/`disp resume` второго
+    корня не знают, и знать им его незачем — одна сессия на репозиторий
+    остаётся законным случаем. Разводит корни только пайплайн, у которого
+    сессий под одним репозиторием несколько.
+
+    Кто какой корень получает — не деталь сборки, а само разделение:
+    `JsonlEventSink` и `FileStateStore` пишут журнал, поэтому им уходит
+    `artifact_root`; адаптеры (`session_dir` — их рабочая директория) и
+    `VerifierRunner` (гейты идут по коду) работают с репозиторием, поэтому им
+    уходит `root`. Перепутай эти две строки — сессия писала бы состояние
+    туда, где его никто не ищет, а гейты гонялись бы по журналу.
+
     Порядок сборки значим: sink создаётся ПЕРЕД адаптерами, потому что
     попадает в их конструкторы. Соберись адаптеры первыми — они получили бы
     `event_sink=None`, и поток §8 молча исчез бы: адаптер без sink'а
     работает, просто ничего не транслирует.
     """
-    event_sink = sink if sink is not None else JsonlEventSink(root)
+    journal_root = artifact_root if artifact_root is not None else root
+    event_sink = sink if sink is not None else JsonlEventSink(journal_root)
     return RuntimeDeps(
-        root=root,
-        store=store if store is not None else FileStateStore(root),
+        workspace_root=root,
+        artifact_root=journal_root,
+        store=store if store is not None else FileStateStore(journal_root),
         sink=event_sink,
         author=_build_adapter(
             config.author.adapter,

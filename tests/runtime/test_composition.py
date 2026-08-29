@@ -200,10 +200,15 @@ def test_runtime_deps_fields_satisfy_ports(tmp_path: Path) -> None:
 
 
 def test_runtime_deps_carries_root_and_injected_clocks(tmp_path: Path) -> None:
-    """`root` и часы — часть контейнера: цикл не зовёт `datetime.now` сам."""
+    """Корни и часы — часть контейнера: цикл не зовёт `datetime.now` сам.
+
+    Корней два (SPEC-002 §4.1), и на дефолте они совпадают: без
+    `artifact_root` журнал сессии остаётся в рабочем репозитории.
+    """
     deps = _build(tmp_path)
 
-    assert deps.root == tmp_path
+    assert deps.workspace_root == tmp_path
+    assert deps.artifact_root == tmp_path
     assert isinstance(deps.now(), datetime)
     assert deps.now().tzinfo is not None
     assert isinstance(deps.monotonic(), float)

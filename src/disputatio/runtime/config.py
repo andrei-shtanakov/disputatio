@@ -224,8 +224,14 @@ class RuntimeConfig:
         )
 
 
-def load_config(root: Path) -> RuntimeConfig:
-    """Читает снапшот `.disputatio/config.toml` сессии под `root` ([REQ-014]).
+def load_config(artifact_root: Path) -> RuntimeConfig:
+    """Читает снапшот `.disputatio/config.toml` из журнала сессии ([REQ-014]).
+
+    Корень — `artifact_root`, а не рабочий репозиторий (SPEC-002 §4.1). Это
+    не переименование параметра: у сессии пайплайна снапшот лежит в её
+    `sessions/<revision>/`, и чтение от рабочего корня подсунуло бы ей конфиг
+    соседней ревизии — либо, чаще, `ConfigError` на файле, которого там нет
+    вовсе.
 
     Отсутствие файла — та же `ConfigError`, что и битое содержимое: для
     resume «снапшота нет» и «снапшот не читается» — один исход, и голый
@@ -239,7 +245,7 @@ def load_config(root: Path) -> RuntimeConfig:
     форматом пользуется профиль запуска `disp run` ([DESIGN-019]), а вторая
     пара «читатель + перевод ошибок» разошлась бы с первой молча.
     """
-    return load_config_file(config_toml(root))
+    return load_config_file(config_toml(artifact_root))
 
 
 def load_config_file(path: Path) -> RuntimeConfig:

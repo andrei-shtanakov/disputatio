@@ -322,7 +322,8 @@ def _make_harness(
     verifier = SpyVerifier(log=log, report=report)
     fsm = SessionFsm(_state(phase), store=store, sink=sink, now=_now)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

@@ -455,7 +455,8 @@ def _make_harness(
     sink = FakeSink()
     fsm = SessionFsm(_state(round_no), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

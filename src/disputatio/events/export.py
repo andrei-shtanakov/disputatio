@@ -20,7 +20,7 @@ MANIFEST_NAME = "manifest.json"
 
 
 def write_result(
-    root: Path,
+    artifact_root: Path,
     files: Mapping[str, str],
     manifest: Mapping[str, Any],
 ) -> None:
@@ -37,8 +37,10 @@ def write_result(
     оставляет прежний манифест (или ни одного), но никогда — манифест с
     checksum ненаписанного файла.
 
-    Предусловие: `bootstrap_session(root)` уже вызван — `result/` создаёт
-    только он ([REQ-002]), иначе вызов упадёт `FileNotFoundError`.
+    Предусловие: `bootstrap_session(artifact_root)` уже вызван — `result/`
+    создаёт только он ([REQ-002]), иначе вызов упадёт `FileNotFoundError`.
+    Корень — журнал сессии (SPEC-002 §4.1): экспорт принадлежит сессии, и у
+    двух сессий над одним репозиторием он свой.
 
     `ValueError`, если имя файла — не простое имя внутри `result/` или занято
     манифестом; `TypeError`, если `manifest` не сериализуем в JSON. И имена, и
@@ -62,7 +64,7 @@ def write_result(
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
     )
 
-    directory = result_dir(root)
+    directory = result_dir(artifact_root)
     for name, data in payloads.items():
         atomic_write(directory / name, data)
     atomic_write(directory / MANIFEST_NAME, serialized)

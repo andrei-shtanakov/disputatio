@@ -454,7 +454,8 @@ def _make_harness(
     git = SpyGit(root=root, log=log)
     author = SpyAuthor(log=log, reply=reply, fsm=fsm, on_run=on_run)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=author,

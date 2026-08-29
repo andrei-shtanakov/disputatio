@@ -15,13 +15,17 @@ from disputatio.events.paths import events_jsonl_path
 class JsonlEventSink:
     """Файловая реализация `ports.EventSink`: append-only `events.jsonl`.
 
-    Предусловие `emit`: `bootstrap_session(root)` уже вызван — директорию
-    `.disputatio/` sink не создаёт (bootstrap — единственная точка `mkdir`,
-    [REQ-002]).
+    Журнал лежит под `artifact_root` (SPEC-002 §4.1): события принадлежат
+    сессии, а не рабочему репозиторию, и у двух сессий над одним деревом
+    ленты разные.
+
+    Предусловие `emit`: `bootstrap_session(artifact_root)` уже вызван —
+    директорию `.disputatio/` sink не создаёт (bootstrap — единственная точка
+    `mkdir`, [REQ-002]).
     """
 
-    def __init__(self, root: Path) -> None:
-        self._path = events_jsonl_path(root)
+    def __init__(self, artifact_root: Path) -> None:
+        self._path = events_jsonl_path(artifact_root)
 
     def emit(self, event: Event) -> None:
         """Дописывает одну JSON-строку + `"\\n"` в конец `events.jsonl`.
