@@ -43,6 +43,7 @@ from disputatio.contracts import (
     StateStore,
     Verifier,
 )
+from disputatio.core import TERMINAL_PHASES
 from disputatio.events import (
     FilePipelineStateStore,
     FileStateStore,
@@ -67,6 +68,7 @@ from disputatio.runtime.pipeline_runner import (
     CONTOUR_SPEC,
     PipelineRunner,
     SessionCreation,
+    load_session_state,
     pipeline_dir_of,
     split_revision,
 )
@@ -394,7 +396,21 @@ def build_pipeline(
     def session_driver(
         artifact_root: Path, session_id: str, policy: RoundBoundaryPolicy | None
     ) -> SessionState:
-        """Гонит одну ревизию тем же циклом, что и `disp run` ([REQ-008])."""
+        """Гонит одну ревизию тем же циклом, что и `disp run` ([REQ-008]).
+
+        Исход оборвавшейся сессии спрашивается у ДИСКА — тем же приёмом,
+        каким `disp run` отличает провал сессии от поломки CLI. Шаг,
+        исчерпавший schema-повторы, поднимает ошибку последней попытки
+        ([DESIGN-006]), но `FAILED` к этому моменту уже записан ядром, то
+        есть исход сессии определён, а исключение лишь называет причину.
+        Пропусти его наружу — и runner не дошёл бы до `finish_session`:
+        пайплайн остался бы с непроигранным интентом и объявил бы себя
+        `FAILED` только на следующем `resume`, хотя всё нужное для этого
+        уже лежит на диске (§7.2). Любое ДРУГОЕ исключение уходит выше как
+        есть: сессия, оставшаяся нетерминальной, — это обрыв, и выдавать
+        его за исход значило бы объявить пайплайн упавшим там, где его
+        нужно продолжить.
+        """
         contour = _contour_of(session_id)
         session_sink = JsonlEventSink(artifact_root)
         lifecycle = PipelineIntegrityPolicy(
@@ -425,7 +441,13 @@ def build_pipeline(
                 monotonic=monotonic,
             )
 
-        return anyio.run(call)
+        try:
+            return anyio.run(call)
+        except Exception:
+            settled = load_session_state(artifact_root, session_id)
+            if settled is not None and settled.state in TERMINAL_PHASES:
+                return settled
+            raise
 
     runner = PipelineRunner(
         store=store,

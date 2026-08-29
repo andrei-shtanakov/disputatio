@@ -684,3 +684,278 @@ def test_run_refuses_foreign_untracked_before_creating_anything(
 
     stray.unlink()
     assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+
+def test_round_one_approve_does_not_converge_a_document_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Анти-сикофантия §5.1 действует и в `Mode.DOCUMENT` (§5.1 SPEC-002, §10).
+
+    Скрипт одобряет спеку в первом же раунде чистым чеклистом при зелёных
+    гейтах — то есть даёт ядру ВСЁ, чего требует критерий сходимости §5.1
+    SPEC-001, кроме одного: раунд не первый. Исключение раунда 1 касается
+    только `analyze` без правок кода, а doc-сессия документ пишет, значит
+    один содержательный цикл ревью она обязана пройти.
+
+    Инвариант ядра здесь не реализуется, а проверяется на doc-контуре: он
+    единственное место, где `Mode.DOCUMENT` встречается с `decide()`.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "reviewer")] = [
+        Turn(text=review_json(1, "spec", Verdict.APPROVE)),
+        Turn(text=review_json(2, "spec", Verdict.APPROVE)),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    first = stand.decision("spec-r1", 1)
+    assert first.outcome is not Outcome.CONVERGED
+    assert "sycophancy" in first.reason
+    assert first.next_round_directive is not None
+    assert stand.decision("spec-r1", 2).outcome is Outcome.CONVERGED
+    # Содержательный цикл — не формальность: автора спросили дважды.
+    assert len(stand.script.prompts_of("spec-r1", "author")) == 2
+
+
+def test_approve_breaking_the_checklist_never_reaches_decide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V6: approve с fail-пунктом чеклиста гибнет в schema-retry (§5.2, §10).
+
+    Гарантия интеграционная, а не промптовая, и утверждение здесь ровно
+    одно: `decide()` не вызывается НИ РАЗУ. Ревьюер отдаёт `approve` с
+    `S1: fail`, сославшимся на настоящую major-находку, — это нарушает V3 и
+    V7 и обязано быть отвергнуто ДО записи `review.json`. Скрипт повторяет
+    тот же ответ, пока не исчерпан `schema_retries`, поэтому раунд 1 до
+    `DECIDING` не доходит вовсе и `core/deciding.py` в этой цепочке не
+    участвует — правок в нём V6 действительно не потребовала.
+
+    Spy — обёртка вокруг `steps.decide` в composition тестового прогона;
+    сам `core/deciding.py` не редактируется и не подменяется.
+    """
+    from disputatio.runtime import steps
+
+    calls: list[int] = []
+    original = steps.decide
+    monkeypatch.setattr(
+        steps,
+        "decide",
+        lambda inputs: (calls.append(inputs.round), original(inputs))[1],
+    )
+
+    bad = issue("B-1", severity=Severity.MAJOR)
+    approve_with_fail = review_json(
+        1,
+        "spec",
+        Verdict.APPROVE,
+        issues=[bad],
+        failed={"S1": ["B-1"]},
+    )
+    # Очередь автора длиннее, чем нужно исправному коду (он до раунда 2 не
+    # доходит вовсе): реализация, ПРОПУСТИВШАЯ doc-правила, обязана
+    # покраснеть на `calls == []`, а не на исчерпанном скрипте — иначе тест
+    # доказывал бы длину очереди, а не V6.
+    turns = happy_path_turns()
+    turns[("spec-r1", "author")] = [
+        Turn(text=proposal(round_no, [SPEC_PATH]), edits={SPEC_PATH: spec_text("r1")})
+        for round_no in (1, 2, 3)
+    ]
+    turns[("spec-r1", "reviewer")] = [Turn(text=approve_with_fail) for _ in range(3)]
+    stand = build_stand(tmp_path, monkeypatch, turns, schema_retries=2)
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    assert calls == []
+    assert code == EXIT_FAILED
+    assert stand.session_state("spec-r1").state is SessionPhase.FAILED
+    assert stand.manifest()["phase"] == PipelinePhase.FAILED.value
+    # Ни ревью, ни решения на диске: отвергнутый ответ не записывается.
+    assert not (stand.round_dir("spec-r1", 1) / "review.json").exists()
+    assert not (stand.round_dir("spec-r1", 1) / "decision.json").exists()
+    # `FAILED` — без автоэкспорта (P7).
+    assert not (stand.pipeline_dir() / "result").exists()
+    # Ревьюера спросили ровно `schema_retries + 1` раз (I4).
+    assert len(stand.script.prompts_of("spec-r1", "reviewer")) == 3
+
+
+def test_broken_link_blocks_convergence_but_not_the_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Красный `doc-links` не отменяет ревью, но запрещает `CONVERGED` (§10).
+
+    Три раунда, и каждый проверяет свою половину правила [REQ-004]:
+
+    1. битая ссылка валит `doc-links`, но `VERIFYING → REVIEWING` состоялся —
+       `review.json` раунда 1 на диске, ревьюер судил по красному отчёту сам;
+    2. `approve` поверх той же красной ссылки отвергается валидацией
+       (`approve_on_failed_gates`) и уходит в schema-retry — сходимость
+       заблокирована ДО `decide()`, а не после;
+    3. ссылка починена, гейты зелёные, тот же `approve` сходится.
+    """
+    broken = spec_text("r1", broken_link=True)
+    still_broken = spec_text("r2", broken_link=True)
+    turns = happy_path_turns()
+    turns[("spec-r1", "author")] = [
+        Turn(text=proposal(1, [SPEC_PATH]), edits={SPEC_PATH: broken}),
+        Turn(text=proposal(2, [SPEC_PATH]), edits={SPEC_PATH: still_broken}),
+        Turn(text=proposal(3, [SPEC_PATH]), edits={SPEC_PATH: spec_text("r3")}),
+    ]
+    turns[("spec-r1", "reviewer")] = [
+        # `S1` («нет blocker/major-находок») обязан быть `fail` рядом с любой
+        # существенной находкой — иначе V8 отвергает ревью раньше, чем до
+        # него доберётся правило про красные гейты.
+        Turn(
+            text=review_json(
+                1,
+                "spec",
+                Verdict.REQUEST_CHANGES,
+                issues=[issue("R1-1")],
+                failed={"S1": ["R1-1"], "S5": ["R1-1"]},
+            )
+        ),
+        Turn(text=review_json(2, "spec", Verdict.APPROVE)),
+        Turn(
+            text=review_json(
+                2,
+                "spec",
+                Verdict.REQUEST_CHANGES,
+                issues=[issue("R2-1")],
+                failed={"S1": ["R2-1"], "S5": ["R2-1"]},
+            )
+        ),
+        Turn(text=review_json(3, "spec", Verdict.APPROVE)),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    report = json.loads(
+        (stand.round_dir("spec-r1", 1) / "verification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["overall"] == "fail"
+    failed_gates = {
+        gate["name"] for gate in report["gates"] if gate["status"] == "fail"
+    }
+    assert "doc-links" in failed_gates
+    # Ревью раунда 1 состоялось: провал гейта — материал ревьюеру, не приговор.
+    assert (stand.round_dir("spec-r1", 1) / "review.json").is_file()
+
+    assert stand.decision("spec-r1", 1).outcome is not Outcome.CONVERGED
+    assert stand.decision("spec-r1", 2).outcome is not Outcome.CONVERGED
+    assert stand.decision("spec-r1", 3).outcome is Outcome.CONVERGED
+    # Раунд 2 стоил ревьюеру двух попыток: approve при красных гейтах отвергнут.
+    assert len(stand.script.prompts_of("spec-r1", "reviewer")) == 4
+
+
+def test_architectural_defect_returns_to_spec_and_replays_the_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Смешанное ревью → spec-r2 → полная pair-r2 без наследства (P5, P6, §7.3).
+
+    Ревью pair-r1 несёт обе находки сразу — архитектурную и исполнительскую.
+    P6 объявляет архитектурную приоритетной безусловно: раунд паркуется до
+    `decide()`, пайплайн возвращается в spec-контур, а исполнительская
+    находка остаётся в ревью и в evidence перехода не участвует.
+
+    Вторая половина — P5: `pair-r2` перепроверяет пару ЦЕЛИКОМ. Ни
+    унаследованного approve, ни чеклиста, ни перенесённых находок: её набор
+    `adopted_findings` пуст, промпт автора раунда 1 секции находок не несёт,
+    и содержательный цикл ревью она проходит заново.
+    """
+    architectural = issue(
+        "F-ARCH",
+        severity=Severity.BLOCKER,
+        defect_class="architectural",
+        file=SPEC_PATH,
+    )
+    execution = issue(
+        "F-EXEC",
+        severity=Severity.MAJOR,
+        defect_class="execution",
+        file=PLAN_PATH,
+    )
+    turns = {
+        ("spec-r1", "author"): converging("spec-r1", "spec"),
+        ("spec-r1", "reviewer"): converging_reviews("spec"),
+        ("pair-r1", "author"): [
+            Turn(
+                text=proposal(1, [PLAN_PATH]),
+                edits={PLAN_PATH: plan_text("pair-r1-r1")},
+            )
+        ],
+        ("pair-r1", "reviewer"): [
+            Turn(
+                text=review_json(
+                    1,
+                    "pair",
+                    Verdict.REQUEST_CHANGES,
+                    issues=[architectural, execution],
+                    failed={"P1": ["F-ARCH"], "P2": ["F-EXEC"]},
+                )
+            )
+        ],
+        ("spec-r2", "author"): converging("spec-r2", "spec"),
+        ("spec-r2", "reviewer"): converging_reviews("spec"),
+        ("pair-r2", "author"): converging("pair-r2", "pair"),
+        ("pair-r2", "reviewer"): converging_reviews("pair"),
+    }
+    stand = build_stand(tmp_path, monkeypatch, turns)
+
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    manifest = stand.manifest()
+    assert manifest["phase"] == PipelinePhase.DONE.value
+    spec_records = {
+        record["session_id"]: record for record in manifest["spec_sessions"]
+    }
+    pair_records = {
+        record["session_id"]: record for record in manifest["pair_sessions"]
+    }
+    assert spec_records["spec-r1"]["outcome"] == "converged"
+    assert spec_records["spec-r1"]["superseded_by"] == "spec-r2"
+    assert pair_records["pair-r1"]["outcome"] == "architectural_defect"
+    assert pair_records["pair-r1"]["superseded_by"] == "spec-r2"
+    assert spec_records["spec-r2"]["outcome"] == "converged"
+    assert pair_records["pair-r2"]["outcome"] == "converged"
+    assert pair_records["pair-r2"]["superseded_by"] is None
+
+    returns = [
+        transition
+        for transition in manifest["transitions"]
+        if transition["reason"] == "architectural_defect"
+    ]
+    assert len(returns) == 1
+    # Evidence возврата — только архитектурная находка: execution туда не едет.
+    assert [link["finding_id"] for link in returns[0]["evidence"]] == ["F-ARCH"]
+
+    # Припаркованный раунд решения не имеет — на этом §8.1 и строит identity.
+    assert (stand.round_dir("pair-r1", 1) / "review.json").is_file()
+    assert not (stand.round_dir("pair-r1", 1) / "decision.json").exists()
+
+    # spec-r2 открыт находкой, и до автора она доехала — ровно одна.
+    findings = json.loads(
+        (
+            stand.artifact_root("spec-r2") / ".disputatio" / "adopted_findings.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [item["id"] for item in findings] == ["F-ARCH"]
+    first_prompt = stand.script.prompts_of("spec-r2", "author")[0]
+    assert "F-ARCH" in first_prompt
+    assert "F-EXEC" not in first_prompt
+
+    # P5: pair-r2 не наследует ничего — ни находок, ни approve.
+    inherited = json.loads(
+        (
+            stand.artifact_root("pair-r2") / ".disputatio" / "adopted_findings.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert inherited == []
+    assert (
+        "Архитектурные находки" not in stand.script.prompts_of("pair-r2", "author")[0]
+    )
+    assert stand.decision("pair-r2", 1).outcome is not Outcome.CONVERGED
+    assert stand.decision("pair-r2", 2).outcome is Outcome.CONVERGED
+    assert len(stand.script.prompts_of("pair-r2", "reviewer")) == 2
