@@ -75,6 +75,24 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "check_checked_nonempty",
     ),
     "ports": ("StateStore", "EventSink", "AgentAdapter", "Verifier", "AgentTurn"),
+    "pipeline": (
+        "SCHEMA_PIPELINE_V1",
+        "ALLOWED_TRANSITIONS",
+        "PipelinePhase",
+        "TransitionReason",
+        "SessionOutcome",
+        "PipelineArtifactBase",
+        "FileRef",
+        "DocumentPaths",
+        "EvidenceLink",
+        "SessionRecord",
+        "Transition",
+        "OperatorDecision",
+        "NextAction",
+        "AppendOnlyEntry",
+        "IntegritySnapshot",
+        "PipelineState",
+    ),
 }
 
 EXPECTED_PUBLIC_NAMES: Final[tuple[str, ...]] = tuple(
