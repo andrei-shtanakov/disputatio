@@ -87,7 +87,7 @@ NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
 
 
 async def resume_session(
-    root: Path,
+    workspace_root: Path,
     session_id: str,
     *,
     artifact_root: Path | None = None,
@@ -130,9 +130,11 @@ async def resume_session(
     `overrides` передаются в `build_runtime` как есть: подмена любого порта
     фейком не требует ни отдельного пути, ни правок цикла ([REQ-001]).
     """
-    journal_root = artifact_root if artifact_root is not None else root
+    journal_root = artifact_root if artifact_root is not None else workspace_root
     config = load_config(journal_root)
-    deps = build_runtime(config, root, artifact_root=journal_root, **overrides)
+    deps = build_runtime(
+        config, workspace_root, artifact_root=journal_root, **overrides
+    )
     try:
         state = deps.store.load(session_id)
     except KeyError as exc:

@@ -79,7 +79,7 @@ def _utcnow() -> datetime:
 
 def build_runtime(
     config: RuntimeConfig,
-    root: Path,
+    workspace_root: Path,
     *,
     artifact_root: Path | None = None,
     git: GitOps,
@@ -97,50 +97,54 @@ def build_runtime(
     указывающий на несуществующий класс, превратился бы в отложенный
     `ImportError` в момент старта сессии.
 
-    `root` — рабочий git-репозиторий; `artifact_root` — журнал сессии
-    (SPEC-002 §4.1). `None` означает `artifact_root = root`, то есть
-    раскладку до разделения байт-в-байт: `disp run`/`disp resume` второго
-    корня не знают, и знать им его незачем — одна сессия на репозиторий
-    остаётся законным случаем. Разводит корни только пайплайн, у которого
-    сессий под одним репозиторием несколько.
+    `workspace_root` — рабочий git-репозиторий; `artifact_root` — журнал
+    сессии (SPEC-002 §4.1). `None` означает `artifact_root = workspace_root`,
+    то есть раскладку до разделения байт-в-байт: `disp run`/`disp resume`
+    второго корня не знают, и знать им его незачем — одна сессия на
+    репозиторий остаётся законным случаем. Разводит корни только пайплайн, у
+    которого сессий под одним репозиторием несколько.
 
     Кто какой корень получает — не деталь сборки, а само разделение:
     `JsonlEventSink` и `FileStateStore` пишут журнал, поэтому им уходит
     `artifact_root`; адаптеры (`session_dir` — их рабочая директория) и
     `VerifierRunner` (гейты идут по коду) работают с репозиторием, поэтому им
-    уходит `root`. Перепутай эти две строки — сессия писала бы состояние
-    туда, где его никто не ищет, а гейты гонялись бы по журналу.
+    уходит `workspace_root`. Перепутай эти две строки — сессия писала бы
+    состояние туда, где его никто не ищет, а гейты гонялись бы по журналу.
+
+    Вложенность корней проверяется до разбора имён адаптеров: негодная пара
+    корней — отказ сборки, и приходить он обязан раньше любого другого.
 
     Порядок сборки значим: sink создаётся ПЕРЕД адаптерами, потому что
     попадает в их конструкторы. Соберись адаптеры первыми — они получили бы
     `event_sink=None`, и поток §8 молча исчез бы: адаптер без sink'а
     работает, просто ничего не транслирует.
     """
-    journal_root = artifact_root if artifact_root is not None else root
+    journal_root = artifact_root if artifact_root is not None else workspace_root
+    _check_roots(workspace_root, journal_root)
     event_sink = sink if sink is not None else JsonlEventSink(journal_root)
     return RuntimeDeps(
-        workspace_root=root,
+        workspace_root=workspace_root,
         artifact_root=journal_root,
         store=store if store is not None else FileStateStore(journal_root),
         sink=event_sink,
         author=_build_adapter(
             config.author.adapter,
             role=Role.AUTHOR,
-            root=root,
+            workspace_root=workspace_root,
             sink=event_sink,
             session_id=config.session_id,
         ),
         reviewer=_build_adapter(
             config.reviewer.adapter,
             role=Role.REVIEWER,
-            root=root,
+            workspace_root=workspace_root,
             sink=event_sink,
             session_id=config.session_id,
         ),
         verifier=(
             verifier
             if verifier is not None
-            else VerifierRunner(list(config.gates), root)
+            else VerifierRunner(list(config.gates), workspace_root)
         ),
         git=git,
         now=now,
@@ -148,11 +152,43 @@ def build_runtime(
     )
 
 
+def _check_roots(workspace_root: Path, artifact_root: Path) -> None:
+    """Отвергает `artifact_root` вне рабочего репозитория (SPEC-002 §4.1).
+
+    Требование приходит от шага `review`: путь артефакта в промпте ревьюера
+    считается ОТ рабочего корня, потому что ревьюер запущен оттуда. Журнал
+    снаружи репозитория назвать таким путём нечем — `relative_to` откажет.
+    Отказ этот пришёлся бы на середину раунда, то есть уже после
+    `reset --hard`, работы автора и прогона гейтов; здесь он стоит одного
+    сравнения путей и не стоит ни одного вызова агента.
+
+    `ValueError`, а не доменная ошибка [DESIGN-020]: это не отказ во вводе
+    пользователя, а негодный аргумент вызывающего кода — CLI второго корня
+    не передаёт вовсе. Тем же `ValueError` отвечают `events` на имя
+    артефакта, уводящее запись мимо раунда: вопрос один и тот же — форма
+    пути, а не конфигурация сессии.
+
+    Сравниваются абсолютные пути: относительный `artifact_root` рядом с
+    абсолютным `workspace_root` (и наоборот) — законный вход вызывающего, а
+    `is_relative_to` на смеси форм ответил бы «нет» по различию форм, а не
+    по расположению.
+    """
+    workspace = workspace_root.resolve()
+    journal = artifact_root.resolve()
+    if journal.is_relative_to(workspace):
+        return
+    raise ValueError(
+        f"artifact_root {artifact_root} лежит вне рабочего репозитория "
+        f"{workspace_root}: путь артефакта в промпте ревьюера считается от "
+        "рабочего корня, и журнал снаружи него назвать нечем"
+    )
+
+
 def _build_adapter(
     name: str,
     *,
     role: Role,
-    root: Path,
+    workspace_root: Path,
     sink: EventSink,
     session_id: str,
 ) -> AgentAdapter:
@@ -178,7 +214,7 @@ def _build_adapter(
     try:
         return factory(
             role=role,
-            session_dir=root,
+            session_dir=workspace_root,
             event_sink=sink,
             session=session_id,
         )
