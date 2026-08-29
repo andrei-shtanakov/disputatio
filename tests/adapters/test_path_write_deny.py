@@ -3,13 +3,16 @@
 [DESIGN-003], [REQ-006]. Адаптер может объявить, что умеет запрещать
 запись по путям. Слой необязательный: якорь доверия P9 — файловая граница
 `integrity_anchor`, не адаптер.
+
+Мэппинг в argv отложен до верификации механизма claude CLI. Тесты проверяют,
+что данные хранятся в AdapterCapabilities и не ломают существующее поведение.
 """
 
 from disputatio.contracts.base import Role
 
 
 def test_author_argv_unchanged_by_default() -> None:
-    """Регресс: дефолтный дефолт автора — `[]`."""
+    """Регресс: дефолтный argv автора — `[]`."""
     try:
         from disputatio.adapters.permissions import (
             AdapterCapabilities,
@@ -22,8 +25,8 @@ def test_author_argv_unchanged_by_default() -> None:
     assert build_role_argv(Role.AUTHOR, capabilities) == []
 
 
-def test_author_with_path_write_deny_capability() -> None:
-    """claude_code с path_write_deny=True собирает deny-аргументы."""
+def test_author_argv_with_path_write_deny_capability_still_empty() -> None:
+    """path_write_deny и deny_write_paths не влияют на argv (мэппинг отложен)."""
     try:
         from disputatio.adapters.permissions import (
             AdapterCapabilities,
@@ -39,18 +42,11 @@ def test_author_with_path_write_deny_capability() -> None:
     )
 
     argv = build_role_argv(Role.AUTHOR, capabilities)
-
-    # Проверяем, что argv содержит deny-правило
-    assert len(argv) >= 2
-    assert "--denyPaths" in argv
-    denyPaths_idx = argv.index("--denyPaths")
-    # Пути должны быть либо в одном аргументе, либо в следующих
-    assert denyPaths_idx + 1 < len(argv)
-    assert ".disputatio/**" in argv[denyPaths_idx + 1]
+    assert argv == []
 
 
-def test_author_without_path_write_deny_capability() -> None:
-    """Адаптер без path_write_deny допускается; argv остаётся пуст."""
+def test_author_without_path_write_deny_capability_argv_empty() -> None:
+    """Адаптер без path_write_deny — argv остаётся пуст, исключения нет."""
     try:
         from disputatio.adapters.permissions import (
             AdapterCapabilities,
@@ -59,7 +55,6 @@ def test_author_without_path_write_deny_capability() -> None:
     except ImportError as exc:
         raise AssertionError("build_role_argv ещё не реализован") from exc
 
-    # Адаптер без path_write_deny с тем же deny_write_paths
     capabilities = AdapterCapabilities(
         supports_granular_permissions=True,
         path_write_deny=False,
@@ -70,21 +65,18 @@ def test_author_without_path_write_deny_capability() -> None:
     assert argv == []
 
 
-def test_author_with_empty_deny_write_paths() -> None:
-    """При path_write_deny=True но пусто deny_write_paths — argv пуст."""
+def test_adapter_capabilities_accepts_path_write_deny_fields() -> None:
+    """AdapterCapabilities принимает path_write_deny и deny_write_paths."""
     try:
-        from disputatio.adapters.permissions import (
-            AdapterCapabilities,
-            build_role_argv,
-        )
+        from disputatio.adapters.permissions import AdapterCapabilities
     except ImportError as exc:
-        raise AssertionError("build_role_argv ещё не реализован") from exc
+        raise AssertionError("AdapterCapabilities ещё не реализован") from exc
 
     capabilities = AdapterCapabilities(
         supports_granular_permissions=True,
         path_write_deny=True,
-        deny_write_paths=(),
+        deny_write_paths=(".disputatio/**", ".git/**"),
     )
 
-    argv = build_role_argv(Role.AUTHOR, capabilities)
-    assert argv == []
+    assert capabilities.path_write_deny is True
+    assert capabilities.deny_write_paths == (".disputatio/**", ".git/**")

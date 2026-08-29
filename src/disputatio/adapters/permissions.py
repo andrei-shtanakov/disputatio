@@ -22,7 +22,12 @@ REVIEWER_DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class AdapterCapabilities:
-    """Per-CLI capability flags read by permissions.py/fallback.py."""
+    """Per-CLI capability flags read by permissions.py/fallback.py.
+
+    `path_write_deny` и `deny_write_paths` объявляют, что CLI умеет
+    запрещать запись по путям. Мэппинг в argv отложен до верификации
+    механизма claude CLI (какой флаг, какой синтаксис спецификаторов путей).
+    """
 
     supports_granular_permissions: bool
     reviewer_allowed_tools: tuple[str, ...] = REVIEWER_DEFAULT_ALLOWED_TOOLS
@@ -33,12 +38,10 @@ class AdapterCapabilities:
 def build_role_argv(role: Role, capabilities: AdapterCapabilities) -> list[str]:
     """Возвращает доп. argv-фрагменты для `role`; `[]` для Author (без ограничений).
 
-    Для Author: при `path_write_deny and deny_write_paths` возвращает deny-аргументы,
-    иначе — прежний `[]`.
+    `path_write_deny`/`deny_write_paths` объявляют capability, но мэппинг
+    в argv отложен до верификации механизма claude CLI.
     """
     if role is Role.AUTHOR:
-        if capabilities.path_write_deny and capabilities.deny_write_paths:
-            return ["--denyPaths", ",".join(capabilities.deny_write_paths)]
         return []
     if not capabilities.supports_granular_permissions:
         return []  # ограничение обеспечивает fallback.py через файловую систему
