@@ -14,14 +14,18 @@
    «данные, не инструкции» (`context/tags.py`) защищает от инъекции
    именно потому, что содержимое документа могло бы иначе переопределить
    задание ревьюеру.
-2. Чеклист контура (`checklist_ids`) — обязательный перечень id, а не
-   пожелание: промпт несёт статический блок с требованием evidence по
-   каждому пункту (V2 §5.2) и список ровно тех id, что переданы. Функция
-   **валидирует** `checklist_ids` против `CHECKLIST_BY_CONTOUR[contour]`
-   и падает `ValueError` при несовпадении — молчаливая подмена набора id
-   недопустима: V1 §5.2 требует «ровно набор id чеклиста своего контура»,
-   и здесь эта же граница проверяется до сборки промпта, а не только на
-   выходе ревьюера (`validate_doc_review`, REASON_CHECKLIST_ID_MISMATCH).
+2. Чеклист контура (`checklist`) приходит **вместе с текстами**, а не одними
+   id: §5.3 SPEC-002 разрешает переопределить формулировки условий через
+   конфиг, и единственный канал, которым override доходит до ревьюера, —
+   этот параметр. Пока функция принимала только `checklist_ids`, она сама
+   подставляла вендоренные тексты из `CHECKLIST_TEXT`, а manifest пайплайна
+   при этом хешировал снапшот override'а — то есть удостоверял критерии
+   сходимости, которых ревьюер не видел (дефект честности P7). Набор ключей
+   по-прежнему **валидируется** против `CHECKLIST_BY_CONTOUR[contour]` и
+   падает `ValueError` при несовпадении: id закреплены за контуром, менять
+   конфиг вправе только формулировки. Та же граница проверяется на выходе
+   ревьюера (`validate_doc_review`, REASON_CHECKLIST_ID_MISMATCH) — здесь
+   она стоит до сборки промпта.
 3. Pair-контур получает дополнительное требование: `defect_class`
    обязателен на каждой находке severity `blocker`/`major` (V5 §5.2) —
    класс дефекта определяет маршрут возврата (§7.1, §7.3), и угадывать
@@ -33,12 +37,12 @@
 Модуль чист: ни I/O, ни времени, ни случайности (NFR-001, NFR-002).
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Final, Literal
 
 from disputatio.context.sections import render_verification_section
 from disputatio.context.tags import wrap_artifact_data
-from disputatio.contracts.checklists_catalog import CHECKLIST_BY_CONTOUR, CHECKLIST_TEXT
+from disputatio.contracts.checklists_catalog import CHECKLIST_BY_CONTOUR
 from disputatio.contracts.verification import VerificationReport
 
 __all__ = ["build_doc_reviewer_prompt"]
@@ -85,30 +89,35 @@ def build_doc_reviewer_prompt(
     contour: Literal["spec", "pair"],
     doc_texts: Mapping[str, str],
     verification: VerificationReport,
-    checklist_ids: Sequence[str],
+    checklist: Mapping[str, str],
 ) -> str:
     """Собирает промпт ревьюера doc-раунда контура `contour` (§5.2).
 
-    `checklist_ids` обязан покрыть ровно `CHECKLIST_BY_CONTOUR[contour]` —
-    иначе `ValueError`: несовпадение означает ошибку вызывающей стороны
-    (перепутан контур или подсунут чужой набор id), а не законный вход.
+    `checklist` — действующие пункты контура: id → текст условия. Ключи
+    обязаны покрыть ровно `CHECKLIST_BY_CONTOUR[contour]`, иначе `ValueError`:
+    несовпадение означает ошибку вызывающей стороны (перепутан контур или
+    подсунут чужой набор id), а не законный вход. Тексты, наоборот,
+    произвольны — их вправе переопределить конфиг (§5.3), и подставить
+    вендоренные вместо переданных значило бы показать ревьюеру не тот
+    критерий, чей хеш записан в манифесте пайплайна.
+
+    Порядок пунктов — порядок `CHECKLIST_BY_CONTOUR[contour]`, а не порядок
+    ключей отображения: промпт обязан быть байт-в-байт воспроизводим
+    (NFR-002), а словарь приходит от конфига, где порядок ключей случаен.
 
     Порядок секций: документы контура (данные — по одному artifact-блоку
     на документ), отчёт детерминированных проверок (целиком, включая
     провал), чеклист сходимости контура со статическим требованием
     evidence, и для pair-контура — дополнительное требование
     `defect_class`.
-
-    Результат зависит только от аргументов — байт-в-байт воспроизводим
-    (NFR-002).
     """
-    _check_checklist_ids(contour, checklist_ids)
+    _check_checklist_ids(contour, checklist)
 
     parts = [
         _INTRO_BY_CONTOUR[contour],
         _render_documents_section(doc_texts),
         render_verification_section(verification),
-        _render_checklist_section(checklist_ids),
+        _render_checklist_section(contour, checklist),
     ]
     if contour == "pair":
         parts.append(_PAIR_DEFECT_CLASS_NOTE)
@@ -116,14 +125,14 @@ def build_doc_reviewer_prompt(
 
 
 def _check_checklist_ids(
-    contour: Literal["spec", "pair"], checklist_ids: Sequence[str]
+    contour: Literal["spec", "pair"], checklist: Mapping[str, str]
 ) -> None:
-    """`checklist_ids` обязан быть ровно набором своего контура (V1 §5.2)."""
+    """Ключи `checklist` обязаны быть ровно набором своего контура (V1 §5.2)."""
     expected = set(CHECKLIST_BY_CONTOUR[contour])
-    actual = set(checklist_ids)
+    actual = set(checklist)
     if actual != expected:
         raise ValueError(
-            f"checklist_ids не совпадает с чеклистом контура {contour!r}: "
+            f"checklist не совпадает с чеклистом контура {contour!r}: "
             f"ожидался {sorted(expected)}, получен {sorted(actual)} (V1 §5.2 "
             "SPEC-002) — id чужого контура или неполный набор недопустимы"
         )
@@ -144,10 +153,19 @@ def _render_documents_section(doc_texts: Mapping[str, str]) -> str:
     return "\n".join([DOCUMENTS_TITLE, *blocks])
 
 
-def _render_checklist_section(checklist_ids: Sequence[str]) -> str:
-    """Перечень id чеклиста контура с требованием evidence по каждому."""
+def _render_checklist_section(
+    contour: Literal["spec", "pair"], checklist: Mapping[str, str]
+) -> str:
+    """Действующие пункты чеклиста контура с требованием evidence по каждому.
+
+    Тексты берутся из `checklist` как есть — вендоренный каталог тут не
+    участвует вовсе: он уже применён как дефолт при сборке конфига (§3.2), и
+    второй его вызов здесь молча перекрыл бы override. Порядок — канонический
+    порядок контура (`CHECKLIST_BY_CONTOUR`), поэтому промпт не зависит от
+    порядка ключей в конфиге пользователя.
+    """
     items = [
-        f"- {item_id}: {CHECKLIST_TEXT.get(item_id, item_id)}"
-        for item_id in checklist_ids
+        f"- {item_id}: {checklist[item_id]}"
+        for item_id in CHECKLIST_BY_CONTOUR[contour]
     ]
     return "\n".join([CHECKLIST_TITLE, _CHECKLIST_SCHEMA_NOTE, *items])

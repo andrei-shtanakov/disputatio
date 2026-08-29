@@ -60,7 +60,11 @@ from disputatio.runtime.git import GitOps
 from disputatio.runtime.history import load_patch
 from disputatio.runtime.layout import adopted_findings_json
 from disputatio.runtime.pipeline_adopt import OperatorIntents
-from disputatio.runtime.pipeline_config import PipelineConfig, SessionProfile
+from disputatio.runtime.pipeline_config import (
+    PipelineConfig,
+    SessionProfile,
+    toplevel_root,
+)
 from disputatio.runtime.pipeline_export import ExportFn, export_pipeline
 from disputatio.runtime.pipeline_integrity import ControlPlane, PipelineIntegrityPolicy
 from disputatio.runtime.pipeline_resume import PipelineResume
@@ -352,6 +356,7 @@ def build_pipeline(
     from disputatio.runtime.steps import DocSessionSpec
 
     workspace = workspace_root.resolve()
+    _require_toplevel(git, workspace)
     store = FilePipelineStateStore(workspace)
     try:
         sink = PipelineEventSink(workspace, slug)
@@ -432,7 +437,12 @@ def build_pipeline(
                 round_boundary=policy,
                 lifecycle=lifecycle,
                 documents=DocSessionSpec(
-                    contour=contour, doc_paths=_doc_paths(config, contour)
+                    contour=contour,
+                    doc_paths=_doc_paths(config, contour),
+                    # Действующие формулировки, а не вендоренные: §5.3
+                    # разрешает переопределить их конфигом, манифест хеширует
+                    # именно их снапшот, и другого канала до ревьюера нет.
+                    checklist=dict(config.checklists[contour]),
                 ),
                 git=git,
                 sink=session_sink,
@@ -480,6 +490,37 @@ def build_pipeline(
                 now=now,
             ),
         ),
+    )
+
+
+def _require_toplevel(git: GitOps, workspace: Path) -> None:
+    """`--root` обязан быть toplevel репозитория — иначе отказ (SPEC-002 §6).
+
+    Нормализация путей в пайплайне сделана наполовину, и это его честная
+    граница, а не забытая мелочь. `check_run_preconditions` и `compute_scope`
+    приводят обе стороны сравнения к toplevel через
+    `GitOps.toplevel_prefix()`; у `doc-scope` этого нет — `allowed` считается
+    от `--root` (`config.plan_path`), а пути в `changes.patch` git пишет от
+    toplevel. Пока корни совпадают, разницы нет; ниже toplevel гейт границы
+    контура сравнивал бы `docs/plan.md` с `sub/docs/plan.md` и не находил
+    совпадений — то есть правка спеки автором pair-контура прошла бы МОЛЧА.
+
+    Неподдержанный случай обязан отказывать, а не отрабатывать наполовину, и
+    отказывать до первой мутации: `build_pipeline` вызывается раньше и `run`,
+    и `resume`, поэтому ни каталога пайплайна, ни анкера после отказа не
+    остаётся. Снять ограничение можно, дав `_doc_verifier` тот же
+    `toplevel_prefix`, — но выбор базы для `allowed` и для резолва ссылок
+    документа спека не делает, и угадывать его молча было бы той же ошибкой.
+    """
+    toplevel = toplevel_root(git, workspace)
+    if toplevel == workspace:
+        return
+    raise ConfigError(
+        f"--root {workspace} не является корнем репозитория ({toplevel}): "
+        "пайплайн сравнивает пути пары документов с путями, которые git "
+        "пишет от корня, и ниже него гейт doc-scope молча перестал бы "
+        "замечать выход за границу контура. Запустите пайплайн из корня "
+        "репозитория"
     )
 
 

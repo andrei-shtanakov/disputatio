@@ -117,6 +117,18 @@ SESSION_ID_SUFFIX_BYTES: Final = 2
 DEFAULT_CONFIG_NAME: Final = "disputatio.toml"
 """Профиль запуска по умолчанию — рядом с рабочим репозиторием."""
 
+SESSION_MODES: Final[tuple[Mode, ...]] = (Mode.DEVELOP, Mode.ANALYZE)
+"""Режимы, которые заводит `disp run`, — не весь `Mode` (SPEC-002 §5.1).
+
+`Mode.DOCUMENT` принадлежит пайплайну: его сессию собирает `build_pipeline`
+и только он — с контуром, документами и doc-гейтами. `disp run` ничего этого
+не передаёт, а отказаться от режима ПОЗЖЕ разбора аргументов уже поздно:
+`steps.propose` делает `reset_hard` и `clean()` до сборки промпта, то есть
+до fail-closed проверки контура, — и untracked-черновики пользователя, к
+которым `preflight` терпим сознательно, до этой проверки не доживают.
+Поэтому выбор сужен здесь, где ещё не прочитан ни один файл.
+"""
+
 _FIRST_ROUND: Final = 1
 _HEAD_REVISION: Final = "HEAD"
 
@@ -537,7 +549,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("task", help="текст задачи для автора")
     run.add_argument(
         "--mode",
-        choices=[mode.value for mode in Mode],
+        choices=[mode.value for mode in SESSION_MODES],
         default=Mode.DEVELOP.value,
         help="режим задачи (по умолчанию develop)",
     )

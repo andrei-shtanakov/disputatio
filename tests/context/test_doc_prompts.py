@@ -15,7 +15,11 @@ SPEC-002 §5.1 (задачи автора), §5.2 (промпт-часть V-п�
   текста автора перед ревьюером в `reviewer.py`);
 * чеклист контура — обязательный перечень id ровно своего контура: все id
   присутствуют, ни одного чужого, несовпадение id со своим контуром —
-  `ValueError`, а не молчаливая подмена (V1 §5.2);
+  `ValueError`, а не молчаливая подмена (V1 §5.2). Тексты условий при этом
+  приходят ПАРАМЕТРОМ, а не берутся из вендоренного каталога: §5.3
+  разрешает переопределить их конфигом, и подстановка каталога здесь
+  показывала бы ревьюеру не тот критерий, чей хеш записан в манифесте
+  пайплайна;
 * автор doc-контура не получает истории/своих прошлых версий документа —
   сигнатура типами запрещает такой параметр (§6.1 SPEC-001).
 """
@@ -27,7 +31,11 @@ from types import ModuleType
 
 import pytest
 
-from disputatio.contracts.checklists_catalog import PAIR_CHECKLIST, SPEC_CHECKLIST
+from disputatio.contracts.checklists_catalog import (
+    CHECKLIST_TEXT,
+    PAIR_CHECKLIST,
+    SPEC_CHECKLIST,
+)
 from disputatio.contracts.review import Issue, Severity
 from disputatio.contracts.verification import (
     DiffStats,
@@ -91,6 +99,17 @@ def _verification(
         overall=overall,
         diff_stats=DiffStats(files=1, insertions=10, deletions=2),
     )
+
+
+def _checklist(ids: Sequence[str]) -> dict[str, str]:
+    """Действующий чеклист контура на вендоренных дефолтах (§5.3).
+
+    Функция, а не константа: `build_doc_reviewer_prompt` принимает пару
+    «id → текст», и большинство тестов интересует набор id, а не
+    формулировки. Тест override'а собирает своё отображение сам — иначе
+    «текст конфига доехал до ревьюера» доказывалось бы на тексте каталога.
+    """
+    return {item_id: CHECKLIST_TEXT[item_id] for item_id in ids}
 
 
 def _inside_artifact_block(prompt: str, needle: str) -> bool:
@@ -228,7 +247,7 @@ def test_doc_reviewer_signature_has_no_author_dialog_params() -> None:
     doc_reviewer = _module("doc_reviewer")
     params = inspect.signature(doc_reviewer.build_doc_reviewer_prompt).parameters
 
-    assert set(params) == {"contour", "doc_texts", "verification", "checklist_ids"}
+    assert set(params) == {"contour", "doc_texts", "verification", "checklist"}
     for name in params:
         for token in FORBIDDEN_REVIEWER_PARAM_TOKENS:
             assert token not in name, f"параметр {name!r} протаскивает {token!r}"
@@ -243,7 +262,7 @@ def test_doc_texts_are_wrapped_in_artifact_data_tags() -> None:
         contour="spec",
         doc_texts={"docs/specs/api.md": doc_text},
         verification=_verification(),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     assert _inside_artifact_block(prompt, doc_text)
@@ -258,7 +277,7 @@ def test_doc_path_key_is_static_not_wrapped() -> None:
         contour="spec",
         doc_texts={doc_path: "текст спеки"},
         verification=_verification(),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     assert doc_path in prompt
@@ -273,7 +292,7 @@ def test_spec_contour_checklist_has_all_own_ids_and_no_foreign_ones() -> None:
         contour="spec",
         doc_texts={"docs/specs/api.md": "текст"},
         verification=_verification(),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     for item_id in SPEC_CHECKLIST:
@@ -290,7 +309,7 @@ def test_pair_contour_checklist_has_all_own_ids_and_no_foreign_ones() -> None:
         contour="pair",
         doc_texts={"docs/plans/api.md": "текст"},
         verification=_verification(),
-        checklist_ids=PAIR_CHECKLIST,
+        checklist=_checklist(PAIR_CHECKLIST),
     )
 
     for item_id in PAIR_CHECKLIST:
@@ -308,7 +327,7 @@ def test_checklist_ids_mismatched_with_contour_raise() -> None:
             contour="spec",
             doc_texts={"docs/specs/api.md": "текст"},
             verification=_verification(),
-            checklist_ids=PAIR_CHECKLIST,
+            checklist=_checklist(PAIR_CHECKLIST),
         )
 
     message = str(excinfo.value)
@@ -323,7 +342,7 @@ def test_checklist_evidence_requirement_is_present() -> None:
         contour="spec",
         doc_texts={"docs/specs/api.md": "текст"},
         verification=_verification(),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     assert "evidence" in prompt
@@ -344,7 +363,7 @@ def test_gate_results_are_included_even_on_fail() -> None:
         contour="spec",
         doc_texts={"docs/specs/api.md": "текст"},
         verification=_verification([failed_gate], overall=OverallStatus.FAIL),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     assert failed_gate.name in prompt
@@ -360,7 +379,7 @@ def test_pair_contour_requires_defect_class_note() -> None:
         contour="pair",
         doc_texts={"docs/plans/api.md": "текст"},
         verification=_verification(),
-        checklist_ids=PAIR_CHECKLIST,
+        checklist=_checklist(PAIR_CHECKLIST),
     )
 
     assert "defect_class" in prompt
@@ -374,7 +393,53 @@ def test_spec_contour_prompt_has_no_defect_class_note() -> None:
         contour="spec",
         doc_texts={"docs/specs/api.md": "текст"},
         verification=_verification(),
-        checklist_ids=SPEC_CHECKLIST,
+        checklist=_checklist(SPEC_CHECKLIST),
     )
 
     assert "defect_class" not in prompt
+
+
+def test_checklist_texts_come_from_the_parameter_not_the_catalog() -> None:
+    """§5.3: формулировки берутся из переданного чеклиста, а не из каталога.
+
+    Вендоренный каталог — дефолт, применяемый при сборке конфига (§3.2), и
+    второе его применение здесь молча перекрыло бы override пользователя.
+    Проверяются обе стороны: переданный текст в промпте есть, каталожный
+    текст того же id — ушёл.
+    """
+    doc_reviewer = _module("doc_reviewer")
+    overridden = dict(_checklist(SPEC_CHECKLIST))
+    overridden["S1"] = "S1: переопределённое условие сходимости"
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour="spec",
+        doc_texts={"docs/specs/api.md": "текст"},
+        verification=_verification(),
+        checklist=overridden,
+    )
+
+    assert overridden["S1"] in prompt
+    assert CHECKLIST_TEXT["S1"] not in prompt
+    assert CHECKLIST_TEXT["S2"] in prompt
+
+
+def test_checklist_order_follows_the_contour_not_the_mapping() -> None:
+    """Порядок пунктов канонический — промпт байт-в-байт воспроизводим (NFR-002).
+
+    Отображение приходит из конфига пользователя, где порядок ключей
+    произволен; промпт, зависящий от него, давал бы разные байты на одном и
+    том же чеклисте.
+    """
+    doc_reviewer = _module("doc_reviewer")
+    forward = _checklist(SPEC_CHECKLIST)
+    reversed_mapping = dict(reversed(list(forward.items())))
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour="spec",
+        doc_texts={"docs/specs/api.md": "текст"},
+        verification=_verification(),
+        checklist=reversed_mapping,
+    )
+
+    positions = [prompt.index(f"- {item_id}:") for item_id in SPEC_CHECKLIST]
+    assert positions == sorted(positions)

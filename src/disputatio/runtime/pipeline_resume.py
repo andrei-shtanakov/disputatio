@@ -393,11 +393,15 @@ class PipelineResume:
             closed = (
                 record.outcome.value if record.outcome is not None else "superseded"
             )
+            overlap = (
+                ""
+                if record.superseded_by is None
+                else f", перекрыта {record.superseded_by}"
+            )
             raise PipelineNotResumable(
-                f"ревизия {session_id!r} закрыта ({closed}"
-                f"{'' if record.superseded_by is None else f', перекрыта {record.superseded_by}'})"
-                ": сессия с записанным исходом не возобновляется никогда "
-                "(§8.1 шаг 1), а незавершённый интент указывает на неё"
+                f"ревизия {session_id!r} закрыта ({closed}{overlap}): сессия с "
+                "записанным исходом не возобновляется никогда (§8.1 шаг 1), а "
+                "незавершённый интент указывает на неё"
             )
 
     # ------------------------------------------------------------------

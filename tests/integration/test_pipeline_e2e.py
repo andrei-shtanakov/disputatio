@@ -42,6 +42,7 @@ import pytest
 
 from disputatio.cli import main
 from disputatio.contracts import (
+    CHECKLIST_TEXT,
     SCHEMA_V2,
     AgentTurn,
     ArtifactEvidence,
@@ -362,7 +363,7 @@ CONFIG_TEMPLATE: Final = """\
 spec_path = "{spec}"
 plan_path = "{plan}"
 {anchor_line}protected_branches = ["master", "main"]
-
+{extra_pipeline}
 [agents.author]
 adapter = "fake"
 model = "m"
@@ -387,6 +388,7 @@ def build_stand(
     max_rounds: int = 5,
     schema_retries: int = 2,
     anchor_root: Path | None = None,
+    extra_pipeline: str = "",
 ) -> Stand:
     """Репозиторий с парой документов, конфиг пайплайна и скриптованный агент."""
     workspace = tmp_path / REPO_DIR_NAME
@@ -407,7 +409,8 @@ def build_stand(
     # `.disputatio/` предусловие `run` блокирует, и стенд отказывал бы себе
     # самому по причине, к сценарию отношения не имеющей.
     (workspace / DEFAULT_CONFIG_NAME).write_text(
-        CONFIG_TEMPLATE.format(anchor_line="", **settings), encoding="utf-8"
+        CONFIG_TEMPLATE.format(anchor_line="", extra_pipeline="", **settings),
+        encoding="utf-8",
     )
     git(workspace, "add", SPEC_PATH, PLAN_PATH, DEFAULT_CONFIG_NAME)
     git(workspace, "commit", "--quiet", "-m", "исходная пара")
@@ -416,7 +419,9 @@ def build_stand(
     config_path = tmp_path / "pipeline.toml"
     config_path.write_text(
         CONFIG_TEMPLATE.format(
-            anchor_line=f'anchor_path = "{anchors.as_posix()}"\n', **settings
+            anchor_line=f'anchor_path = "{anchors.as_posix()}"\n',
+            extra_pipeline=extra_pipeline,
+            **settings,
         ),
         encoding="utf-8",
     )
@@ -1206,3 +1211,165 @@ def test_document_session_artifacts_carry_the_v2_tag(
                     )
                 )
                 assert payload["schema"] == SCHEMA_V2, f"{session_id}/{round_no}/{name}"
+
+
+#: Профиль сессии SPEC-001 — другой формат, чем конфиг пайплайна (§3.2):
+#: `disp run` требует `[session]` и `[task]`, которых у `[pipeline]` нет.
+SESSION_PROFILE: Final = """\
+[session]
+id = "профиль"
+mode = "develop"
+base_commit = "HEAD"
+
+[task]
+prompt = "задача из профиля"
+attachments = []
+
+[limits]
+max_rounds = 3
+max_total_tokens = 1000
+max_wall_seconds = 600
+schema_retries = 1
+
+[agents.author]
+adapter = "fake"
+model = "m"
+
+[agents.reviewer]
+adapter = "fake"
+model = "m"
+"""
+
+
+def test_disp_run_refuses_the_pipeline_mode_before_touching_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`disp run --mode document` отвергается разбором аргументов (§5.1 SPEC-002).
+
+    Тест живёт в наборе пайплайна, хотя команда — из SPEC-001: утверждение
+    здесь про ГРАНИЦУ режимов. `Mode.DOCUMENT` принадлежит пайплайну, его
+    сессию заводит `build_pipeline` и только он — с контуром, документами и
+    doc-гейтами. `disp run` ничего этого не передаёт, а вход в первый
+    `PROPOSING` необратим: `steps.propose` делает `reset_hard` и `clean()` ДО
+    сборки промпта, то есть до того, как fail-closed проверка контура
+    успевает сработать. `preflight` при этом untracked-файлы разрешает
+    сознательно — значит нормальное состояние дерева плюс рекламируемый
+    `--help`'ом флаг стоили бы пользователю его черновиков, а получил бы он
+    вдобавок `AssertionError` мимо `except DisputatioError` (NFR-003).
+
+    Отказ обязан прийти от argparse (`SystemExit`), а не кодом возврата: до
+    argparse не выполняется ни одной строки, читающей диск, и «дерево не
+    тронуто» перестаёт зависеть от порядка проверок внутри `cmd_run`.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    profile = tmp_path / "session.toml"
+    profile.write_text(SESSION_PROFILE, encoding="utf-8")
+    stray = stand.workspace / "notes.txt"
+    stray.write_text("черновик\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as raised:
+        main(
+            [
+                "run",
+                "задача",
+                "--mode",
+                "document",
+                "--root",
+                str(stand.workspace),
+                "--config",
+                str(profile),
+            ],
+            now=clock(),
+        )
+
+    assert raised.value.code == EXIT_ERROR
+    assert stray.read_text(encoding="utf-8") == "черновик\n"
+    assert not (stand.workspace / ".disputatio").exists()
+    # Оба режима сессии SPEC-001 остаются предложенными: отказ сузил выбор,
+    # а не отменил его.
+    usage = capsys.readouterr().err
+    assert "develop" in usage
+    assert "analyze" in usage
+
+
+def test_checklist_override_reaches_the_reviewer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Override текста чеклиста доезжает до ревьюера, а не только в хеш (§5.3).
+
+    `[pipeline.checklists.spec]` снапшотится в `checklists.toml` и хешируется
+    манифестом — то есть манифест УДОСТОВЕРЯЕТ критерий сходимости. Пока
+    промпт брал формулировки из вендоренного каталога, удостоверял он текст,
+    которого ревьюер не видел: конфигом объявлен один критерий, судят по
+    другому. Проверяется обе стороны — что override в промпте есть и что
+    вендоренная формулировка того же пункта из него ушла.
+
+    Контур pair трогается тем же утверждением с другой стороны: его пункты
+    не переопределялись, и их вендоренные тексты обязаны остаться.
+    """
+    override = "S1: ни одной находки severity blocker или major (переопределено)"
+    stand = build_stand(
+        tmp_path,
+        monkeypatch,
+        happy_path_turns(),
+        extra_pipeline=f'\n[pipeline.checklists.spec]\nS1 = "{override}"\n',
+    )
+
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    spec_prompt = stand.script.prompts_of("spec-r1", "reviewer")[0]
+    assert override in spec_prompt
+    assert CHECKLIST_TEXT["S1"] not in spec_prompt
+    # Непереопределённые пункты своего контура на месте.
+    assert CHECKLIST_TEXT["S2"] in spec_prompt
+    # Чужой контур override не задевает.
+    pair_prompt = stand.script.prompts_of("pair-r1", "reviewer")[0]
+    assert CHECKLIST_TEXT["P1"] in pair_prompt
+    assert override not in pair_prompt
+    # Снапшот и промпт говорят об одном: хеш манифеста удостоверяет текст,
+    # который ревьюер получил.
+    snapshot = (stand.pipeline_dir() / "checklists.toml").read_text(encoding="utf-8")
+    assert override in snapshot
+
+
+def test_pipeline_refuses_a_root_that_is_not_the_repository_toplevel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--root` ниже toplevel — громкий отказ, а не тихо неверный `doc-scope`.
+
+    Половина нормализации путей уже есть: `check_run_preconditions` и
+    `compute_scope` приводят обе стороны к toplevel через
+    `GitOps.toplevel_prefix()`. У `doc-scope` её нет — `allowed` считается от
+    `--root`, а пути в `changes.patch` git пишет от toplevel. Совпадает это
+    ровно пока `--root` и есть toplevel; ниже него гейт границы контура
+    проверял бы не то и молча — то есть автор pair-контура мог бы править
+    спеку, а `doc-scope` этого не заметил бы.
+
+    Пока нормализации нет, случай обязан отказывать до первой мутации, а не
+    отрабатывать наполовину: `run` не создаёт ни каталога пайплайна, ни
+    анкера.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    nested = stand.workspace / "docs"
+
+    code = main(
+        [
+            "pipeline",
+            "run",
+            "--slug",
+            SLUG,
+            "--task",
+            TASK_TEXT,
+            "--root",
+            str(nested),
+            "--config",
+            str(stand.config_path),
+        ],
+        now=clock(),
+    )
+
+    assert code == EXIT_ERROR
+    refusal = capsys.readouterr().err
+    assert str(stand.workspace) in refusal
+    assert not (nested / ".disputatio").exists()
+    assert not stand.anchor_root.exists()
