@@ -362,22 +362,32 @@ def cmd_pipeline_export(
     уже получил внутри цикла — эта команда нужна там, где набор испортили
     или потеряли.
 
-    `--partial` пользователь называет сам: честность манифеста (§8.2, P7) —
-    это ЗНАЧЕНИЯ трёх полей, а не отдельный кодовый путь, и угадывать за
-    человека, считает ли он результат полным, команда не вправе.
+    `--partial` пользователь называет сам, но называет им только СУЖЕНИЕ:
+    честность манифеста (§8.2, P7) — это ЗНАЧЕНИЯ трёх полей, и `converged`
+    экспортёр выводит из записанной фазы, а не из флага. Иначе забытый флаг
+    на остановленном пайплайне выдавал бы частичный результат за полный —
+    ровно там, где скрипт вокруг CLI ему поверит.
+
+    Код возврата — тот же, что у `run`/`resume`: `0` только у сошедшегося
+    `DONE`. §8.2 требует ненулевого кода от `ESCALATED` и `FAILED`, и
+    команда, отвечающая нулём на пересборку частичного результата, дала бы
+    `disp pipeline export && publish` опубликовать его как готовый. От
+    `status` это отличается намеренно: тот инспектирует, а этот пишет
+    `result/` и отвечает за исход того, что написал.
     """
     root = Path(args.root)
     config = load_pipeline_config(_config_path(args, root))
     anchor = _pipeline_anchor(config, root, args.slug)
+    state = _manifest(root, args.slug, anchor)
     manifest = export_pipeline(
-        _manifest(root, args.slug, anchor),
+        state,
         workspace_root=root,
         remote_url=None,
         branch=GitCli(root).current_branch(),
         partial=args.partial,
     )
     print(manifest, flush=True)
-    return EXIT_OK
+    return _pipeline_exit_code(state)
 
 
 def render_status(state: PipelineState, anchor_path: Path) -> str:

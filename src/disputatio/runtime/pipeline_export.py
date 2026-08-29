@@ -33,11 +33,18 @@ create`) — внешний эффект, который исполняет че
   значения.
 
 Манифест — честная сводка §4.2 плюс три вычисленных здесь ключа:
-`converged` (= `not partial`, простое значение параметра, а не отдельная
-ветка поведения), `escalation_reason`/`open_issues` (из последнего перехода
-`state.transitions`, ПРИВЕДШЕГО в `ESCALATED`/`FAILED`, когда `partial=True`)
-и `files` (sha256 трёх содержательных файлов). Ключевой набор манифеста один
-и тот же независимо от `partial` — различаются только значения честности (P7).
+`converged`, `escalation_reason`/`open_issues` (из последнего перехода
+`state.transitions`, ПРИВЕДШЕГО в `ESCALATED`/`FAILED`) и `files` (sha256
+трёх содержательных файлов). Ключевой набор манифеста один и тот же
+независимо от исхода — различаются только значения честности (P7).
+
+**`converged` выводится из состояния, а `partial` его только сужает.**
+Флаг называет человек (§3.1), и забыть его — самый вероятный сценарий;
+пока `converged` был равен `not partial`, забытый флаг превращал
+`"phase": "failed"` в `"converged": true` и молча выдавал остановленный
+пайплайн за сошедшийся. Теперь сходимость решает `_is_converged` (фаза
+плюс отсутствие переходов в `ESCALATED`/`FAILED`), а `--partial` остаётся
+операторским уточнением: снять `converged` он может, поставить — нет.
 """
 
 import hashlib
@@ -74,6 +81,11 @@ _RESULT_DIR_NAME: Final = "result"
 #: Фазы, приход в которые и есть остановка пайплайна (§2): их переход несёт
 #: причину, ради которой пишется честный частичный результат.
 _STOPPED_PHASES: Final = (PipelinePhase.ESCALATED, PipelinePhase.FAILED)
+
+#: Фазы, в которых сходимость пары уже состоялась (§2): `EXPORTING` — вход
+#: в экспорт внутри цикла, `DONE` — после него. `DONE` достижим и через
+#: эскалацию, поэтому одной фазы для вывода `converged` мало.
+_CONVERGED_PHASES: Final = (PipelinePhase.EXPORTING, PipelinePhase.DONE)
 
 
 def _result_dir(workspace_root: Path, pipeline_id: str) -> Path:
@@ -128,19 +140,26 @@ def export_pipeline(
     смысла считать валидным без сверки хешей), либо без нового манифеста —
     но никогда не манифест, ссылающийся на ненаписанный файл.
 
-    `partial` управляет только ЗНАЧЕНИЯМИ трёх полей честности манифеста
-    (`converged`, `escalation_reason`, `open_issues`) — набор ключей и
-    остальные три файла от него не зависят (P7: разный исход — разное
-    содержимое одного и того же экспорта, не отдельный кодовый путь).
+    Исход влияет только на ЗНАЧЕНИЯ полей честности (`converged`,
+    `escalation_reason`, `open_issues`) и на пометку `[partial]` в заголовке
+    PR — набор ключей манифеста и состав `result/` от него не зависят (P7:
+    разный исход — разное содержимое одного и того же экспорта, не отдельный
+    кодовый путь).
+
+    `partial=True` — уточнение оператора: оно снимает `converged`, но не
+    ставит его. Сходимость выводится из записанного состояния
+    (`_is_converged`), поэтому забытый флаг на остановленном пайплайне
+    больше не превращает частичный результат в полный.
     """
     directory = _result_dir(workspace_root, state.pipeline_id)
     directory.mkdir(parents=True, exist_ok=True)
     _clear_stale(directory)
 
+    converged = _is_converged(state) and not partial
     result_relative = _result_dir_relative(state.pipeline_id)
     contents = {
-        PR_TITLE_NAME: _pr_title(state, partial=partial),
-        PR_BODY_NAME: _pr_body(state, partial=partial),
+        PR_TITLE_NAME: _pr_title(state, converged=converged),
+        PR_BODY_NAME: _pr_body(state, converged=converged),
         PUBLISH_NAME: _publish_script(
             remote_url, branch, result_relative=result_relative
         ),
@@ -151,7 +170,7 @@ def export_pipeline(
         atomic_write(directory / name, data)
         checksums[name] = hashlib.sha256(data).hexdigest()
 
-    manifest = _manifest(state, partial=partial, files=checksums)
+    manifest = _manifest(state, converged=converged, files=checksums)
     payload = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     manifest_path = directory / MANIFEST_NAME
     atomic_write(manifest_path, payload)
@@ -184,7 +203,9 @@ def _escalation_summary(
 
     Отсутствие такого перехода — `None` и пустой список, а не выдуманная
     причина: `--partial` вправе назвать человек (§3.1) и на пайплайне,
-    который никуда не эскалировал.
+    который никуда не эскалировал. Поэтому же функция зовётся безусловно,
+    а не под флагом: она отвечает на вопрос «что записано», и ответ «ничего
+    не записано» — такой же честный, как всякий другой.
     """
     for transition in reversed(state.transitions):
         if transition.to in _STOPPED_PHASES:
@@ -195,8 +216,29 @@ def _escalation_summary(
     return None, []
 
 
+def _is_converged(state: PipelineState) -> bool:
+    """Сошёлся ли пайплайн — по ЗАПИСАННОЙ фазе и истории переходов (§2).
+
+    Два условия, и оба нужны. Фаза обязана быть одной из тех, куда приводит
+    сходимость пары (`EXPORTING` внутри цикла, `DONE` после него): экспорт
+    из середины контура — законная операция, но сходимости в этот момент не
+    было, и заявлять её манифест не вправе. И ни один переход не должен
+    приводить в `ESCALATED`/`FAILED`: `DONE` достижим обоими путями (§7.2,
+    честный частичный результат тоже экспортируется), различает их только
+    история.
+
+    Отсюда же ответ, почему это не производная от `partial`. Флаг называет
+    человек, и забыть его — самый вероятный сценарий; манифест, который на
+    забытом флаге объявлял `converged: true` рядом с `"phase": "failed"`,
+    противоречил сам себе именно там, где честность §8.2 (P7) нужнее всего.
+    """
+    if state.phase not in _CONVERGED_PHASES:
+        return False
+    return not any(transition.to in _STOPPED_PHASES for transition in state.transitions)
+
+
 def _manifest(
-    state: PipelineState, *, partial: bool, files: Mapping[str, str]
+    state: PipelineState, *, converged: bool, files: Mapping[str, str]
 ) -> dict[str, Any]:
     """Честная сводка §4.2 плюс три вычисленных здесь ключа.
 
@@ -206,28 +248,33 @@ def _manifest(
     манифест — не документ семейства `disputatio/pipeline/v1`, а отдельная
     сводка поверх него, и унаследованный тег ввёл бы читателя в заблуждение
     о том, чей это артефакт.
+
+    `escalation_reason`/`open_issues` считаются безусловно, а не «когда
+    просили партиал»: остановка либо записана в истории переходов, либо
+    нет, и от флага оператора этот факт не зависит. На пайплайне, никуда не
+    эскалировавшем, `_escalation_summary` честно отвечает `None` и пустым
+    списком — выдумывать причину под флаг незачем.
     """
-    escalation_reason, open_issues = (
-        _escalation_summary(state) if partial else (None, [])
-    )
+    escalation_reason, open_issues = _escalation_summary(state)
     payload = state.model_dump(mode="json", exclude={"schema_"})
     return {
         **payload,
-        "converged": not partial,
+        "converged": converged,
         "escalation_reason": escalation_reason,
         "open_issues": open_issues,
         "files": dict(files),
     }
 
 
-def _pr_title(state: PipelineState, *, partial: bool) -> str:
+def _pr_title(state: PipelineState, *, converged: bool) -> str:
     """Заголовок draft-PR: пара документов, с пометкой частичного исхода."""
-    prefix = "[partial] " if partial else ""
+    prefix = "" if converged else "[partial] "
     return f"{prefix}docs: {state.documents.spec_path} + {state.documents.plan_path}\n"
 
 
-def _pr_body(state: PipelineState, *, partial: bool) -> str:
+def _pr_body(state: PipelineState, *, converged: bool) -> str:
     """Тело draft-PR: история контуров, сессии, при партиале — эскалация."""
+    partial = not converged
     lines = [
         f"# {state.pipeline_id}",
         "",

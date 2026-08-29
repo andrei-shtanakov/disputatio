@@ -16,6 +16,7 @@
 import hashlib
 import json
 import shlex
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,44 @@ def _escalated_state() -> PipelineState:
                             finding_id="I-003-A",
                         )
                     ],
+                    at=_ESCALATED_AT,
+                ),
+            ],
+        }
+    )
+
+
+def _converged_state() -> PipelineState:
+    """Сошедшаяся пара на входе в экспорт — фаза `EXPORTING` (§2, §8.2)."""
+    base = _base_state()
+    return base.model_copy(
+        update={
+            "phase": PipelinePhase.EXPORTING,
+            "transitions": [
+                *base.transitions,
+                Transition(
+                    from_=PipelinePhase.PAIR_LOOP,
+                    to=PipelinePhase.EXPORTING,
+                    reason=TransitionReason.PAIR_CONVERGED,
+                    at=_ESCALATED_AT,
+                ),
+            ],
+        }
+    )
+
+
+def _failed_state() -> PipelineState:
+    """Состояние, упавшее в `FAILED` из `PAIR_LOOP` (§2, `session_failed`)."""
+    base = _base_state()
+    return base.model_copy(
+        update={
+            "phase": PipelinePhase.FAILED,
+            "transitions": [
+                *base.transitions,
+                Transition(
+                    from_=PipelinePhase.PAIR_LOOP,
+                    to=PipelinePhase.FAILED,
+                    reason=TransitionReason.SESSION_FAILED,
                     at=_ESCALATED_AT,
                 ),
             ],
@@ -321,8 +360,8 @@ def test_honest_partial_export_reports_not_converged_with_reason_and_findings(
 def test_non_partial_export_reports_converged_with_no_escalation(
     tmp_path: Path,
 ) -> None:
-    """`partial=False` — `converged: true`, без причины эскалации и находок."""
-    state = _base_state()
+    """Сошедшаяся фаза + `partial=False` — `converged: true`, без эскалации."""
+    state = _converged_state()
 
     export_pipeline(
         state,
@@ -336,6 +375,75 @@ def test_non_partial_export_reports_converged_with_no_escalation(
     assert manifest["converged"] is True
     assert manifest["escalation_reason"] is None
     assert manifest["open_issues"] == []
+
+
+@pytest.mark.parametrize(
+    ("state_factory", "expected_reason"),
+    [
+        (_failed_state, TransitionReason.SESSION_FAILED.value),
+        (_escalated_state, TransitionReason.SESSION_DEADLOCK.value),
+    ],
+)
+def test_stopped_pipeline_is_never_converged_without_the_flag(
+    tmp_path: Path,
+    state_factory: Callable[[], PipelineState],
+    expected_reason: str,
+) -> None:
+    """Записанная остановка сильнее отсутствия `--partial` (§8.2, P7).
+
+    `converged` выводится из фазы и истории переходов, а не из одного лишь
+    флага: манифест, несущий `"phase": "failed"` рядом с `"converged":
+    true`, противоречит сам себе — и делал это ровно тогда, когда оператор
+    забыл флаг, то есть в самом вероятном случае.
+    """
+    export_pipeline(
+        state_factory(),
+        workspace_root=tmp_path,
+        remote_url="git@github.com:acme/repo.git",
+        branch="docs/foo",
+        partial=False,
+    )
+
+    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    assert manifest["converged"] is False
+    assert manifest["escalation_reason"] == expected_reason
+
+
+def test_export_before_a_terminal_phase_is_not_converged(tmp_path: Path) -> None:
+    """Пайплайн в середине контура сходимости не достиг — и не заявляет её."""
+    export_pipeline(
+        _base_state(),
+        workspace_root=tmp_path,
+        remote_url="git@github.com:acme/repo.git",
+        branch="docs/foo",
+        partial=False,
+    )
+
+    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    assert manifest["phase"] == PipelinePhase.PAIR_LOOP.value
+    assert manifest["converged"] is False
+    assert manifest["escalation_reason"] is None
+
+
+def test_partial_flag_only_narrows_honesty(tmp_path: Path) -> None:
+    """`--partial` — операторское уточнение: снимает `converged`, но не ставит.
+
+    Обратное направление проверено соседним тестом: флага нет, а
+    сошедшимся пайплайн от этого не становится.
+    """
+    export_pipeline(
+        _converged_state(),
+        workspace_root=tmp_path,
+        remote_url="git@github.com:acme/repo.git",
+        branch="docs/foo",
+        partial=True,
+    )
+
+    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    assert manifest["converged"] is False
+    assert manifest["escalation_reason"] is None, (
+        "эскалации не было — причину нельзя выдумывать по флагу оператора"
+    )
 
 
 def test_both_outcomes_share_the_same_manifest_key_set(tmp_path: Path) -> None:

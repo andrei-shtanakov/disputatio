@@ -999,6 +999,27 @@ def test_escalated_pipeline_exits_nonzero_with_an_honest_partial_result(
     assert manifest["pair_sessions"] == []
 
 
+def test_export_of_a_stopped_pipeline_is_honest_without_the_partial_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`disp pipeline export` без `--partial` не переписывает исход (§8.2).
+
+    Флаг называет человек, но эскалация записана в манифесте, и забытый
+    флаг не делает её сходимостью: пересборка `result/` обязана оставить
+    `converged: false` с той же причиной и ответить ненулевым кодом —
+    иначе `disp pipeline export && publish` опубликовал бы частичный
+    результат как готовый.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns(), max_rounds=1)
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_FAILED
+
+    assert run_cli(stand, "export") == EXIT_FAILED
+
+    result = stand.result()
+    assert result["converged"] is False
+    assert result["escalation_reason"] == "session_deadlock"
+
+
 def test_external_edit_stops_resume_until_discard_round(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
