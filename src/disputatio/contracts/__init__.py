@@ -18,6 +18,12 @@ from disputatio.contracts.checklist import (
     EvidenceRef,
     GateEvidence,
 )
+from disputatio.contracts.checklists_catalog import (
+    CHECKLIST_BY_CONTOUR,
+    CHECKLIST_TEXT,
+    PAIR_CHECKLIST,
+    SPEC_CHECKLIST,
+)
 from disputatio.contracts.decision import Decision, Outcome
 from disputatio.contracts.events import Event, EventSource, EventType
 from disputatio.contracts.ports import (
@@ -45,13 +51,22 @@ from disputatio.contracts.session import (
 )
 from disputatio.contracts.validation import (
     REASON_APPROVE_ON_FAILED_GATES,
+    REASON_APPROVE_WITH_CHECKLIST_FAIL,
+    REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE,
+    REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW,
+    REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID,
+    REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS,
+    REASON_CHECKLIST_ID_MISMATCH,
+    REASON_CHECKLIST_PASS_CONTRADICTS_S1,
     REASON_EMPTY_CHECKED,
     REASON_NO_SUBSTANTIVE_ISSUES,
+    REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS,
     ReviewAcceptance,
     check_checked_nonempty,
     check_substantive_issues,
     check_verdict_vs_verification,
     degrade_unevidenced_issues,
+    validate_doc_review,
     validate_review,
 )
 from disputatio.contracts.verification import (
@@ -63,11 +78,23 @@ from disputatio.contracts.verification import (
 )
 
 __all__ = [
+    "CHECKLIST_BY_CONTOUR",
+    "CHECKLIST_TEXT",
+    "PAIR_CHECKLIST",
     "REASON_APPROVE_ON_FAILED_GATES",
+    "REASON_APPROVE_WITH_CHECKLIST_FAIL",
+    "REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE",
+    "REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW",
+    "REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID",
+    "REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS",
+    "REASON_CHECKLIST_ID_MISMATCH",
+    "REASON_CHECKLIST_PASS_CONTRADICTS_S1",
     "REASON_EMPTY_CHECKED",
     "REASON_NO_SUBSTANTIVE_ISSUES",
+    "REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS",
     "SCHEMA_V1",
     "SCHEMA_V2",
+    "SPEC_CHECKLIST",
     "AgentAdapter",
     "AgentRef",
     "AgentTurn",
@@ -110,5 +137,6 @@ __all__ = [
     "check_verdict_vs_verification",
     "degrade_unevidenced_issues",
     "parse_proposal",
+    "validate_doc_review",
     "validate_review",
 ]
