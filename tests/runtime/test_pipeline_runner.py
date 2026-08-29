@@ -961,6 +961,46 @@ def test_soft_budget_limit_checked_between_sessions(tmp_path: Path) -> None:
     assert [c.session_id for c in harness.factory.creations] == ["spec-r1"]
 
 
+def test_architectural_defect_beats_pipeline_budget_limit(tmp_path: Path) -> None:
+    """P6: находка соседствует с исчерпанным бюджетом — возврат всё равно побеждает.
+
+    Soft-лимит пайплайна на момент парковки уже превышен (spec-r1 и pair-r1
+    вместе выбрали 300 при лимите 250), и «между сессиями» он увёл бы пайплайн
+    в эскалацию. Но P6 объявляет архитектурную находку приоритетнее стоп-условий:
+    спека, признанная дефектной, обесценивает и исчерпанный бюджет — продолжать
+    дебатировать план по неверной спеке незачем. Поэтому проверка soft-лимита
+    стоит только в ветке сходимости, а у возврата свой потолок
+    (`max_architectural_returns`), и он здесь не достигнут.
+
+    Эскалация по бюджету всё равно случается — но на следующей границе между
+    сессиями, уже ПОСЛЕ того, как возврат записан: лимит не потерян, он
+    отложен ровно на один возврат.
+    """
+    scripts = {
+        "spec-r1": Script(tokens=200),
+        "pair-r1": Script(outcome="park", issues=(EXEC_MAJOR, ARCH), tokens=100),
+        "spec-r2": Script(tokens=10),
+        "pair-r2": Script(),
+    }
+    harness = build_harness(tmp_path, scripts, soft_max_pipeline_tokens=250)
+    state = harness.runner.run(SLUG, "полировать пару")
+
+    assert structure(state)["transitions"] == [
+        ("IDLE", "SPEC_LOOP", "started"),
+        ("SPEC_LOOP", "PAIR_LOOP", "spec_converged"),
+        ("PAIR_LOOP", "SPEC_LOOP", "architectural_defect"),
+        ("SPEC_LOOP", "ESCALATED", "pipeline_budget_hit"),
+        ("ESCALATED", "EXPORTING", "export_partial"),
+        ("EXPORTING", "DONE", "exported"),
+    ]
+    assert state.pair_sessions[0].outcome is SessionOutcome.ARCHITECTURAL_DEFECT
+    assert [c.session_id for c in harness.factory.creations] == [
+        "spec-r1",
+        "pair-r1",
+        "spec-r2",
+    ], "возврат исполнен несмотря на превышенный бюджет"
+
+
 def test_soft_wall_limit_checked_between_sessions(tmp_path: Path) -> None:
     """Второй soft-лимит — время стены — работает тем же путём (§7.2)."""
     scripts = {"spec-r1": Script(wall_seconds=99.0), "pair-r1": Script()}
