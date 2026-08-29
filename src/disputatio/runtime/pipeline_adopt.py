@@ -29,6 +29,17 @@ finding: спека, изменившаяся после своей сходим
 plan-дифе. Причина перехода при обеих причинах сразу — `external_spec_adopt`,
 а архитектурные находки уходят в evidence того же перехода.
 
+**Потолок возвратов §7.2 проверяется и здесь.** Лимит
+`max_architectural_returns` назначен РЕБРУ `PAIR_LOOP → SPEC_LOOP`, а по
+этому ребру ходят обе причины — и находка ревьюера, и принятая правка
+спеки. Операторский путь спрашивал бы лимит вторым голосом, если бы
+спрашивал его вовсе: пока он молчал, возврат оператора был бесплатным и
+невидимым счётчику runner'а. Исчерпанный потолок перекрывает обе причины
+(`returns_exhausted`, общий предикат с runner'ом): ревизии-преемника не
+будет, commit point уводит пайплайн в `ESCALATED → EXPORTING(partial)` —
+дословно §7.2. Правку человека это не теряет: чекпоинт сделан, решение
+записано, `outcome` припаркованной сессии — `abandoned`.
+
 **Commit point один и единственный пишет `outcome`.** `record_return` в
 adoption-пути не участвует вовсе: он определён исключительно для настоящего
 architectural finding и никогда не перезаписывает уже записанный `abandoned`
@@ -69,9 +80,11 @@ from disputatio.runtime.pipeline_runner import (
     active_session,
     architectural_findings,
     artifact_root_of,
+    escalation_update,
     load_session_state,
     pipeline_dir_of,
     recompute_budget,
+    returns_exhausted,
     revision_id,
     split_revision,
     with_session_fields,
@@ -194,7 +207,12 @@ class OperatorIntents:
             self._git, self._config, allow_plan=contour == CONTOUR_PAIR
         )
         round_no = self._round_of(state, record)
-        successor_contour, reason = _route(contour, scope, parked)
+        successor_contour, reason = _route(
+            contour,
+            scope,
+            parked,
+            exhausted=returns_exhausted(state, self._config.max_architectural_returns),
+        )
         args: dict[str, Any] = {
             "session_id": record.session_id,
             "round": round_no,
@@ -311,7 +329,16 @@ class OperatorIntents:
     def _commit_adoption(
         self, state: PipelineState, action: NextAction, checkpoint: str
     ) -> PipelineState:
-        """Одна атомарная запись: decision + `abandoned` + маршрут + преемник."""
+        """Одна атомарная запись: decision + `abandoned` + маршрут + преемник.
+
+        Три исхода, и различает их одна `reason` из аргументов интента —
+        durable с момента write-ahead, поэтому повтор после обрыва приходит
+        к тому же исходу, а не пересчитывает потолок по уже изменившемуся
+        манифесту. `None` — преемник в том же контуре без смены фазы;
+        возврат — ребро `PAIR_LOOP → SPEC_LOOP` с преемником-ревизией;
+        `max_architectural_returns` — преемника нет вовсе, пайплайн уходит
+        в честный частичный результат (§7.2).
+        """
         session_id = str(action.args["session_id"])
         contour, _ = split_revision(session_id)
         successor_contour = str(action.args["contour"])
@@ -322,7 +349,11 @@ class OperatorIntents:
             if action.args["reason"] is None
             else TransitionReason(action.args["reason"])
         )
+        escalating = reason is TransitionReason.MAX_ARCHITECTURAL_RETURNS
 
+        session_fields: dict[str, Any] = {"outcome": SessionOutcome.ABANDONED}
+        if not escalating:
+            session_fields["superseded_by"] = successor_id
         updates: dict[str, Any] = {
             "operator_decisions": [
                 *state.operator_decisions,
@@ -336,22 +367,29 @@ class OperatorIntents:
             **_records_update(
                 contour,
                 with_session_fields(
-                    _records(state, contour),
-                    session_id,
-                    outcome=SessionOutcome.ABANDONED,
-                    superseded_by=successor_id,
+                    _records(state, contour), session_id, **session_fields
                 ),
             ),
-            "next_action": NextAction(
+        }
+        if escalating:
+            updates.update(
+                escalation_update(
+                    state,
+                    reason,
+                    evidence=self._evidence(state, action),
+                    moment=self._now(),
+                )
+            )
+        else:
+            updates["next_action"] = NextAction(
                 operation_id=f"create-{successor_id}",
                 kind="create_session",
                 args=_create_args(
                     action, successor_contour, successor_revision, checkpoint
                 ),
                 predecessor_operation_id=action.operation_id,
-            ),
-        }
-        if reason is not None:
+            )
+        if reason is not None and not escalating:
             updates["phase"] = PipelinePhase.SPEC_LOOP
             updates["transitions"] = [
                 *state.transitions,
@@ -499,7 +537,11 @@ class OperatorIntents:
 
 
 def _route(
-    contour: str, scope: AdoptionScope, parked: tuple[str, int] | None
+    contour: str,
+    scope: AdoptionScope,
+    parked: tuple[str, int] | None,
+    *,
+    exhausted: bool,
 ) -> tuple[str, TransitionReason | None]:
     """Контур преемника и причина перехода — по путям дифа, затем по P6.
 
@@ -508,12 +550,22 @@ def _route(
     того, что диф трогал только план. Обе причины сразу дают
     `external_spec_adopt`: он основной, а находки уходят в evidence того же
     перехода, без второй записи исхода.
+
+    `exhausted` — исчерпанный потолок §7.2 — перекрывает обе причины сразу,
+    и по одной причине: обе ведут по ребру `PAIR_LOOP → SPEC_LOOP`, а лимит
+    назначен именно ребру. Возврата тогда не будет вовсе — вместо контура
+    преемника возвращается `max_architectural_returns`, и commit point
+    уводит пайплайн в честный частичный результат (§7.2 дословно:
+    «Превышение → `ESCALATED`»). Отказать вместо этого значило бы оставить
+    правку человека в дереве, из которого пайплайн уже не выйдет.
     """
     if contour == CONTOUR_SPEC:
         return CONTOUR_SPEC, None
-    if scope.spec_touched:
-        return CONTOUR_SPEC, TransitionReason.EXTERNAL_SPEC_ADOPT
-    if parked is not None:
+    if scope.spec_touched or parked is not None:
+        if exhausted:
+            return CONTOUR_SPEC, TransitionReason.MAX_ARCHITECTURAL_RETURNS
+        if scope.spec_touched:
+            return CONTOUR_SPEC, TransitionReason.EXTERNAL_SPEC_ADOPT
         return CONTOUR_SPEC, TransitionReason.ARCHITECTURAL_DEFECT
     return CONTOUR_PAIR, None
 

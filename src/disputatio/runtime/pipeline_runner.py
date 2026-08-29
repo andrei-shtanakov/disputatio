@@ -874,12 +874,7 @@ class PipelineRunner:
         уходит в честный частичный результат (§7.2, P7).
         """
         review_sha = self._review_sha256(state, session_id, verdict.round_no)
-        returns_done = sum(
-            1
-            for transition in state.transitions
-            if transition.reason is TransitionReason.ARCHITECTURAL_DEFECT
-        )
-        if returns_done >= self._config.max_architectural_returns:
+        if returns_exhausted(state, self._config.max_architectural_returns):
             return self._escalate(
                 state,
                 TransitionReason.MAX_ARCHITECTURAL_RETURNS,
@@ -920,39 +915,16 @@ class PipelineRunner:
         интента экспорта был бы состоянием, из которого пайплайн сам не
         выходит, а P7 требует честного частичного результата, а не остановки.
         """
-        moment = self._now()
-        transitions = [
-            *state.transitions,
-            Transition(
-                from_=state.phase,
-                to=PipelinePhase.ESCALATED,
-                reason=reason,
-                evidence=list(evidence),
-                at=moment,
-            ),
-            Transition(
-                from_=PipelinePhase.ESCALATED,
-                to=PipelinePhase.EXPORTING,
-                reason=TransitionReason.EXPORT_PARTIAL,
-                at=moment,
-            ),
-        ]
-        successor = NextAction(
-            operation_id=f"export-partial-{state.pipeline_id}",
-            kind="export",
-            args={"partial": True},
+        escalation = escalation_update(
+            state, reason, evidence=evidence, moment=self._now()
         )
+        successor_id = escalation["next_action"].operation_id
         return self._write(
             state.model_copy(
-                update={
-                    **(dict(updates) if updates else {}),
-                    "phase": PipelinePhase.EXPORTING,
-                    "transitions": transitions,
-                    "next_action": successor,
-                }
+                update={**(dict(updates) if updates else {}), **escalation}
             ),
             *extra_events,
-            self._event(state, PipelineEventType.PHASE_CHANGE, successor.operation_id),
+            self._event(state, PipelineEventType.PHASE_CHANGE, successor_id),
         )
 
     def _fail(
@@ -1345,6 +1317,84 @@ def _broken(what: str) -> _Interpretation:
     )
 
 
+def escalation_update(
+    state: PipelineState,
+    reason: TransitionReason,
+    *,
+    evidence: Sequence[EvidenceLink] = (),
+    moment: datetime,
+) -> dict[str, Any]:
+    """Обновление манифеста «`→ ESCALATED → EXPORTING(partial)`» (§7.2, P7).
+
+    Оба перехода ложатся вместе намеренно: `ESCALATED` без немедленного
+    интента экспорта был бы состоянием, из которого пайплайн сам не выходит,
+    а P7 требует честного частичного результата, а не остановки.
+
+    Функция, а не метод runner'а, потому что эскалировать вправе оба
+    исполнителя интентов: runner — по исходу сессии и лимитам, а
+    `PipelineAdopt` — по исчерпанному потолку возвратов на операторском
+    пути (§3.1). Вторая копия этой пары переходов разошлась бы с первой
+    ровно в том, что читатель манифеста заметит последним.
+    """
+    return {
+        "phase": PipelinePhase.EXPORTING,
+        "transitions": [
+            *state.transitions,
+            Transition(
+                from_=state.phase,
+                to=PipelinePhase.ESCALATED,
+                reason=reason,
+                evidence=list(evidence),
+                at=moment,
+            ),
+            Transition(
+                from_=PipelinePhase.ESCALATED,
+                to=PipelinePhase.EXPORTING,
+                reason=TransitionReason.EXPORT_PARTIAL,
+                at=moment,
+            ),
+        ],
+        "next_action": NextAction(
+            operation_id=f"export-partial-{state.pipeline_id}",
+            kind="export",
+            args={"partial": True},
+        ),
+    }
+
+
+def architectural_returns_done(state: PipelineState) -> int:
+    """Сколько возвратов `PAIR_LOOP → SPEC_LOOP` уже совершено (§7.2).
+
+    Считается **ребро**, а не причина. §7.2 определяет `max_architectural_
+    returns` как «число возвратов `PAIR_LOOP → SPEC_LOOP`», и по этому ребру
+    ходят две причины: `architectural_defect` (находка ревьюера) и
+    `external_spec_adopt` (правка спеки, принятая оператором, §3.1). Пока
+    счётчик смотрел на первую, второй возврат был ему невидим — лимит
+    обходился бесплатно, причём тем самым путём, где решение принимает
+    человек и оглядка на лимит нужнее всего.
+
+    `spec-r1` в счёт не идёт по построению: первый вход в spec-контур — это
+    ребро `IDLE → SPEC_LOOP`, а не возврат.
+    """
+    return sum(
+        1
+        for transition in state.transitions
+        if transition.from_ is PipelinePhase.PAIR_LOOP
+        and transition.to is PipelinePhase.SPEC_LOOP
+    )
+
+
+def returns_exhausted(state: PipelineState, limit: int) -> bool:
+    """Исчерпан ли потолок возвратов §7.2 — общий предикат обоих путей.
+
+    Оба пути к ребру `PAIR_LOOP → SPEC_LOOP` обязаны спрашивать одно и то
+    же: runner — перед интентом возврата по находке (`_open_return`),
+    `PipelineAdopt` — перед маршрутизацией операторской правки. Второй
+    экземпляр этого условия разошёлся бы с первым молча.
+    """
+    return architectural_returns_done(state) >= limit
+
+
 def with_session_fields(
     records: Iterable[SessionRecord], session_id: str, **fields: Any
 ) -> list[SessionRecord]:
@@ -1353,11 +1403,28 @@ def with_session_fields(
     Заполняемые позже поля — ровно `outcome` и `superseded_by` (§4.2);
     prefix-equality остальных проверяет хранилище, и обойти его этой функцией
     нельзя: она копирует записи, а не пересобирает их.
+
+    Неизвестный `session_id` — `ValueError`, а не список без изменений.
+    Функция пишет ровно те два факта, потерю которых по построению нечем
+    заметить: `superseded_by` — единственное выражение перекрытия ревизии
+    (P3), и пока оно не записано, §8.1 шаг 1 считает сессию возобновляемой;
+    `outcome` — единственный признак закрытой сессии там же. Молчаливый
+    no-op отдавал бы вызывающей стороне список, выглядящий обновлённым, и
+    факт исчезал бы без следа в том самом месте, где его пишут.
     """
-    return [
+    updated = [
         record.model_copy(update=fields) if record.session_id == session_id else record
         for record in records
     ]
+    known = [record.session_id for record in updated]
+    if session_id not in known:
+        raise ValueError(
+            f"сессии {session_id!r} нет среди записей контура ({known}): "
+            f"поля {sorted(fields)} записывать некуда, а молча вернуть "
+            "список без изменений значило бы потерять перекрытие/исход "
+            "(§4.2, P3)"
+        )
+    return updated
 
 
 def _toml_string(value: str) -> str:

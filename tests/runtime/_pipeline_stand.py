@@ -72,6 +72,7 @@ from disputatio.runtime.layout import (
     round_dir,
 )
 from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_config import DEFAULT_MAX_ARCHITECTURAL_RETURNS
 from disputatio.runtime.pipeline_resume import PipelineResume
 from disputatio.runtime.pipeline_runner import PipelineRunner, SessionCreation
 
@@ -309,6 +310,7 @@ def build_stand(
     scripts: dict[str, Script],
     *,
     plan_present: bool = True,
+    max_architectural_returns: int = DEFAULT_MAX_ARCHITECTURAL_RETURNS,
 ) -> Stand:
     """Репозиторий с парой документов на рабочей ветке + собранный пайплайн."""
     workspace = tmp_path / REPO_DIR_NAME
@@ -336,6 +338,7 @@ def build_stand(
             spec_path=Path(SPEC_PATH),
             plan_path=Path(PLAN_PATH),
             anchor_path=tmp_path / "anchors",
+            max_architectural_returns=max_architectural_returns,
         ),
         git=GitCli(workspace),
         driver=ScriptedDriver(scripts),

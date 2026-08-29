@@ -56,6 +56,7 @@ from disputatio.contracts import (
     Role,
     SessionOutcome,
     SessionPhase,
+    SessionRecord,
     SessionState,
     Severity,
     TaskSpec,
@@ -81,6 +82,7 @@ from disputatio.runtime.pipeline_runner import (
     ArchitecturalDefectPolicy,
     PipelineRunner,
     SessionCreation,
+    with_session_fields,
 )
 
 SLUG: Final = "pair-docs"
@@ -1470,3 +1472,46 @@ def test_every_manifest_write_is_a_replayable_boundary(
     assert len(harness.exporter.calls) == replayed_once(
         expected_exports, crash_on_save, EXPORT_REPLAY_BOUNDARY
     ), "экспорт переигрывается ровно на границе сразу после себя, и больше нигде"
+
+
+# --------------------------------------------------------------------------
+# `with_session_fields`: перекрытие не теряется молча (§4.2, P3)
+# --------------------------------------------------------------------------
+
+
+def _record(session_id: str, revision: int = 1) -> SessionRecord:
+    """Минимальная запись ревизии — для тестов хелпера достаточно этого."""
+    return SessionRecord(
+        revision=revision,
+        session_id=session_id,
+        path=f"sessions/{session_id}",
+        entry_hashes={SPEC_PATH: "absent"},
+    )
+
+
+def test_with_session_fields_fills_the_named_record_only() -> None:
+    """Заполняется ровно одна запись; соседние возвращаются как есть."""
+    records = [_record("spec-r1"), _record("spec-r2", revision=2)]
+
+    updated = with_session_fields(records, "spec-r1", superseded_by="spec-r2")
+
+    assert updated[0].superseded_by == "spec-r2"
+    assert updated[1] == records[1]
+
+
+def test_with_session_fields_refuses_an_unknown_session_id() -> None:
+    """Неизвестный id — отказ, а не список без изменений (§7.3, P3).
+
+    `superseded_by` — единственное выражение перекрытия ревизии: пока оно
+    не записано, resume вправе возобновить перекрытую сессию (§8.1 шаг 1).
+    Молчаливый no-op превращал опечатку в имени ревизии в потерю этого
+    факта — и терялся он там же, где его пишут, то есть без единого следа.
+    """
+    records = [_record("spec-r1")]
+
+    with pytest.raises(ValueError) as excinfo:
+        with_session_fields(records, "spec-r9", superseded_by="spec-r2")
+
+    message = str(excinfo.value)
+    assert "spec-r9" in message
+    assert "spec-r1" in message

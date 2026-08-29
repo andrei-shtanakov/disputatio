@@ -29,7 +29,7 @@ git настоящий: идемпотентность чекпоинта — э
 """
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -53,6 +53,7 @@ from disputatio.runtime.pipeline_adopt import compute_scope
 
 from ._fakes import GitOpsFakeBase
 from ._pipeline_stand import (
+    ARCHITECTURAL,
     PLAN_PATH,
     SLUG,
     SPEC_PATH,
@@ -150,11 +151,11 @@ def _adopt_stand(tmp_path: Path, **kwargs: object) -> Stand:
     return stand
 
 
-def _defect_stand(tmp_path: Path) -> Stand:
+def _defect_stand(tmp_path: Path, **kwargs: object) -> Stand:
     """Стенд с pair-раундом, припаркованным архитектурной находкой."""
     scripts = parked_pair()
     scripts["spec-r2"] = Script(outcome="deadlock")
-    stand = build_stand(tmp_path, scripts)
+    stand = build_stand(tmp_path, scripts, **kwargs)  # type: ignore[arg-type]
     start(stand)
     return stand
 
@@ -251,6 +252,69 @@ def test_defect_with_a_plan_only_diff_still_returns_to_spec(tmp_path: Path) -> N
     reasons = [transition.reason for transition in state.transitions]
     assert TransitionReason.ARCHITECTURAL_DEFECT in reasons
     assert _records(state)["pair-r1"].superseded_by == "spec-r2"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("stand_factory", "edited"),
+    [(_adopt_stand, SPEC_PATH), (_defect_stand, PLAN_PATH)],
+)
+def test_adoption_past_the_return_ceiling_escalates_instead_of_returning(
+    tmp_path: Path, stand_factory: Callable[..., Stand], edited: str
+) -> None:
+    """Потолок §7.2 — на РЕБРЕ `PAIR_LOOP → SPEC_LOOP`, обе причины считаются.
+
+    `external_spec_adopt` и `architectural_defect` ведут по одному и тому же
+    ребру, и §7.2 назначает лимит именно ребру, а не причине. Пока adopt
+    потолок не проверял вовсе, оператор возвращал пайплайн в spec-контур
+    сколько угодно раз — а счётчик runner'а этих возвратов не видел, потому
+    что считал по причине `architectural_defect`.
+
+    Превышение — `ESCALATED` (§7.2 дословно), а не отказ: правку человека
+    пайплайн всё равно принимает чекпоинтом, но следующей ревизии не
+    открывает и уходит в честный частичный результат.
+    """
+    stand = stand_factory(tmp_path, max_architectural_returns=0)
+    (stand.workspace / edited).write_text(ADOPTED_SPEC, encoding="utf-8")
+
+    state = stand.resume.resume(SLUG, decision="adopt_external")
+
+    edges = [(transition.from_, transition.to) for transition in state.transitions]
+    assert (PipelinePhase.PAIR_LOOP, PipelinePhase.SPEC_LOOP) not in edges
+    assert (PipelinePhase.PAIR_LOOP, PipelinePhase.ESCALATED) in edges
+    reasons = [transition.reason for transition in state.transitions]
+    assert TransitionReason.MAX_ARCHITECTURAL_RETURNS in reasons
+    assert "spec-r2" not in _records(state)
+    # Санкция человека не потеряна: решение записано, сессия закрыта.
+    assert [decision.kind for decision in state.operator_decisions] == [
+        "adopt_external"
+    ]
+    assert _records(state)["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
+
+
+def test_return_ceiling_counts_the_edge_not_the_reason(tmp_path: Path) -> None:
+    """Возврат оператора занимает место в лимите наравне с дефектом (§7.2).
+
+    Потолок в единицу: adoption с правкой спеки расходует его целиком, и
+    следующий возврат — уже по архитектурной находке — обязан эскалировать.
+    Пока счётчик runner'а смотрел на причину `architectural_defect`,
+    `external_spec_adopt` был ему невидим, и лимит обходился бесплатно.
+    """
+    scripts = live_pair()
+    scripts["spec-r2"] = Script()
+    scripts["pair-r2"] = Script(outcome="park", issues=(ARCHITECTURAL,))
+    stand = build_stand(tmp_path, scripts, max_architectural_returns=1)
+    start(stand)
+    (stand.workspace / SPEC_PATH).write_text(ADOPTED_SPEC, encoding="utf-8")
+    state = stand.resume.resume(SLUG, decision="adopt_external")
+    assert TransitionReason.EXTERNAL_SPEC_ADOPT in [
+        transition.reason for transition in state.transitions
+    ]
+
+    after = stand.runner.advance(SLUG)
+
+    reasons = [transition.reason for transition in after.transitions]
+    assert reasons.count(TransitionReason.MAX_ARCHITECTURAL_RETURNS) == 1
+    assert TransitionReason.ARCHITECTURAL_DEFECT not in reasons
 
 
 def test_foreign_tracked_path_rejects_the_whole_adoption(tmp_path: Path) -> None:
