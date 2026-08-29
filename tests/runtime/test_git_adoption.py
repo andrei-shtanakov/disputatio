@@ -199,6 +199,74 @@ def test_status_entries_hide_session_dir_once_git_ignores_it(
     assert {entry.path: entry.tracked for entry in entries} == {control: True}
 
 
+def test_status_entries_paths_are_based_on_toplevel_not_session_root(
+    git_repo: Path,
+) -> None:
+    """Сессия в подкаталоге: пути приходят от toplevel, а не от `root`.
+
+    `preflight` не требует, чтобы корень сессии был корнем репозитория (на
+    это прямо опирается комментарий к `_TREE_PATHSPEC`), и когда они не
+    совпадают, наивный фильтр `.disputatio/` промахивается: предусловие
+    старта §3.1 отвергло бы легальный запуск по собственному журналу
+    пайплайна, а scope adoption'а — сам документ пары. Тест закрепляет
+    базу путей, чтобы потребители §3.1 приводили свои пути к ней осознанно.
+
+    `status.relativePaths=true` ставится намеренно: локальный `.git/config`
+    `_env` не гасит (он лежит внутри рабочей директории), и без этой строки
+    оставалось бы неясным, не спасает ли конфиг ситуацию сам. Не спасает —
+    на `--porcelain` он не влияет.
+    """
+    root = git_repo / "proj"
+    (root / "spec").mkdir(parents=True)
+    (root / "spec" / "pair.md").write_text("документ пары\n", encoding="utf-8")
+    journal = root / SESSION_DIR_NAME / "pipelines" / "demo"
+    journal.mkdir(parents=True)
+    (journal / "events.jsonl").write_text(
+        '{"type": "state_change"}\n', encoding="utf-8"
+    )
+    _git(git_repo, "config", "status.relativePaths", "true")
+
+    entries = _op(GitCli(root), "status_entries")()
+
+    assert {entry.path for entry in entries} == {
+        "proj/spec/pair.md",
+        f"proj/{SESSION_DIR_NAME}/pipelines/demo/events.jsonl",
+    }
+    assert not any(
+        entry.path.startswith(f"{SESSION_DIR_NAME}/") for entry in entries
+    ), (
+        "наивный фильтр `.disputatio/` совпал бы — тест перестал показывать "
+        "ловушку, ради которой написан"
+    )
+
+
+def test_commit_paths_refuses_session_dir_once_git_ignores_it(
+    git_repo: Path,
+) -> None:
+    """Путь под `.disputatio/` в чекпоинт не берётся — область порта уже.
+
+    Со второго принятого раунда каталог сессии лежит в `.git/info/exclude`
+    ([DESIGN-011]), и `git add` с явно названным игнорируемым путём выходит
+    кодом 1. Нормам §3.1 это не мешает (чекпоинт фиксирует только документы
+    пары), но порт объявлен общим, и ограничение закреплено тестом, а не
+    только докстрингом.
+    """
+    control = f"{SESSION_DIR_NAME}/pipelines/demo/pipeline.json"
+    (git_repo / control).parent.mkdir(parents=True, exist_ok=True)
+    (git_repo / control).write_text('{"revision": 1}\n', encoding="utf-8")
+    exclude = git_repo / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.write_text(f"{SESSION_DIR_NAME}/\n", encoding="utf-8")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    with pytest.raises(_attr("GitCommandError")):
+        _op(GitCli(git_repo), "commit_paths")(
+            [control], _ADOPT_SUBJECT, trailer=_OPERATION_ONE
+        )
+
+    assert _git(git_repo, "rev-parse", "HEAD").strip() == head
+
+
 def test_status_entries_name_both_halves_of_a_rename(git_repo: Path) -> None:
     """Переименование названо обоими путями, а не одной записью.
 
