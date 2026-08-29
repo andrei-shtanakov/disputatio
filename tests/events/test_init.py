@@ -21,13 +21,16 @@ from disputatio.events import (
     bootstrap,
     event_sink,
     export,
+    integrity_anchor,
+    pipeline_events,
+    pipeline_store,
     rounds,
     state_store,
 )
 
 PACKAGE_NAME = "disputatio.events"
 
-PUBLIC_NAMES = (
+WAVE1_PUBLIC_NAMES = (
     "atomic_write",
     "bootstrap_session",
     "write_config_snapshot",
@@ -39,6 +42,27 @@ PUBLIC_NAMES = (
     "write_result",
 )
 
+PIPELINE_PUBLIC_NAMES = (
+    "FilePipelineStateStore",
+    "PipelineEvent",
+    "PipelineEventSink",
+    "PipelineEventType",
+    "read_pipeline_events",
+    "IntegrityAnchor",
+    "AnchorRecord",
+)
+"""Имена, добавленные слоем пайплайна SPEC-002 (§4.1, §4.2, P8, P9).
+
+Держатся отдельным кортежем, а не дописаны к волне 1: пин девяти имён —
+факт приёмки волны, и растворять его в общем списке значило бы потерять,
+что именно было принято. Утечку внутренних символов проверка ловит
+по-прежнему — сравнивается объединение, а не «хотя бы эти».
+`pipeline_paths` наружу не идёт: раскладка каталога — такая же внутренняя
+деталь, как `paths` (см. `__init__.py`).
+"""
+
+PUBLIC_NAMES = WAVE1_PUBLIC_NAMES + PIPELINE_PUBLIC_NAMES
+
 ORIGINS = {
     "atomic_write": atomic.atomic_write,
     "bootstrap_session": bootstrap.bootstrap_session,
@@ -49,6 +73,13 @@ ORIGINS = {
     "finalize_round": rounds.finalize_round,
     "RoundImmutableError": rounds.RoundImmutableError,
     "write_result": export.write_result,
+    "FilePipelineStateStore": pipeline_store.FilePipelineStateStore,
+    "PipelineEvent": pipeline_events.PipelineEvent,
+    "PipelineEventSink": pipeline_events.PipelineEventSink,
+    "PipelineEventType": pipeline_events.PipelineEventType,
+    "read_pipeline_events": pipeline_events.read_pipeline_events,
+    "IntegrityAnchor": integrity_anchor.IntegrityAnchor,
+    "AnchorRecord": integrity_anchor.AnchorRecord,
 }
 
 MISSING = object()
@@ -62,15 +93,24 @@ def test_public_names_importable_from_package() -> None:
     assert missing == [], f"{PACKAGE_NAME} не экспортирует: {missing}"
 
 
-def test_all_lists_exactly_the_nine_public_names() -> None:
+def test_all_lists_exactly_the_public_names() -> None:
     package = importlib.import_module(PACKAGE_NAME)
 
     exported = getattr(package, "__all__", MISSING)
 
     assert exported is not MISSING, f"{PACKAGE_NAME}.__all__ не определён"
     assert isinstance(exported, list | tuple)
-    assert len(exported) == 9, f"__all__ должен содержать 9 имён: {exported}"
     assert sorted(exported) == sorted(PUBLIC_NAMES)
+
+
+def test_wave1_public_names_still_exported() -> None:
+    """Девять имён приёмки волны 1 остаются на месте — слой пайплайна аддитивен."""
+    package = importlib.import_module(PACKAGE_NAME)
+
+    exported = set(package.__all__)
+
+    assert len(WAVE1_PUBLIC_NAMES) == 9
+    assert set(WAVE1_PUBLIC_NAMES) <= exported
 
 
 def test_star_import_exposes_exactly_the_public_names() -> None:
