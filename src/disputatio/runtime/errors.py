@@ -100,3 +100,23 @@ class ReviewNotAccepted(DisputatioError):
             f"ревью раунда {round_no:03d} не принято правилами §4.4: "
             f"{', '.join(self.reasons)}"
         )
+
+
+class ProtectedBranchError(DisputatioError):
+    """Предусловие `run`: текущая ветка protected либо detached HEAD (§3.1).
+
+    Отдельный класс, а не `ConfigError`: список `protected_branches` — часть
+    конфига, но нарушение здесь — состояние РЕПОЗИТОРИЯ (текущая ветка), не
+    конфига. Runner ветку не создаёт (внешний эффект — решение оператора),
+    поэтому текст отказа несёт подготовительную команду (`git switch -c
+    docs/<slug>`), а не выполняет её.
+    """
+
+
+class PipelineAlreadyExists(DisputatioError):
+    """Предусловие `run`: `.disputatio/pipelines/<slug>/` уже есть (§3.1).
+
+    `run` стартует новый пайплайн; продолжение существующего — `resume`, и
+    смешивать эти два случая в одну ошибку значило бы прятать от
+    пользователя, какую команду ему на самом деле нужно было вызвать.
+    """

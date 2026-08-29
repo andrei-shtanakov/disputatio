@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Final
 
 from disputatio.contracts.verification import VerificationReport
 from disputatio.verifier.aggregate import compute_overall
@@ -26,6 +27,18 @@ from disputatio.verifier.doc_gates import (
     gate_doc_scope,
 )
 from disputatio.verifier.runner import run_gate
+
+#: Имена пяти baseline doc-гейтов §6 — единственный источник истины для
+#: конфигурации пайплайна (SPEC-002 §6, задача 13): попытка объявить `extra`
+#: gate с любым из этих имён обязана быть отказом валидации конфига, а не
+#: тихим переопределением одного из пяти прогонов выше.
+BASELINE_GATE_NAMES: Final[tuple[str, ...]] = (
+    "doc-paths",
+    "doc-links",
+    "doc-anchors",
+    "doc-line-refs",
+    "doc-scope",
+)
 
 
 class DocVerifier:

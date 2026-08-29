@@ -31,6 +31,8 @@ from disputatio.runtime.errors import (
     EmptyRepository,
     GitCommandError,
     NotAGitRepository,
+    PipelineAlreadyExists,
+    ProtectedBranchError,
     ReviewNotAccepted,
     ReviewParseError,
     SessionNotFound,
@@ -44,6 +46,12 @@ from disputatio.runtime.git import (
     StatusEntry,
     base_rev,
     preflight,
+)
+from disputatio.runtime.pipeline_config import (
+    PipelineConfig,
+    check_run_preconditions,
+    load_pipeline_config,
+    validate_anchor_path,
 )
 from disputatio.runtime.purity import (
     FORBIDDEN_ROOTS,
@@ -68,6 +76,9 @@ __all__ = [
     "GitOps",
     "LimitsConfig",
     "NotAGitRepository",
+    "PipelineAlreadyExists",
+    "PipelineConfig",
+    "ProtectedBranchError",
     "PurityViolation",
     "ReviewNotAccepted",
     "ReviewParseError",
@@ -78,8 +89,11 @@ __all__ = [
     "UnknownAdapterError",
     "base_rev",
     "build_runtime",
+    "check_run_preconditions",
     "load_config",
     "load_config_file",
+    "load_pipeline_config",
     "preflight",
     "scan_package_purity",
+    "validate_anchor_path",
 ]
