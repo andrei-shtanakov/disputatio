@@ -610,6 +610,10 @@ def test_status_explains_the_directory_without_manifest_window(
     message = capsys.readouterr().err
     assert str(stand.pipeline_dir()) in message
     assert "pipeline.json" in message
+    # Отказ пайплайновой команды не заводит ленту СЕССИИ рабочего корня:
+    # такой сессии не существует, и журнал под неё — файл, который никто не
+    # читает (§8, [REQ-010]).
+    assert not (stand.workspace / ".disputatio" / "events.jsonl").exists()
 
 
 def test_resume_custom_anchor_requires_config(
