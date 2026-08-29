@@ -71,7 +71,12 @@ from disputatio.events import (
     read_pipeline_events,
 )
 from disputatio.events.pipeline_paths import pipeline_dir, session_artifact_root
-from disputatio.runtime import PipelineAlreadyExists, PipelineConfig, StatusEntry
+from disputatio.runtime import (
+    DirtyWorkingTree,
+    PipelineAlreadyExists,
+    PipelineConfig,
+    StatusEntry,
+)
 from disputatio.runtime.pipeline_runner import (
     ArchitecturalDefectPolicy,
     PipelineRunner,
@@ -144,6 +149,12 @@ class Script:
 
     `park` — раунд без `decision.json`: ровно то durable-состояние, по
     которому runner обязан опознать парковку (§7.1).
+
+    `stall_first_call` — обрыв процесса ВНУТРИ `decide()`: ревью уже на
+    диске, решения ещё нет, сессия в `DECIDING`. Состояние по двум первым
+    признакам неотличимо от парковки, и различает их только третий —
+    вердикт политики на этом ревью. Второй вызов драйвера доигрывает раунд,
+    как это сделал бы session-resume.
     """
 
     outcome: str = "converged"
@@ -152,6 +163,7 @@ class Script:
     wall_seconds: float = 0.0
     raise_before_write: bool = False
     raise_after_write: bool = False
+    stall_first_call: bool = False
 
 
 class _FakeDriver:
@@ -175,7 +187,13 @@ class _FakeDriver:
         round_dir.mkdir(parents=True, exist_ok=True)
         _write_json(round_dir / "review.json", _review(script))
 
-        if script.outcome == "park":
+        stalled = script.stall_first_call
+        if stalled:
+            # Обрыв внутри decide(): ревью записано, решение — нет. Повтор
+            # вызова доигрывает раунд, поэтому флаг гасится сразу.
+            script.stall_first_call = False
+
+        if stalled or script.outcome == "park":
             phase = SessionPhase.DECIDING
         else:
             outcome = {
@@ -547,6 +565,35 @@ def test_run_refuses_existing_anchor(tmp_path: Path) -> None:
         fresh.runner.run(SLUG, "полировать пару")
 
 
+def test_failed_preconditions_leave_no_anchor(tmp_path: Path) -> None:
+    """Отказ предусловий не оставляет анкера — иначе слаг отравлен навсегда.
+
+    Порядок «предусловия → анкер» держится не на аккуратности, а на цене
+    ошибки: анкер создаётся `O_EXCL` и живёт ВНЕ репозитория, в
+    пользовательском state-каталоге. Созданный перед отказом по грязному
+    дереву, он пережил бы и отказ, и уборку репозитория, и каждый следующий
+    ЗАКОННЫЙ `run` получал бы `PipelineAlreadyExists` — а лечение (удалить
+    файл в `~/.local/state/...`) пользователь искать не пойдёт.
+
+    Поэтому утверждений два: файла нет, и следующий запуск после починки
+    дерева проходит. Второе — то самое, что ломается при перестановке.
+    """
+    harness = build_harness(tmp_path, converged_pair())
+    harness.git.entries = (StatusEntry(path="docs/spec.md", tracked=True),)
+
+    with pytest.raises(DirtyWorkingTree):
+        harness.runner.run(SLUG, "полировать пару")
+    assert not harness.anchor().path.exists(), (
+        "анкер, созданный до предусловий, пережил бы отказ и заблокировал "
+        "законный повтор навсегда"
+    )
+
+    harness.git.entries = ()
+    state = rebuild(harness).runner.run(SLUG, "полировать пару")
+    assert state.phase is PipelinePhase.DONE
+    assert harness.anchor().path.is_file()
+
+
 def test_same_slug_two_repos_no_collision(tmp_path: Path) -> None:
     """Тот же слаг в двух рабочих корнях — два независимых анкера (P9)."""
     first = build_harness(tmp_path, converged_pair(), workspace_name="repo-a")
@@ -899,6 +946,60 @@ def test_failed_session_fails_pipeline_without_export(tmp_path: Path) -> None:
     assert harness.exporter.calls == []
 
 
+def test_crash_inside_deciding_is_not_mistaken_for_park(tmp_path: Path) -> None:
+    """Обрыв внутри `decide()` с execution-находками парковкой НЕ считается.
+
+    Ложноположительное состояние строится буквально: pair-раунд с двумя
+    execution-находками, ревью на диске, решения нет, сессия в `DECIDING`.
+    По двум первым признакам оно неотличимо от парковки — различает их
+    только третий, вердикт политики на этом ревью.
+
+    Цена ошибки, если проверку убрать: крах посреди `decide()` на любом
+    pair-раунде с execution-находками прочитается как архитектурный дефект —
+    лишний возврат, лишняя spec-ревизия, потраченный бюджет. Поэтому
+    утверждений три: сессия ПЕРЕПРОГНАНА (а не припаркована), возврата нет,
+    и пара сошлась своим ходом.
+    """
+    scripts = {
+        "spec-r1": Script(),
+        "pair-r1": Script(
+            issues=(EXEC_MAJOR, EXEC_MINOR),
+            stall_first_call=True,
+            raise_after_write=True,
+        ),
+        # Ревизии второго возврата заскриптованы намеренно, хотя в
+        # правильном прогоне не создаются: без них ошибочно опознанная
+        # парковка падала бы KeyError'ом фейка вместо утверждений ниже, и
+        # тест сообщал бы «нет скрипта», а не «принял крах за дефект».
+        "spec-r2": Script(),
+        "pair-r2": Script(),
+    }
+    harness = build_harness(tmp_path, scripts)
+    with pytest.raises(_Boom):
+        harness.runner.run(SLUG, "полировать пару")
+
+    stalled = harness.manifest()
+    assert stalled.next_action is not None
+    assert stalled.next_action.kind == "run_session"
+
+    scripts["pair-r1"].raise_after_write = False
+    state = rebuild(harness).runner.advance(SLUG)
+
+    assert [call[1] for call in harness.driver.calls] == [
+        "spec-r1",
+        "pair-r1",
+        "pair-r1",
+    ], "непарковочный DECIDING обязан быть переигран, а не принят за дефект"
+    assert structure(state)["transitions"] == [
+        ("IDLE", "SPEC_LOOP", "started"),
+        ("SPEC_LOOP", "PAIR_LOOP", "spec_converged"),
+        ("PAIR_LOOP", "EXPORTING", "pair_converged"),
+        ("EXPORTING", "DONE", "exported"),
+    ]
+    assert [r.session_id for r in state.spec_sessions] == ["spec-r1"]
+    assert state.pair_sessions[0].outcome is SessionOutcome.CONVERGED
+
+
 def test_nonterminal_session_without_park_is_invariant_violation(
     tmp_path: Path,
 ) -> None:
@@ -1221,6 +1322,38 @@ def test_crash_10_driver_returned_result_not_recorded(tmp_path: Path) -> None:
     assert [call[1] for call in harness.driver.calls] == ["spec-r1", "pair-r1"], (
         "durable-состояние сессии уже терминально — повтор драйвера запрещён"
     )
+
+
+def test_crash_10_parked_session_is_not_redriven(tmp_path: Path) -> None:
+    """(10, вторая половина) припаркованная сессия на replay не прогоняется заново.
+
+    Сценарий 10 у сходящейся сессии ловится терминалом `session.json`;
+    припаркованная терминала не достигает и не подделывает его (§7.1),
+    поэтому её «сессия дальше не двигается» держится на отдельной ветке
+    `_is_settled`. Оракул структуры манифеста эту ветку не видит:
+    перепрогон припаркованной сессии идемпотентным драйвером даёт тот же
+    манифест. Видит её только счётчик вызовов — им и проверяется.
+    """
+    scripts = returning_scripts()
+    scripts["pair-r1"].raise_after_write = True
+    harness = build_harness(tmp_path, scripts)
+    with pytest.raises(_Boom):
+        harness.runner.run(SLUG, "полировать пару")
+
+    state = harness.manifest()
+    assert state.next_action is not None and state.next_action.kind == "run_session"
+
+    scripts["pair-r1"].raise_after_write = False
+    final = rebuild(harness).runner.advance(SLUG)
+
+    assert [call[1] for call in harness.driver.calls] == [
+        "spec-r1",
+        "pair-r1",
+        "spec-r2",
+        "pair-r2",
+    ], "припаркованная сессия больше никогда не продвигается (§7.1)"
+    assert final.pair_sessions[0].outcome is SessionOutcome.ARCHITECTURAL_DEFECT
+    assert final.phase is PipelinePhase.DONE
 
 
 def test_crash_11_finish_session_replays_same_outcome(tmp_path: Path) -> None:
