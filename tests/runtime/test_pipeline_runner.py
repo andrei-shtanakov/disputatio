@@ -1384,9 +1384,32 @@ def test_every_manifest_write_is_a_replayable_boundary(
     его прогона. Прогон с возвратом даёт пятнадцать записей; первая (создание
     манифеста в `run`) в выборку не входит — до неё манифеста ещё нет вовсе,
     и §8.1 в таком состоянии не resume'ит, а отказывает.
+
+    Оракул из трёх частей, и вторая закрывает не одну ветку, а весь класс
+    «внешний эффект переигран на replay»:
+
+    * **структура манифеста** — фазы, переходы, outcome'ы, `superseded_by`,
+      вид висящего интента;
+    * **список вызовов драйвера**, побайтово равный эталонному. Равенство
+      здесь не совпадение и не хрупкость: обрыв в этом тесте случается только
+      на записи манифеста, то есть уже ПОСЛЕ возврата драйвера, а
+      допроигрывание не зовёт его второй раз благодаря durable-guard'ам
+      (`_is_settled` для терминала и парковки, проверка `session.json` перед
+      фабрикой). Измерено на всех четырнадцати границах: 4 вызова, всюду
+      одинаковых. Сдвинь любой guard — и число вырастет ровно здесь;
+    * **число вызовов экспортёра ≤ 2**, а не равенство, и асимметрия
+      осмысленная: у экспортёра durable-guard'а на стороне runner'а нет
+      намеренно — его идемпотентность гарантирована собственным контрактом
+      §8.2 (`manifest.json` как commit marker), поэтому обрыв на последней
+      записи законно даёт второй вызов.
+
+    Тесты `test_crash_3_*` и `test_crash_10_*` роняют сам драйвер, то есть
+    инжектируют обрыв ВНЕ множества границ этого sweep'а, — там повторный
+    вызов законен и проверяется отдельно.
     """
     reference = build_harness(tmp_path / "ref", returning_scripts())
     expected = structure(reference.runner.run(SLUG, "полировать пару"))
+    expected_calls = [call[1] for call in reference.driver.calls]
 
     harness = build_harness(
         tmp_path / "case", returning_scripts(), crash_on_save=crash_on_save
@@ -1396,4 +1419,9 @@ def test_every_manifest_write_is_a_replayable_boundary(
 
     final = rebuild(harness).runner.advance(SLUG)
     assert structure(final) == expected
+    assert [call[1] for call in harness.driver.calls] == expected_calls, (
+        "обрыв на записи манифеста случается после возврата драйвера — "
+        "допроигрывание обязано опереться на durable-состояние, а не звать "
+        "его второй раз"
+    )
     assert len(harness.exporter.calls) <= 2
