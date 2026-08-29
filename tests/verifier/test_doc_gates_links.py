@@ -184,6 +184,52 @@ def test_symlink_escaping_repo_root_fails_with_escape_code(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# md_link/autolink — база резолвинга: каталог документа, не repo_root
+# (фикс-раунд 1: CommonMark/GitHub резолвят относительные ссылки от
+# каталога документа, а не от корня репозитория).
+# ---------------------------------------------------------------------------
+
+
+def test_relative_markdown_link_resolves_against_document_directory(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path / "docs" / "design.md", "# Design\n")
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "docs" / "plans" / "plan.md", "[design](../design.md)\n")
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_relative_markdown_link_escaping_above_repo_root_fails(
+    tmp_path: Path,
+) -> None:
+    doc_gates = _import_doc_gates()
+    # doc.parent = tmp_path/docs; ".." -> tmp_path (repo_root), ".." ещё раз
+    # -> выше repo_root.
+    doc = _write(tmp_path / "docs" / "plan.md", "[outside](../../outside.md)\n")
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.FAIL
+    entries = _tail_entries(result.tail)
+    assert entries == [{"code": "escape", "target": "../../outside.md", "line": 1}]
+
+
+def test_autolink_resolves_against_document_directory(tmp_path: Path) -> None:
+    _write(tmp_path / "docs" / "design.md", "# Design\n")
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "docs" / "plans" / "plan.md", "<../design.md>\n")
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+# ---------------------------------------------------------------------------
 # gate_doc_links — только md_link, независимо от прочих гейтов
 # ---------------------------------------------------------------------------
 
@@ -324,3 +370,92 @@ def test_percent_encoded_anchor_fragment_matches_heading(tmp_path: Path) -> None
 
     assert result.status is GateStatus.PASS
     assert _tail_entries(result.tail) == []
+
+
+# ---------------------------------------------------------------------------
+# gate_doc_paths — все fail-формы пропавшего пути закреплены гейт-тестом,
+# не только парсер-тестом на распознавание (фикс-раунд 1, Important).
+# ---------------------------------------------------------------------------
+
+
+def test_autolink_to_missing_target_fails(tmp_path: Path) -> None:
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "spec.md", "См. <src/disputatio/missing.py> целиком.\n")
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.FAIL
+    entries = _tail_entries(result.tail)
+    assert entries == [
+        {"code": "missing", "target": "src/disputatio/missing.py", "line": 1}
+    ]
+
+
+def test_code_line_ref_to_missing_target_fails(tmp_path: Path) -> None:
+    doc_gates = _import_doc_gates()
+    doc = _write(
+        tmp_path / "spec.md",
+        "См. `src/disputatio/missing.py:42` за реализацией.\n",
+    )
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.FAIL
+    entries = _tail_entries(result.tail)
+    # Отчёт несёт путь без суффикса `:42` — сама целевая строка не про
+    # существование файла (см. `_path_for_existence`).
+    assert entries == [
+        {"code": "missing", "target": "src/disputatio/missing.py", "line": 1}
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Отсутствующий/нечитаемый документ — skip гейта, не исключение наружу
+# (фикс-раунд 1, Important; конвенция — runner.run_gate).
+# ---------------------------------------------------------------------------
+
+
+def test_gate_doc_paths_skips_on_missing_document(tmp_path: Path) -> None:
+    doc_gates = _import_doc_gates()
+    missing = tmp_path / "does-not-exist.md"
+
+    result = doc_gates.gate_doc_paths(missing, tmp_path)
+
+    assert result.status is GateStatus.SKIP
+    assert result.exit_code is None
+    assert result.reason
+
+
+def test_gate_doc_links_skips_on_missing_document(tmp_path: Path) -> None:
+    doc_gates = _import_doc_gates()
+    missing = tmp_path / "does-not-exist.md"
+
+    result = doc_gates.gate_doc_links(missing, tmp_path)
+
+    assert result.status is GateStatus.SKIP
+    assert result.exit_code is None
+    assert result.reason
+
+
+def test_gate_doc_anchors_skips_on_missing_document(tmp_path: Path) -> None:
+    doc_gates = _import_doc_gates()
+    missing = tmp_path / "does-not-exist.md"
+
+    result = doc_gates.gate_doc_anchors(missing, tmp_path)
+
+    assert result.status is GateStatus.SKIP
+    assert result.exit_code is None
+    assert result.reason
+
+
+def test_gate_doc_paths_skips_on_unreadable_document(tmp_path: Path) -> None:
+    """Директория на месте документа — тот же класс сбоя, что и отсутствие."""
+    doc_gates = _import_doc_gates()
+    directory_as_doc = tmp_path / "looks-like-a-doc.md"
+    directory_as_doc.mkdir()
+
+    result = doc_gates.gate_doc_paths(directory_as_doc, tmp_path)
+
+    assert result.status is GateStatus.SKIP
+    assert result.exit_code is None
+    assert result.reason
