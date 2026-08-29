@@ -56,8 +56,15 @@ from disputatio.events import (
     PipelineEvent,
     PipelineEventSink,
     bootstrap_session,
+    write_config_snapshot,
 )
-from disputatio.runtime import GitCli, PipelineConfig
+from disputatio.runtime import (
+    AgentConfig,
+    GitCli,
+    LimitsConfig,
+    PipelineConfig,
+    RuntimeConfig,
+)
 from disputatio.runtime.layout import (
     CHANGES_PATCH_NAME,
     DECISION_NAME,
@@ -182,14 +189,27 @@ class ScriptedDriver:
 
 
 class ScriptedFactory:
-    """`SessionFactory`: bootstrap каталога ревизии + стартовый `session.json`."""
+    """`SessionFactory`: bootstrap ревизии, снапшот конфига, `session.json`.
 
-    def __init__(self) -> None:
+    Снапшот конфига обязателен, а не декоративен: `base_commit` из него —
+    половина вычисления ожидаемого `HEAD` (§8.1, `base_rev`), и фабрика без
+    снапшота дала бы стенду сверку, которой в продакшене есть на чём стоять,
+    а в тесте не на чем. `base_commit` берётся из `SessionCreation`, если его
+    назвал adoption, иначе — текущий `HEAD`, как и у настоящей фабрики.
+    """
+
+    def __init__(self, workspace: Path) -> None:
         self.creations: list[SessionCreation] = []
+        self._workspace = workspace
 
     def __call__(self, creation: SessionCreation) -> SessionState:
         self.creations.append(creation)
         bootstrap_session(creation.artifact_root)
+        base_commit = creation.base_commit or GitCli(self._workspace).head_sha()
+        write_config_snapshot(
+            creation.artifact_root,
+            _session_config(creation, base_commit).render_toml(),
+        )
         state = SessionState(
             schema=SCHEMA_V2,
             session_id=creation.session_id,
@@ -319,7 +339,7 @@ def build_stand(
         ),
         git=GitCli(workspace),
         driver=ScriptedDriver(scripts),
-        factory=ScriptedFactory(),
+        factory=ScriptedFactory(workspace),
         exporter=NullExporter(),
         sink=LazySink(workspace),
         store=FilePipelineStateStore(workspace),
@@ -384,6 +404,26 @@ def _clock() -> Any:
         return moment + timedelta(seconds=counter["n"])
 
     return now
+
+
+def _session_config(creation: SessionCreation, base_commit: str) -> RuntimeConfig:
+    """Снапшот конфига ревизии — тот же формат, что читает `resume_session`."""
+    return RuntimeConfig(
+        session_id=creation.session_id,
+        mode=Mode.DOCUMENT,
+        base_commit=base_commit,
+        task_prompt=creation.task_text,
+        author=AgentConfig(adapter="fake", model="m"),
+        reviewer=AgentConfig(adapter="fake", model="m"),
+        limits=LimitsConfig(
+            max_rounds=5,
+            max_total_tokens=10_000,
+            max_wall_seconds=600,
+            schema_retries=2,
+        ),
+        gates=(),
+        attachments=(),
+    )
 
 
 def _write_json(path: Path, model: Any) -> None:

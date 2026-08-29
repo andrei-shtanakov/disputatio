@@ -51,11 +51,13 @@ from disputatio.runtime.pipeline_resume import classify_worktree
 
 from ._fakes import GitOpsFakeBase
 from ._pipeline_stand import (
+    PLAN_PATH,
     SLUG,
     SPEC_PATH,
     Script,
     Stand,
     build_stand,
+    git,
     live_pair,
     parked_pair,
     porcelain,
@@ -161,6 +163,79 @@ def test_resume_stops_when_the_diff_diverges_from_the_recorded_patch(
 
     with pytest.raises(ExternalEditError):
         stand.resume.resume(SLUG)
+
+
+def test_resume_stops_on_a_commit_the_pipeline_did_not_make(tmp_path: Path) -> None:
+    """Чистое дерево на чужом коммите — тоже неатрибутируемое состояние.
+
+    Вторая половина модели §8.1: «HEAD совпадает с записанным **и** дерево
+    чистое». Человеческий коммит поверх раунда оставляет дерево чистым, и
+    сверка по одному дифу пропустила бы resume — а `reset --hard` первого же
+    `PROPOSING` увёл бы ветку с этого коммита без всякой санкции.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    _edit_spec(stand)
+    git(stand.workspace, "add", SPEC_PATH)
+    git(stand.workspace, "commit", "--quiet", "-m", "правка человека мимо пайплайна")
+    # Чисто именно в том смысле, в каком чистоту понимает классификация:
+    # канонический дифф пуст (`.disputatio/` из него исключён всегда).
+    assert stand.git.diff_readonly() == "", "дифф обязан быть пуст"
+
+    head_before = stand.git.head_sha()
+    calls_before = len(stand.driver.calls)
+
+    with pytest.raises(ExternalEditError) as excinfo:
+        stand.resume.resume(SLUG)
+
+    assert "HEAD" in str(excinfo.value)
+    assert stand.git.head_sha() == head_before
+    assert len(stand.driver.calls) == calls_before
+
+
+def test_head_at_the_committed_round_is_not_a_foreign_commit(tmp_path: Path) -> None:
+    """Коммит текущего раунда — ожидаемый `HEAD`, а не подмена.
+
+    `commit_round(N)` исполняется ДО `apply_decision` (`runtime/steps.py`),
+    поэтому убитый в этом окне процесс штатно оставляет `HEAD` на коммите
+    раунда N при `session.json`, всё ещё называющем раунд N. Сверка по одной
+    только цели сброса объявила бы это состояние внешней правкой.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    (stand.workspace / PLAN_PATH).write_text(
+        "# план\n\nработа раунда\n", encoding="utf-8"
+    )
+    stand.git.commit_round(1)
+    stand.scripts["pair-r1"].outcome = "converged"
+
+    calls_before = len(stand.driver.calls)
+    stand.resume.resume(SLUG)
+
+    assert len(stand.driver.calls) > calls_before
+
+
+def test_discard_drops_the_commit_made_outside_the_pipeline(tmp_path: Path) -> None:
+    """`--discard-round` сбрасывает к цели раунда, а не к текущему `HEAD`.
+
+    Сброс «на самого себя» сохранил бы ровно тот коммит, из-за которого
+    resume и остановился, — санкция оператора была бы исполнена наполовину.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    expected_head = stand.git.head_sha()
+    _edit_spec(stand)
+    git(stand.workspace, "add", SPEC_PATH)
+    git(stand.workspace, "commit", "--quiet", "-m", "правка человека мимо пайплайна")
+    stand.scripts["pair-r1"].outcome = "converged"
+
+    state = stand.resume.resume(SLUG, decision="discard_round")
+
+    assert stand.git.head_sha() == expected_head
+    assert EXTERNAL_TEXT not in (stand.workspace / SPEC_PATH).read_text(
+        encoding="utf-8"
+    )
+    assert [decision.kind for decision in state.operator_decisions] == ["discard_round"]
 
 
 def test_parked_session_is_returned_and_never_resumed(tmp_path: Path) -> None:
@@ -354,8 +429,11 @@ def test_classify_worktree_never_reaches_the_mutating_diff(tmp_path: Path) -> No
     stand = build_stand(tmp_path, parked_pair())
     start(stand)
 
+    # `HEAD` фейка — настоящий: сверка identity обязана СОЙТИСЬ, иначе
+    # классификация вернула бы `unattributed`, не дойдя до дифа вовсе, и
+    # утверждение про `diff_head` стало бы вакуумным.
     verdict = classify_worktree(
-        _ReadOnlyGit("diff --git a/x b/x\n"),
+        _ReadOnlyGit("diff --git a/x b/x\n", stand.git.head_sha()),
         stand.manifest(),
         workspace_root=stand.workspace,
     )
@@ -377,8 +455,13 @@ def test_classify_worktree_calls_a_clean_tree_clean(tmp_path: Path) -> None:
 class _ReadOnlyGit(GitOpsFakeBase):
     """`GitOps`, у которого мутирующий дифф — провал теста."""
 
-    def __init__(self, diff: str) -> None:
+    def __init__(self, diff: str, head: str) -> None:
         self._diff = diff
+        self._head = head
+
+    def head_sha(self) -> str:
+        """Identity дерева — половина модели внешней правки §8.1."""
+        return self._head
 
     def diff_head(self) -> str:
         """Мутирует индекс — сверке worktree он запрещён."""

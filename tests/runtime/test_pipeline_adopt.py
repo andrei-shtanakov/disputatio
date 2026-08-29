@@ -43,7 +43,11 @@ from disputatio.contracts import (
 )
 from disputatio.events import FilePipelineStateStore
 from disputatio.runtime import GitCli, PipelineConfig, StatusEntry
-from disputatio.runtime.errors import AdoptionScopeError
+from disputatio.runtime.errors import (
+    AdoptionScopeError,
+    ExternalEditError,
+    PipelineNotResumable,
+)
 from disputatio.runtime.git import OPERATION_TRAILER_KEY, base_rev
 from disputatio.runtime.pipeline_adopt import compute_scope
 
@@ -484,6 +488,114 @@ def test_discard_restores_the_displaced_intent(tmp_path: Path) -> None:
     assert any(call[1] == "pair-r1" for call in stand.driver.calls[seen:]), (
         f"вытесненный интент {displaced.kind} не восстановлен: сессия не пошла"
     )
+
+
+def test_discard_between_sessions_needs_no_active_revision(tmp_path: Path) -> None:
+    """`--discard-round` работает и когда активной ревизии нет (§8.1).
+
+    Окно естественное: крах между commit point'ом `finish_session` и
+    chained `create_session` оставляет манифест без единой незакрытой
+    ревизии. Парковать там нечего — но `discard` ничего и не паркует: сброс
+    к последнему принятому коммиту определён и в этом состоянии, а §8.1
+    прямо требует того же явного выбора «между сессиями».
+    """
+    scripts = live_pair()
+    scripts["pair-r1"].raise_after_write = False
+    stand = build_stand(tmp_path, scripts)
+    # Четвёртая запись манифеста — commit point `finish_session` спеки:
+    # spec-r1 получил исход, `create_session` пары ещё не исполнен.
+    _crash(stand, crash_after_save=4)
+    start(stand)
+    state = stand.manifest()
+    assert state.next_action is not None
+    assert state.next_action.kind == "create_session"
+    assert all(
+        record.outcome is not None
+        for record in (*state.spec_sessions, *state.pair_sessions)
+    ), "стенд не воспроизвёл окно «между сессиями»"
+
+    _heal(stand)
+    (stand.workspace / PLAN_PATH).write_text(ADOPTED_PLAN, encoding="utf-8")
+    stand.scripts["pair-r1"].outcome = "converged"
+
+    state = stand.resume.resume(SLUG, decision="discard_round")
+
+    assert (stand.workspace / PLAN_PATH).read_text(encoding="utf-8") != ADOPTED_PLAN
+    assert [decision.kind for decision in state.operator_decisions] == ["discard_round"]
+    assert "pair-r1" in _records(state), "вытесненный create_session не доигран"
+
+
+def test_a_created_revision_expects_its_base_commit_as_head(tmp_path: Path) -> None:
+    """Ревизия создана, `PROPOSING` не начинался — ожидаемый `HEAD` = `base_commit`.
+
+    Раунд здесь ещё нулевой, и наивное `base_rev(0)` цели не даёт вовсе —
+    сверка HEAD молча выключилась бы ровно в том окне, где новая ревизия
+    ещё ничего не закоммитила и внешний коммит виднее всего.
+    """
+    scripts = live_pair()
+    stand = build_stand(tmp_path, scripts)
+    # Вторая запись манифеста — commit point `create_session` спеки:
+    # каталог ревизии создан, `run_session` ещё не исполнен.
+    _crash(stand, crash_after_save=2)
+    start(stand)
+    _heal(stand)
+    (stand.workspace / SPEC_PATH).write_text(
+        "# спека\n\nчужая правка\n", encoding="utf-8"
+    )
+    git(stand.workspace, "add", SPEC_PATH)
+    git(stand.workspace, "commit", "--quiet", "-m", "коммит мимо пайплайна")
+
+    with pytest.raises(ExternalEditError) as excinfo:
+        stand.resume.resume(SLUG)
+    assert "HEAD" in str(excinfo.value)
+
+
+def test_discard_in_a_created_revision_returns_to_the_base_commit(
+    tmp_path: Path,
+) -> None:
+    """Цель сброса нулевого раунда — `base_commit`, а не текущий `HEAD`.
+
+    Отличие от предыдущего теста не в обнаружении, а в исполнении санкции:
+    ожидаемый набор HEAD чужой коммит отвергнет в обоих случаях, но сброс «на
+    самого себя» оставил бы его в истории — то есть выполнил бы решение
+    оператора наполовину.
+    """
+    scripts = live_pair()
+    scripts["pair-r1"] = Script(outcome="converged")
+    stand = build_stand(tmp_path, scripts)
+    _crash(stand, crash_after_save=2)
+    start(stand)
+    _heal(stand)
+    base_commit = stand.git.head_sha()
+    (stand.workspace / SPEC_PATH).write_text(
+        "# спека\n\nчужая правка\n", encoding="utf-8"
+    )
+    git(stand.workspace, "add", SPEC_PATH)
+    git(stand.workspace, "commit", "--quiet", "-m", "коммит мимо пайплайна")
+
+    stand.resume.resume(SLUG, decision="discard_round")
+
+    assert stand.git.head_sha() == base_commit
+
+
+def test_adopt_between_sessions_refuses_loudly(tmp_path: Path) -> None:
+    """`--adopt-external` без активной ревизии — громкий отказ, а не догадка.
+
+    Решение паркует активную сессию и открывает следующую; парковать здесь
+    нечего, и молча принять правку «куда-нибудь» значило бы придумать
+    маршрут, которого §3.1 не определяет.
+    """
+    scripts = live_pair()
+    scripts["pair-r1"].raise_after_write = False
+    stand = build_stand(tmp_path, scripts)
+    _crash(stand, crash_after_save=4)
+    start(stand)
+    _heal(stand)
+    (stand.workspace / PLAN_PATH).write_text(ADOPTED_PLAN, encoding="utf-8")
+
+    with pytest.raises(PipelineNotResumable) as excinfo:
+        stand.resume.resume(SLUG, decision="adopt_external")
+    assert "активной ревизии" in str(excinfo.value)
 
 
 class _StubGit(GitOpsFakeBase):

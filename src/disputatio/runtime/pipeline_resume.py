@@ -33,6 +33,7 @@
 показом дифа и требованием выбора человека.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
@@ -45,13 +46,16 @@ from disputatio.contracts import (
     TransitionReason,
 )
 from disputatio.events import IntegrityAnchor
+from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import (
+    BaseRevisionNotFound,
     ConfigError,
     ControlPlaneTampered,
     ExternalEditError,
+    GitCommandError,
     PipelineNotResumable,
 )
-from disputatio.runtime.git import GitOps
+from disputatio.runtime.git import GitOps, base_rev
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_artifact
 from disputatio.runtime.pipeline_adopt import OPERATOR_KINDS, OperatorIntents
 from disputatio.runtime.pipeline_config import (
@@ -78,6 +82,80 @@ _TERMINAL_PHASES: Final = (PipelinePhase.DONE, PipelinePhase.FAILED)
 _SESSION_INTENTS: Final = frozenset({"run_session", "finish_session"})
 
 
+@dataclass(frozen=True, slots=True)
+class WorktreeAnchorage:
+    """Где обязан стоять `HEAD` активной ревизии (§8.1, модель внешней правки).
+
+    Оба значения **вычисляются**, а не хранятся: §4.2 запрещает манифесту
+    нести машинно-зависимые значения, и SHA там нет по этой причине. Входы
+    вычисления durable и уже лежат на диске — история git плюс `base_commit`
+    из снапшота конфига ревизии (`base_rev`, [DESIGN-012]).
+
+    Значений два, потому что окно обрыва между ними штатное: `commit_round(N)`
+    исполняется ДО `apply_decision` (`runtime/steps.py`), поэтому убитый в
+    этом окне процесс оставляет `HEAD` на коммите раунда N при `session.json`,
+    всё ещё называющем раунд N. Сверка по одному только `reset_target` дала бы
+    там ложное срабатывание на штатном состоянии.
+
+    `None` в обоих полях означает «вычислить нечем» (снапшота нет, история
+    переписана): сверка HEAD тогда не делается вовсе, и разбираться с
+    оборванной историей остаётся `base_rev` внутри самой сессии — у него для
+    этого есть и своя ошибка, и свой текст. Изобретать здесь второй диагноз
+    значило бы дать два разных ответа на один вопрос.
+    """
+
+    reset_target: str | None = None
+    round_commit: str | None = None
+
+    @property
+    def expected_heads(self) -> tuple[str, ...]:
+        """Допустимые значения `HEAD`; пусто — сверять нечем."""
+        return tuple(sha for sha in (self.reset_target, self.round_commit) if sha)
+
+
+def worktree_anchorage(
+    state: PipelineState, *, workspace_root: Path
+) -> WorktreeAnchorage:
+    """Ожидаемые значения `HEAD` активной ревизии (§8.1).
+
+    Между сессиями (активной ревизии нет) — пустая привязка: ожидаемое
+    состояние там «последний принятый коммит», а вычислить его не из чего —
+    ни раунда, ни `base_commit` не существует. Dirty diff в этом окне
+    останавливает resume и без сверки HEAD (§8.1), а нового коммита сверять
+    не с чем.
+    """
+    record = active_session(state)
+    if record is None:
+        return WorktreeAnchorage()
+    artifact_root = artifact_root_of(
+        workspace_root, state.pipeline_id, record.session_id
+    )
+    session = load_session_state(artifact_root, record.session_id)
+    if session is None:
+        return WorktreeAnchorage()
+    try:
+        base_commit = load_config(artifact_root).base_commit
+    except ConfigError:
+        return WorktreeAnchorage()
+    # Раунд 0 (ревизия создана, `PROPOSING` ещё не начинался) ожидает
+    # `base_commit`, и `base_rev(1, …)` отвечает ровно им.
+    round_no = max(session.current_round, 1)
+    return WorktreeAnchorage(
+        reset_target=_revision_or_none(workspace_root, round_no, base_commit),
+        round_commit=_revision_or_none(workspace_root, round_no + 1, base_commit),
+    )
+
+
+def _revision_or_none(
+    workspace_root: Path, round_no: int, base_commit: str
+) -> str | None:
+    """`base_rev` раунда либо `None`, если такой цели в истории нет."""
+    try:
+        return base_rev(workspace_root, round_no, base_commit=base_commit)
+    except (BaseRevisionNotFound, GitCommandError):
+        return None
+
+
 def classify_worktree(
     git: GitOps,
     state: PipelineState,
@@ -87,10 +165,17 @@ def classify_worktree(
 ) -> WorktreeClass:
     """Происхождение состояния рабочего дерева (§8.1, модель внешней правки).
 
+    Состояние — это ПАРА «HEAD плюс дифф», и проверяются обе половины.
+    Чистое дерево на неожиданном `HEAD` — это внешний коммит, сделанный мимо
+    пайплайна: сброс первого же `PROPOSING` увёл бы с него ветку без всякой
+    санкции. Поэтому identity `HEAD` сверяется ПЕРВОЙ, и её несовпадение
+    делает состояние неатрибутируемым независимо от дифа.
+
     `diff_readonly`, а не `diff_head`: классификация обязана быть
     по-настоящему read-only — иначе шаг 3 сам мутировал бы индекс до решения
     оператора, и вывод `git status` у пользователя менялся бы от того, что он
-    запустил `resume`.
+    запустил `resume`. `head_sha` и `base_rev` немутирующи оба (`rev-parse`,
+    `merge-base`, `log`).
 
     `legal_patch` — окно «proposal записан, раунд не принят»: дифф
     байт-в-байт совпадает с `changes.patch` текущего раунда активной
@@ -101,6 +186,8 @@ def classify_worktree(
     решению оператора нужны те же байты, и снимать их дважды значило бы
     классифицировать одно состояние, а принимать другое.
     """
+    if head_mismatch(git, state, workspace_root=workspace_root) is not None:
+        return "unattributed"
     if diff is None:
         diff = git.diff_readonly()
     if not diff:
@@ -109,6 +196,32 @@ def classify_worktree(
     if recorded is not None and recorded == diff.encode("utf-8"):
         return "legal_patch"
     return "unattributed"
+
+
+def head_mismatch(
+    git: GitOps, state: PipelineState, *, workspace_root: Path
+) -> str | None:
+    """Описание расхождения `HEAD` с ожидаемым либо `None`, если сошлось."""
+    return describe_head_mismatch(
+        git.head_sha(), worktree_anchorage(state, workspace_root=workspace_root)
+    )
+
+
+def describe_head_mismatch(head: str, anchorage: WorktreeAnchorage) -> str | None:
+    """Текст расхождения `HEAD` с привязкой; `None` — сошлось или сверять нечем.
+
+    Возвращает текст, а не флаг: он же идёт человеку в отказ §8.1 — без него
+    остановка на ЧИСТОМ дереве выглядела бы отказом без причины (дифа-то
+    нет). Один источник и для вердикта, и для объяснения.
+    """
+    expected = anchorage.expected_heads
+    if not expected or head in expected:
+        return None
+    return (
+        f"HEAD {head} не совпадает ни с одним ожидаемым коммитом "
+        f"({', '.join(expected)}): в дереве коммит, которого пайплайн не "
+        "делал, и сброс раунда увёл бы с него ветку"
+    )
 
 
 class PipelineResume:
@@ -149,18 +262,35 @@ class PipelineResume:
         parked = self._runner.detect_parked(state)
         pending = _pending_operator_intent(state)
         diff = self._git.diff_readonly()
+        anchorage = worktree_anchorage(state, workspace_root=self._workspace_root)
+        mismatch = describe_head_mismatch(self._git.head_sha(), anchorage)
         verdict = classify_worktree(
             self._git, state, workspace_root=self._workspace_root, diff=diff
         )
 
-        self._check_decision(decision, pending, verdict, diff)
+        self._check_decision(decision, pending, verdict, _stop_detail(mismatch, diff))
         if pending is not None:
             self._intents.replay(state, pending, diff=diff)
         elif decision == "adopt_external":
             self._intents.adopt(state, diff=diff, parked=parked)
         elif decision == "discard_round":
-            self._intents.discard(state, diff=diff)
+            self._intents.discard(state, diff=diff, reset_to=self._reset_to(anchorage))
         return self._runner.advance(slug)
+
+    def _reset_to(self, anchorage: WorktreeAnchorage) -> str:
+        """Цель сброса `--discard-round`: куда обязан вернуться раунд (§3.1).
+
+        Именно `reset_target` привязки, а не текущий `HEAD`: санкция
+        оператора отменяет раунд целиком, а `HEAD` в этот момент вправе нести
+        и коммит отменяемого раунда (окно `commit_round` до `apply_decision`),
+        и посторонний коммит, из-за которого resume и остановился, — сброс на
+        самого себя сохранил бы ровно то, что оператор велел выбросить.
+
+        `HEAD` остаётся запасным вариантом ровно для случая «вычислить
+        нечем»: между сессиями (§8.1) ожидаемое состояние и есть последний
+        принятый коммит, а незакоммиченное снимет `clean`.
+        """
+        return anchorage.reset_target or self._git.head_sha()
 
     # ------------------------------------------------------------------
     # Шаг 0: целостность control plane
@@ -257,7 +387,7 @@ class PipelineResume:
         decision: str | None,
         pending: NextAction | None,
         verdict: WorktreeClass,
-        diff: str,
+        detail: str,
     ) -> None:
         """Сводит вердикт сверки с тем, что попросил человек (§3.1, §8.1)."""
         if pending is not None:
@@ -277,17 +407,22 @@ class PipelineResume:
         if verdict == "unattributed" and decision is None:
             raise ExternalEditError(
                 "resume остановлен: происхождение состояния рабочего дерева "
-                "не доказано — оно не чисто и не сводится к записанному "
-                "changes.patch. Destructive reset поверх такого состояния "
+                "не доказано — HEAD либо диф не сводятся к записанному "
+                "пайплайном. Destructive reset поверх такого состояния "
                 "запрещён (§8.1); выберите явно: `--discard-round` "
                 "(санкционировать сброс, ручные правки будут потеряны) либо "
                 "`--adopt-external` (принять правку как внешнюю и уйти в "
-                f"новую ревизию).\n{diff}"
+                f"новую ревизию).\n{detail}"
             )
 
     # ------------------------------------------------------------------
     # Служебное
     # ------------------------------------------------------------------
+
+
+def _stop_detail(mismatch: str | None, diff: str) -> str:
+    """Что показать человеку при остановке: расхождение HEAD и/или диф."""
+    return "\n".join(part for part in (mismatch, diff) if part)
 
 
 def _pending_operator_intent(state: PipelineState) -> NextAction | None:

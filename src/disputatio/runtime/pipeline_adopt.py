@@ -210,18 +210,33 @@ class OperatorIntents:
         action = self._intent(state, ADOPT_KIND, _adopt_operation_id(args), args)
         return self.replay(self._write(state, action), action, diff=diff)
 
-    def discard(self, state: PipelineState, *, diff: str) -> PipelineState:
+    def discard(
+        self, state: PipelineState, *, diff: str, reset_to: str
+    ) -> PipelineState:
         """Санкционирует reset и переигровку раунда (§3.1).
+
+        **Активной ревизии не требует**, в отличие от adoption'а: §8.1
+        распространяет модель внешней правки и на окно «между сессиями»
+        (активной нет — например, крах между commit point'ом
+        `finish_session` и chained `create_session`), а сброс к последнему
+        принятому коммиту там определён ничуть не хуже. Парковать в этом окне
+        действительно нечего — но `discard` ничего и не паркует.
+
+        `reset_to` считает вызывающий (§8.1: цель — то, куда обязан
+        вернуться раунд, а не текущий `HEAD`) и кладёт в аргументы интента:
+        цель обязана быть durable ДО первой мутации, иначе повтор после
+        частичного сброса вычислял бы её уже по изменённому дереву.
 
         Вытесненный интент едет в аргументах решения: слот `next_action`
         один, и без этого commit point не смог бы вернуть пайплайн туда,
         откуда его забрало решение человека.
         """
-        record = self._require_active(state)
+        record = active_session(state)
         args: dict[str, Any] = {
-            "session_id": record.session_id,
-            "round": self._round_of(state, record),
+            "session_id": "" if record is None else record.session_id,
+            "round": 0 if record is None else self._round_of(state, record),
             "diff_sha256": _sha256(diff),
+            "reset_to": reset_to,
             "resume_action": (
                 None
                 if state.next_action is None
@@ -358,14 +373,15 @@ class OperatorIntents:
     def _execute_discard(
         self, state: PipelineState, action: NextAction
     ) -> PipelineState:
-        """Reset к последнему принятому коммиту + запись решения (§3.1).
+        """Reset к цели из интента + запись решения (§3.1).
 
-        Сброс идемпотентен: цель — `HEAD`, то есть коммит последнего
-        ПРИНЯТОГО раунда (текущий раунд не принят и не закоммичен), и повтор
-        сброса к тому же коммиту — no-op. `clean` снимает новые файлы
-        прерванной попытки, минуя каталог оркестратора.
+        Цель взята из аргументов, а не вычислена здесь: она durable с момента
+        записи интента, поэтому повтор после частичного сброса приходит к
+        тому же коммиту, а не к тому, куда дерево успело съехать. Сброс
+        идемпотентен — повтор к тому же коммиту no-op; `clean` снимает новые
+        файлы прерванной попытки, минуя каталог оркестратора.
         """
-        self._git.reset_hard(self._git.head_sha())
+        self._git.reset_hard(str(action.args["reset_to"]))
         self._git.clean()
         restored = action.args.get("resume_action")
         successor = (
