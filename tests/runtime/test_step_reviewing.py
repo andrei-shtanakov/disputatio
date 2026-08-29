@@ -703,7 +703,8 @@ def test_parsing_never_evaluates_the_agent_text() -> None:
 
     called = _called_names([tree])
     assert not (called & _EXECUTION_CALLS), (
-        f"runtime/parsing.py исполняет текст агента: {sorted(called & _EXECUTION_CALLS)}"
+        "runtime/parsing.py исполняет текст агента: "
+        f"{sorted(called & _EXECUTION_CALLS)}"
     )
     assert not (_imported_roots(tree) & _EXECUTION_MODULES), (
         "runtime/parsing.py импортирует модуль исполнения — текст агента "

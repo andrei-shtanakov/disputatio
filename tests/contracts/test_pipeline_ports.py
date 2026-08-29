@@ -1,4 +1,5 @@
-"""Тесты pipeline-портов: PipelineStateStore, RoundBoundaryPolicy, SessionLifecyclePolicy.
+"""Тесты pipeline-портов: PipelineStateStore, RoundBoundaryPolicy,
+SessionLifecyclePolicy.
 
 Импорты `disputatio.contracts.ports` выполняются внутри тестов: на момент
 red-чекпоинта модуля ещё нет, и импорт на уровне модуля сломал бы collection.

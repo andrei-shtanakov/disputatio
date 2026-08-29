@@ -39,6 +39,7 @@ from disputatio.contracts import (
     PipelinePhase,
     PipelineState,
     SessionOutcome,
+    SessionRecord,
     TransitionReason,
 )
 from disputatio.events import FilePipelineStateStore
@@ -160,7 +161,7 @@ def _defect_stand(tmp_path: Path, **kwargs: object) -> Stand:
     return stand
 
 
-def _records(state: PipelineState) -> dict[str, object]:
+def _records(state: PipelineState) -> dict[str, SessionRecord]:
     """Записи обеих коллекций ревизий по `session_id`."""
     return {
         record.session_id: record
@@ -176,8 +177,8 @@ def test_plan_only_edit_opens_a_new_pair_revision(tmp_path: Path) -> None:
     state = stand.resume.resume(SLUG, decision="adopt_external")
 
     records = _records(state)
-    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
-    assert records["pair-r1"].superseded_by == "pair-r2"  # type: ignore[attr-defined]
+    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED
+    assert records["pair-r1"].superseded_by == "pair-r2"
     assert "pair-r2" in records
     assert TransitionReason.EXTERNAL_SPEC_ADOPT not in [
         transition.reason for transition in state.transitions
@@ -209,8 +210,8 @@ def test_spec_edit_forces_a_spec_revision_without_any_finding(tmp_path: Path) ->
         PipelinePhase.SPEC_LOOP,
     )
     records = _records(state)
-    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
-    assert records["pair-r1"].superseded_by == "spec-r2"  # type: ignore[attr-defined]
+    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED
+    assert records["pair-r1"].superseded_by == "spec-r2"
 
 
 def test_both_causes_write_one_outcome_and_skip_record_return(
@@ -231,7 +232,7 @@ def test_both_causes_write_one_outcome_and_skip_record_return(
     assert TransitionReason.EXTERNAL_SPEC_ADOPT in reasons
     assert TransitionReason.ARCHITECTURAL_DEFECT not in reasons
     records = _records(state)
-    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
+    assert records["pair-r1"].outcome is SessionOutcome.ABANDONED
     # Находки припаркованного ревью не теряются: они — evidence перехода.
     evidence = [
         link
@@ -251,7 +252,7 @@ def test_defect_with_a_plan_only_diff_still_returns_to_spec(tmp_path: Path) -> N
 
     reasons = [transition.reason for transition in state.transitions]
     assert TransitionReason.ARCHITECTURAL_DEFECT in reasons
-    assert _records(state)["pair-r1"].superseded_by == "spec-r2"  # type: ignore[attr-defined]
+    assert _records(state)["pair-r1"].superseded_by == "spec-r2"
 
 
 @pytest.mark.parametrize(
@@ -288,7 +289,7 @@ def test_adoption_past_the_return_ceiling_escalates_instead_of_returning(
     assert [decision.kind for decision in state.operator_decisions] == [
         "adopt_external"
     ]
-    assert _records(state)["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
+    assert _records(state)["pair-r1"].outcome is SessionOutcome.ABANDONED
 
 
 def test_return_ceiling_counts_the_edge_not_the_reason(tmp_path: Path) -> None:
@@ -435,7 +436,8 @@ def test_adoption_replays_after_a_crash_before_the_patch_file(tmp_path: Path) ->
     with pytest.raises(Boom):
         stand.resume.resume(SLUG, decision="adopt_external")
     assert stand.manifest().next_action is not None
-    assert stand.manifest().next_action.kind == "adopt_external"  # type: ignore[union-attr]
+    action = stand.manifest().next_action
+    assert action is not None and action.kind == "adopt_external"
 
     state = _heal(stand).resume.resume(SLUG)
 
@@ -479,7 +481,7 @@ def test_adoption_replays_after_a_crash_before_the_commit_point(
     assert _commit_count(stand) == commits_before + 1, (
         "повтор обязан узнать свой чекпоинт по трейлеру, а не создать второй"
     )
-    assert _records(state)["pair-r1"].outcome is SessionOutcome.ABANDONED  # type: ignore[attr-defined]
+    assert _records(state)["pair-r1"].outcome is SessionOutcome.ABANDONED
 
 
 def test_adoption_replays_the_chained_create_session(tmp_path: Path) -> None:
@@ -490,7 +492,8 @@ def test_adoption_replays_the_chained_create_session(tmp_path: Path) -> None:
 
     with pytest.raises(Boom):
         stand.resume.resume(SLUG, decision="adopt_external")
-    assert stand.manifest().next_action.kind == "create_session"  # type: ignore[union-attr]
+    action = stand.manifest().next_action
+    assert action is not None and action.kind == "create_session"
 
     state = _heal(stand).resume.resume(SLUG)
 
@@ -506,7 +509,8 @@ def test_discard_replays_after_a_crash_before_the_reset(tmp_path: Path) -> None:
 
     with pytest.raises(Boom):
         stand.resume.resume(SLUG, decision="discard_round")
-    assert stand.manifest().next_action.kind == "discard_round"  # type: ignore[union-attr]
+    action = stand.manifest().next_action
+    assert action is not None and action.kind == "discard_round"
     assert (stand.workspace / PLAN_PATH).read_text(encoding="utf-8") == ADOPTED_PLAN
 
     stand.scripts["pair-r1"].outcome = "converged"

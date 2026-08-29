@@ -135,7 +135,10 @@ ALLOWED_TRANSITIONS: Final[
 
 
 class SessionOutcome(StrEnum):
-    """Pipeline-интерпретация исхода сессии (§4.2 `outcome`), неизменяема после записи."""
+    """Pipeline-интерпретация исхода сессии (§4.2 `outcome`).
+
+    Неизменяема после записи.
+    """
 
     CONVERGED = "converged"
     ESCALATED = "escalated"
@@ -187,7 +190,10 @@ class PipelineArtifactBase(BaseModel):
 
 
 class FileRef(ArtifactChild):
-    """Ссылка на файл-снапшот верхнего уровня: путь + sha256 (§4.2 `task`/`config`/`checklists`)."""
+    """Ссылка на файл-снапшот верхнего уровня: путь + sha256.
+
+    §4.2 `task`/`config`/`checklists`.
+    """
 
     path: RelativePath
     sha256: str
@@ -201,7 +207,10 @@ class DocumentPaths(ArtifactChild):
 
 
 class EvidenceLink(ArtifactChild):
-    """Структурированная ссылка на находку раунда сессии (§4.2 `transitions[].evidence`)."""
+    """Структурированная ссылка на находку раунда сессии.
+
+    §4.2 `transitions[].evidence`.
+    """
 
     session_id: str
     round: int = Field(ge=1)
@@ -209,7 +218,10 @@ class EvidenceLink(ArtifactChild):
 
 
 class SessionRecord(ArtifactChild):
-    """Запись об одной ревизии spec- или pair-сессии (§4.2 `spec_sessions`/`pair_sessions`)."""
+    """Запись об одной ревизии spec- или pair-сессии.
+
+    §4.2 `spec_sessions`/`pair_sessions`.
+    """
 
     revision: int = Field(ge=1)
     session_id: str

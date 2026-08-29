@@ -91,7 +91,10 @@ def make_review(
 
 
 def make_verification(overall: str = "pass") -> VerificationReport:
-    """VerificationReport с заданным overall — параметр сигнатуры, не используется V1-V8."""
+    """VerificationReport с заданным overall.
+
+    Параметр сигнатуры; правила V1-V8 его не используют.
+    """
     return VerificationReport.model_validate(
         {
             "schema": "disputatio/v1",

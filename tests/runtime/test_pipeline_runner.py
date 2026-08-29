@@ -822,7 +822,8 @@ def test_return_operation_id_is_deterministic_from_review(tmp_path: Path) -> Non
     with pytest.raises(_Boom):
         harness.runner.run(SLUG, "полировать пару")
     assert harness.manifest().next_action is not None
-    assert harness.manifest().next_action.kind == "finish_session"  # type: ignore[union-attr]
+    action = harness.manifest().next_action
+    assert action is not None and action.kind == "finish_session"
 
     rebuild(harness).runner.advance(SLUG)
 
@@ -1406,9 +1407,9 @@ def test_every_manifest_write_is_a_replayable_boundary(
     манифеста в `run`) в выборку не входит — до неё манифеста ещё нет вовсе,
     и §8.1 в таком состоянии не resume'ит, а отказывает.
 
-    Оракул смотрит на все три внешних эффекта runner'а — вызовы драйвера,
-    `git reset`, вызовы экспортёра — плюс структуру манифеста. Четвёртого
-    эффекта у runner'а нет.
+    Оракул смотрит на все четыре внешних эффекта runner'а — вызовы фабрики
+    сессий, вызовы драйвера, `git reset`, вызовы экспортёра — плюс
+    структуру манифеста.
 
     **Чего этот sweep НЕ делает: он не закрывает дыру в покрытии.** Проверено
     мутациями: каждую из трёх (убрать ветку парковки из `_is_settled`;
@@ -1422,10 +1423,10 @@ def test_every_manifest_write_is_a_replayable_boundary(
 
     **Правило, по которому эффект переигрывается или нет, одно.** Runner
     защищает эффект от повтора ровно тогда, когда тот оставляет durable-след,
-    который runner читает ПЕРЕД действием. У драйвера след есть —
-    `session.json`, и его читают оба guard'а (`_is_settled` для терминала и
+    который runner читает ПЕРЕД действием. У драйвера и у фабрики след есть
+    — `session.json`, и его читают оба guard'а (`_is_settled` для терминала и
     парковки, проверка состояния перед фабрикой), поэтому число вызовов
-    драйвера равно эталонному на всех четырнадцати границах. У `reset` и у
+    обоих равно эталонному на всех четырнадцати границах. У `reset` и у
     экспортёра следа, который runner читал бы, нет — и это намеренно:
     безопасность там приходит не от guard'а, а от природы самой операции
     (§7.3 шаг 3: «повтор reset к тому же коммиту — no-op»; §8.2:
@@ -1450,6 +1451,9 @@ def test_every_manifest_write_is_a_replayable_boundary(
     reference = build_harness(tmp_path / "ref", returning_scripts())
     expected = structure(reference.runner.run(SLUG, "полировать пару"))
     expected_calls = [call[1] for call in reference.driver.calls]
+    expected_creations = [
+        creation.session_id for creation in reference.factory.creations
+    ]
     expected_resets = len(reference.git.resets)
     expected_exports = len(reference.exporter.calls)
 
@@ -1465,6 +1469,13 @@ def test_every_manifest_write_is_a_replayable_boundary(
         "обрыв на записи манифеста случается после возврата драйвера — "
         "допроигрывание обязано опереться на durable-состояние, а не звать "
         "его второй раз"
+    )
+    assert [
+        creation.session_id for creation in harness.factory.creations
+    ] == expected_creations, (
+        "фабрика сессий — тот же защищённый эффект, что и драйвер: перед "
+        "ней runner читает `session.json`, поэтому повторный bootstrap "
+        "каталога и стартового состояния запрещён на каждой границе"
     )
     assert len(harness.git.resets) == replayed_once(
         expected_resets, crash_on_save, RESET_REPLAY_BOUNDARY
