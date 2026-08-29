@@ -366,8 +366,8 @@ _NFR_COVERAGE: dict[str, tuple[tuple[str, str], ...]] = {
     "NFR-002": (
         ("test_tags.py", "test_wrap_is_deterministic"),
         ("test_tags_literals.py", "test_wrap_is_byte_identical_across_processes"),
-        ("test_schema_rules.py", "test_constant_is_a_plain_string_literal"),
-        ("test_schema_rules.py", "test_constant_is_byte_identical_across_processes"),
+        ("test_schema_rules.py", "test_constant_is_built_from_module_literals_only"),
+        ("test_schema_rules.py", "test_constants_are_byte_identical_across_processes"),
         (
             "test_hygiene.py",
             "test_author_prompt_is_byte_identical_for_identical_arguments",

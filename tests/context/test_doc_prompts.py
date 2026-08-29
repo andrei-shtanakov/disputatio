@@ -348,6 +348,48 @@ def test_checklist_evidence_requirement_is_present() -> None:
     assert "evidence" in prompt
 
 
+@pytest.mark.parametrize(
+    ("contour", "checklist_ids", "doc_path"),
+    [
+        ("spec", SPEC_CHECKLIST, "docs/specs/api.md"),
+        ("pair", PAIR_CHECKLIST, "docs/plans/api.md"),
+    ],
+)
+def test_doc_reviewer_prompt_states_the_output_contract(
+    contour: str, checklist_ids: Sequence[str], doc_path: str
+) -> None:
+    """Промпт называет контракт вывода: тег v2, `checked`, evidence (§4.4, §5.1).
+
+    Оркестратор судит doc-ревью теми же четырьмя правилами §4.4, что и
+    develop-ревью (`runtime/steps.py::_accepted_review`), и артефакт
+    doc-сессии обязан нести тег `disputatio/v2` (§5.1): поля `checklist` и
+    `defect_class` под v1 отвергаются схемой. Промпт, не называющий ни
+    правил, ни тега, отправляет агента угадывать — и платит ретраем за
+    каждое угаданное неверно.
+
+    Утверждается СОДЕРЖАНИЕ промпта, а не факт вызова общего блока: тест
+    обязан краснеть от снятия секции, а не только от переименования
+    константы.
+    """
+    doc_reviewer = _module("doc_reviewer")
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour=contour,
+        doc_texts={doc_path: "текст"},
+        verification=_verification(),
+        checklist=_checklist(checklist_ids),
+    )
+
+    assert "review.json" in prompt
+    assert "disputatio/v2" in prompt
+    assert "disputatio/v1" not in prompt, (
+        "единственный принимаемый тег doc-артефакта — v2 (§5.1); "
+        "назвать v1 значит послать агента на гарантированный отказ схемы"
+    )
+    assert "`checked`" in prompt
+    assert "`approve`" in prompt
+
+
 def test_gate_results_are_included_even_on_fail() -> None:
     """Отчёт проверок доходит целиком, включая провал (§5.2 симметрия §4.4)."""
     doc_reviewer = _module("doc_reviewer")

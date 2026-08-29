@@ -31,6 +31,12 @@
    класс дефекта определяет маршрут возврата (§7.1, §7.3), и угадывать
    его молча нельзя. Spec-контур этого требования не несёт.
 
+Общее с `reviewer.py`: промпт несёт блок требований §4.4 к `review.json`
+из `schema_rules.py` — в doc-редакции, под тегом `disputatio/v2` (§5.1).
+Он не украшение: `runtime/steps.py::_accepted_review` судит doc-ревью теми
+же четырьмя правилами §4.4, что и develop-ревью, и промпт без этого блока
+судил бы агента по правилам, которых ему не показали.
+
 Диалог автора ревьюеру не передаётся ни в каком виде — сигнатура типами
 запрещает такой параметр, как и в `reviewer.py` (ADR-004).
 
@@ -40,6 +46,7 @@
 from collections.abc import Mapping
 from typing import Final, Literal
 
+from disputatio.context.schema_rules import DOC_REVIEW_SCHEMA_REQUIREMENTS
 from disputatio.context.sections import render_verification_section
 from disputatio.context.tags import wrap_artifact_data
 from disputatio.contracts.checklists_catalog import CHECKLIST_BY_CONTOUR
@@ -108,8 +115,11 @@ def build_doc_reviewer_prompt(
     Порядок секций: документы контура (данные — по одному artifact-блоку
     на документ), отчёт детерминированных проверок (целиком, включая
     провал), чеклист сходимости контура со статическим требованием
-    evidence, и для pair-контура — дополнительное требование
-    `defect_class`.
+    evidence, требования §4.4 к `review.json` (в doc-редакции, тег
+    `disputatio/v2`), и для pair-контура — дополнительное требование
+    `defect_class`. Требование `defect_class` стоит последним намеренно:
+    оно про поля `issues`, то есть продолжает блок требований к выводу, а
+    не открывает новую тему.
     """
     _check_checklist_ids(contour, checklist)
 
@@ -118,6 +128,7 @@ def build_doc_reviewer_prompt(
         _render_documents_section(doc_texts),
         render_verification_section(verification),
         _render_checklist_section(contour, checklist),
+        DOC_REVIEW_SCHEMA_REQUIREMENTS,
     ]
     if contour == "pair":
         parts.append(_PAIR_DEFECT_CLASS_NOTE)
