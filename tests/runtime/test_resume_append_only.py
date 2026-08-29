@@ -123,13 +123,16 @@ _TOLERATED_HANDLERS = [
     ("steps.py", "_write_decision", "RoundImmutableError", True),
 ]
 
-# Пишущие вызовы, законные в runtime. Оба — не про журнал: правило
-# `.git/info/exclude` ([DESIGN-011]) и уборка огрызков записи в раунде
-# ([REQ-015]). Список точный, а не «не меньше»: новый писатель в runtime
-# обязан быть замечен этим тестом, даже если пишет он не в `events.jsonl`.
+# Пишущие вызовы, законные в runtime. Ни один — не про журнал: правило
+# `.git/info/exclude` ([DESIGN-011]), уборка огрызков записи в раунде
+# ([REQ-015]) и уборка stale-остатков прежнего экспорта пары перед новым
+# (SPEC-002 §8.2, `runtime/pipeline_export.py::_clear_stale`). Список
+# точный, а не «не меньше»: новый писатель в runtime обязан быть замечен
+# этим тестом, даже если пишет он не в `events.jsonl`.
 _ALLOWED_WRITES = {
     ("git.py", "exclude_file.write_text"),
     ("steps.py", "leftover.unlink"),
+    ("pipeline_export.py", "entry.unlink"),
 }
 
 _ROGUE_JOURNAL_LITERAL = (
