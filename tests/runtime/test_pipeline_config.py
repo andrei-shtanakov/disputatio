@@ -216,10 +216,18 @@ def test_load_pipeline_config_accepts_extra_gate_with_new_name(
     )
 
 
-def test_load_pipeline_config_applies_checklist_override(
+def test_load_pipeline_config_checklist_override_merges_not_replaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`[pipeline.checklists.<contour>]` переопределяет текст пункта."""
+    """`[pipeline.checklists.spec]` с одним `S1` не уносит остальные пункты
+    `spec` и весь контур `pair` (фикс-раунд 1, Important-1).
+
+    Прежняя реализация заменяла всю карту override'ом: `config.checklists`
+    после одной строки `S1 = "..."` терял `S2`–`S5`, а `config.checklists
+    ["pair"]` бросал `KeyError` — чеклист сходимости (критерий, по которому
+    судят ревьюера, §5.3) молча лишался четырёх из пяти пунктов и целого
+    контура.
+    """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     text = (
         _MINIMAL_PIPELINE_TABLE
@@ -230,6 +238,38 @@ def test_load_pipeline_config_applies_checklist_override(
     config = load_pipeline_config(path)
 
     assert config.checklists["spec"]["S1"] == "кастомная формулировка S1"
+    assert config.checklists["spec"]["S2"] == CHECKLIST_TEXT["S2"]
+    assert config.checklists["spec"]["S5"] == CHECKLIST_TEXT["S5"]
+    assert config.checklists["pair"]["P1"] == CHECKLIST_TEXT["P1"]
+    assert config.checklists["pair"]["P5"] == CHECKLIST_TEXT["P5"]
+
+
+def test_load_pipeline_config_rejects_unknown_checklist_contour(
+    tmp_path: Path,
+) -> None:
+    """Опечатка в имени контура — `ConfigError`, а не тихое игнорирование."""
+    text = (
+        _MINIMAL_PIPELINE_TABLE
+        + '\n[pipeline.checklists.spce]\nS1 = "опечатка в имени контура"\n'
+    )
+    path = _write_config(tmp_path, text)
+
+    with pytest.raises(ConfigError):
+        load_pipeline_config(path)
+
+
+def test_load_pipeline_config_rejects_unknown_checklist_id(
+    tmp_path: Path,
+) -> None:
+    """Опечатка в id пункта — `ConfigError`, а не молчаливое добавление."""
+    text = (
+        _MINIMAL_PIPELINE_TABLE
+        + '\n[pipeline.checklists.spec]\nS9 = "несуществующий пункт"\n'
+    )
+    path = _write_config(tmp_path, text)
+
+    with pytest.raises(ConfigError):
+        load_pipeline_config(path)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +457,50 @@ def test_check_run_preconditions_normalizes_status_paths_by_toplevel_prefix(
         check_run_preconditions(GitCli(root), root, config, "demo")
 
 
+def test_check_run_preconditions_rejects_anchor_between_session_root_and_toplevel(
+    git_repo: Path,
+) -> None:
+    """`anchor_path` вне `workspace_root`, но внутри TOPLEVEL — тоже отказ
+    (фикс-раунд 1, Important-3).
+
+    Сессия в подкаталоге `proj/` toplevel-репозитория: `anchor_path`, лежащий
+    рядом с `proj/` (т.е. НЕ внутри `workspace_root == proj`, но внутри
+    toplevel), раньше проходил containment буквально по `workspace_root`. Но
+    `runtime/git.py::clean` идёт по `_TREE_PATHSPEC = (":/", …)` — по ВСЕМУ
+    репозиторию, а не только по `proj/` — и снёс бы такой анкер первым же
+    `PROPOSING`.
+    """
+    _switch_to_working_branch(git_repo, "demo")
+    root = git_repo / "proj"
+    root.mkdir()
+    between = git_repo / "shared-anchors"  # сосед `proj/`, внутри toplevel
+    config = _config(anchor_path=between)
+
+    with pytest.raises(ConfigError):
+        check_run_preconditions(GitCli(root), root, config, "demo")
+
+
+def test_toplevel_prefix_in_linked_worktree(
+    git_repo: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """`toplevel_prefix()` в linked worktree — от границ ЭТОГО worktree, а не
+    основного репозитория (фикс-раунд 1: тот же класс дыры, что ревьюер нашёл
+    в `diff_readonly` в задаче 12 — операция на `rev-parse` обязана быть
+    проверена именно в `git worktree`, а не только в обычном репозитории:
+    worktree делит объектную базу с основным репозиторием, но имеет
+    собственный toplevel).
+    """
+    worktree_root = tmp_path_factory.mktemp("worktree")
+    worktree = worktree_root / "wt"
+    _git(git_repo, "worktree", "add", "--quiet", str(worktree), "-b", "wt-branch")
+
+    assert GitCli(worktree).toplevel_prefix() == ""
+
+    nested = worktree / "proj"
+    nested.mkdir()
+    assert GitCli(nested).toplevel_prefix() == "proj/"
+
+
 # ---------------------------------------------------------------------------
 # validate_anchor_path — статические N7 варианты (run и resume)
 # ---------------------------------------------------------------------------
@@ -459,10 +543,20 @@ def test_validate_anchor_path_rejects_relative_path_resolved_from_cwd(
 def test_validate_anchor_path_rejects_dotdot_landing_back_inside(
     tmp_path: Path,
 ) -> None:
-    """`..`, выводящий обратно внутрь дерева, — отказ (канонизация `resolve`)."""
+    """`..`, выводящий обратно внутрь дерева, — отказ (канонизация `resolve`).
+
+    Настоящий вектор (фикс-раунд 1, Important-4): путь ЛЕКСИЧЕСКИ начинается
+    СНАРУЖИ `workspace_root` (`tmp_path/outside/..`) и только `..` заводит
+    его обратно внутрь. `outside/../anchors` внутри самого `workspace_root`
+    (прежняя версия теста) лежит внутри дерева и лексически — на нём
+    `Path.absolute()` без `resolve()` тоже прошёл бы, и тест не отличил бы
+    рабочую канонизацию от сломанной.
+    """
     workspace_root = tmp_path / "repo"
     workspace_root.mkdir()
-    sneaky = workspace_root / "outside" / ".." / "anchors"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sneaky = outside / ".." / "repo" / "anchors"
 
     with pytest.raises(ConfigError):
         validate_anchor_path(sneaky, workspace_root)
@@ -479,6 +573,24 @@ def test_validate_anchor_path_rejects_symlink_leading_inside(
 
     with pytest.raises(ConfigError):
         validate_anchor_path(link, workspace_root)
+
+
+def test_validate_anchor_path_rejects_tilde_expanding_inside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`~`, разворачивающийся внутрь дерева через `HOME`, — отказ.
+
+    Фикс-раунд 1, Important-4: спека называет `expanduser` наравне с `..` и
+    symlink среди векторов канонизации P9, и ревью показало, что без
+    отдельного теста уборка `expanduser()` из реализации осталась бы
+    незамеченной — весь набор оставался бы зелёным.
+    """
+    workspace_root = tmp_path / "repo"
+    workspace_root.mkdir()
+    monkeypatch.setenv("HOME", str(workspace_root))
+
+    with pytest.raises(ConfigError):
+        validate_anchor_path(Path("~/anchors"), workspace_root)
 
 
 def test_validate_anchor_path_accepts_path_outside_workspace(

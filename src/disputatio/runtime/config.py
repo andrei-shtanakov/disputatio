@@ -37,6 +37,7 @@ from disputatio.contracts import (
     SessionState,
     TaskSpec,
 )
+from disputatio.runtime import _toml
 from disputatio.runtime.errors import ConfigError
 from disputatio.runtime.layout import config_toml
 from disputatio.verifier import GateSpec
@@ -125,25 +126,32 @@ class RuntimeConfig:
         разбором в одной функции рано или поздно оставило бы новую строку
         снаружи блока.
         """
-        session = _table(raw, "session")
-        task = _table(raw, "task")
-        limits = _table(raw, "limits")
-        agents = _table(raw, "agents")
+        session = _toml.table(raw, "session")
+        task = _toml.table(raw, "task")
+        limits = _toml.table(raw, "limits")
+        agents = _toml.table(raw, "agents")
         return cls(
-            session_id=_text(session, "id", where="session"),
-            mode=Mode(_text(session, "mode", where="session")),
-            base_commit=_text(session, "base_commit", where="session"),
-            task_prompt=_text(task, "prompt", where="task"),
+            session_id=_toml.text(session, "id", where="session"),
+            mode=Mode(_toml.text(session, "mode", where="session")),
+            base_commit=_toml.text(session, "base_commit", where="session"),
+            task_prompt=_toml.text(task, "prompt", where="task"),
             author=_agent(agents, "author"),
             reviewer=_agent(agents, "reviewer"),
             limits=LimitsConfig(
-                max_rounds=_integer(limits, "max_rounds"),
-                max_total_tokens=_integer(limits, "max_total_tokens"),
-                max_wall_seconds=_integer(limits, "max_wall_seconds"),
-                schema_retries=_integer(limits, "schema_retries"),
+                max_rounds=_toml.integer(limits, "max_rounds", where="limits"),
+                max_total_tokens=_toml.integer(
+                    limits, "max_total_tokens", where="limits"
+                ),
+                max_wall_seconds=_toml.integer(
+                    limits, "max_wall_seconds", where="limits"
+                ),
+                schema_retries=_toml.integer(limits, "schema_retries", where="limits"),
             ),
-            gates=tuple(_gate(item) for item in _tables(raw, "gates")),
-            attachments=_texts(task, "attachments"),
+            gates=tuple(
+                _toml.gate(item, where="gates")
+                for item in _toml.table_array(raw, "gates")
+            ),
+            attachments=_toml.texts(task, "attachments"),
         )
 
     def render_toml(self) -> str:
@@ -321,89 +329,11 @@ def _escaped_control(char: str) -> str:
     return char
 
 
-def _table(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    """Обязательная таблица верхнего уровня; иначе `KeyError`/`TypeError`."""
-    if name not in raw:
-        raise KeyError(f"нет обязательной таблицы [{name}]")
-    value = raw[name]
-    if not isinstance(value, Mapping):
-        raise TypeError(f"[{name}] обязана быть таблицей, а не {type(value).__name__}")
-    return value
-
-
-def _tables(raw: Mapping[str, Any], name: str) -> Sequence[Mapping[str, Any]]:
-    """Массив таблиц `[[name]]`; отсутствие — пустой список, а не ошибка.
-
-    Сессия без гейтов законна ([REQ-010]): `verification.overall` тогда
-    складывается из пустого набора, и требовать хотя бы один гейт значило бы
-    завести здесь второе мнение о §5.
-    """
-    value = raw.get(name, [])
-    if not isinstance(value, list):
-        raise TypeError(f"[[{name}]] обязан быть массивом таблиц")
-    for item in value:
-        if not isinstance(item, Mapping):
-            raise TypeError(f"элемент [[{name}]] обязан быть таблицей")
-    return value
-
-
 def _agent(agents: Mapping[str, Any], role: str) -> AgentConfig:
     """Агент из вложенной таблицы `[agents.<role>]`."""
-    table = _table(agents, role)
+    agent_table = _toml.table(agents, role)
     where = f"agents.{role}"
     return AgentConfig(
-        adapter=_text(table, "adapter", where=where),
-        model=_text(table, "model", where=where),
+        adapter=_toml.text(agent_table, "adapter", where=where),
+        model=_toml.text(agent_table, "model", where=where),
     )
-
-
-def _gate(item: Mapping[str, Any]) -> GateSpec:
-    """Один `GateSpec` из элемента массива таблиц `[[gates]]`.
-
-    `enabled` необязателен и по умолчанию `True` — тем же дефолтом, что у
-    самого `GateSpec`: два разных ответа на «гейт без флага включён?»
-    разошлись бы молча, и разошлись бы в сторону пропущенной проверки.
-    """
-    enabled = item.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise TypeError("gates.enabled обязан быть true/false")
-    return GateSpec(
-        name=_text(item, "name", where="gates"),
-        cmd=_text(item, "cmd", where="gates"),
-        enabled=enabled,
-    )
-
-
-def _text(table: Mapping[str, Any], key: str, *, where: str) -> str:
-    """Обязательное строковое значение таблицы `where`."""
-    if key not in table:
-        raise KeyError(f"нет обязательного ключа {where}.{key}")
-    value = table[key]
-    if not isinstance(value, str):
-        raise TypeError(f"{where}.{key} обязан быть строкой")
-    return value
-
-
-def _texts(table: Mapping[str, Any], key: str) -> tuple[str, ...]:
-    """Необязательный массив строк; отсутствие — пустой кортеж."""
-    value = table.get(key, [])
-    if not isinstance(value, list):
-        raise TypeError(f"{key} обязан быть массивом строк")
-    for item in value:
-        if not isinstance(item, str):
-            raise TypeError(f"элемент {key} обязан быть строкой")
-    return tuple(value)
-
-
-def _integer(table: Mapping[str, Any], key: str) -> int:
-    """Обязательное целое из `[limits]`; `true`/`"5"` целым не считаются.
-
-    `bool` — подкласс `int` в Python, поэтому `max_rounds = true` прошёл бы
-    проверку «это целое» молча и превратил бы лимит раундов в единицу.
-    """
-    if key not in table:
-        raise KeyError(f"нет обязательного ключа limits.{key}")
-    value = table[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"limits.{key} обязан быть целым числом")
-    return value

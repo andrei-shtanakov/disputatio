@@ -24,12 +24,13 @@ toplevel репозитория, а `spec_path`/`plan_path`/каталог се�
 
 import os
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from disputatio.contracts import CHECKLIST_BY_CONTOUR, CHECKLIST_TEXT
+from disputatio.runtime import _toml
 from disputatio.runtime.errors import (
     ConfigError,
     DirtyWorkingTree,
@@ -89,8 +90,11 @@ class PipelineConfig:
     лежит `<anchor_path>/<fingerprint>/<anchor_id>.jsonl`, где `fingerprint`
     и `anchor_id` (= `pipeline_id`) вычисляются вызывающим кодом момента
     создания пайплайна, не здесь. Обязан канонически резолвиться ВНЕ
-    `workspace_root` (P9) — `check_run_preconditions`/`validate_anchor_path`
-    проверяют это fail-closed на каждом `run` и `resume`.
+    репозитория (P9) — если точнее, вне его TOPLEVEL, а не только вне
+    `workspace_root` сессии (фикс-раунд 1, Important-3: `clean()` идёт по
+    всему репозиторию, а не по `workspace_root`). `check_run_preconditions`/
+    `validate_anchor_path` проверяют это fail-closed на каждом `run` и
+    `resume`.
     """
 
     spec_path: Path
@@ -131,7 +135,7 @@ def load_pipeline_config(path: Path) -> PipelineConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path} не разбирается как TOML: {exc}") from exc
     try:
-        table = _table(raw, "pipeline")
+        table = _toml.table(raw, "pipeline")
         return _from_pipeline_table(table)
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"[pipeline] в {path} непригодна: {exc}") from exc
@@ -146,43 +150,73 @@ def check_run_preconditions(
     """Fail-closed предусловия `disp pipeline run` (§3.1 SPEC-002).
 
     Порядок — тот же, что в §3.1: чистое дерево, подходящая ветка, каталог
-    пайплайна отсутствует, `anchor_path` резолвится вне `workspace_root`.
-    Функция ничего не создаёт и не мутирует репозиторий: любое внешнее
-    действие (создание ветки, каталога, анкера) — решение, принимаемое ПОСЛЕ
-    успешных предусловий, отдельным шагом (§3.1: «runner ветку не создаёт»).
+    пайплайна отсутствует, `anchor_path` резолвится вне репозитория. Функция
+    ничего не создаёт и не мутирует репозиторий: любое внешнее действие
+    (создание ветки, каталога, анкера) — решение, принимаемое ПОСЛЕ успешных
+    предусловий, отдельным шагом (§3.1: «runner ветку не создаёт»).
+
+    Граница для `anchor_path` — TOPLEVEL репозитория, не `workspace_root`
+    (фикс-раунд 1, Important-3, решение team-lead — шире буквы §3.1 в
+    защищаемую сторону): `runtime/git.py::clean` идёт по `_TREE_PATHSPEC =
+    (":/", …)`, то есть по ВСЕМУ репозиторию, а не по `workspace_root`, и
+    анкер, лежащий между корнем сессии и toplevel, прошёл бы containment по
+    буквальному `workspace_root` и был бы снесён первым же `PROPOSING`.
     """
     _check_clean_tree(git)
     _check_branch(git, config, slug)
     _check_pipeline_dir_absent(workspace_root, slug)
-    validate_anchor_path(config.anchor_path, workspace_root)
+    validate_anchor_path(config.anchor_path, _toplevel_root(git, workspace_root))
 
 
-def validate_anchor_path(anchor_path: Path, workspace_root: Path) -> None:
-    """`anchor_path` обязан канонически резолвиться вне `workspace_root` (P9).
+def _toplevel_root(git: GitOps, workspace_root: Path) -> Path:
+    """Абсолютный путь toplevel репозитория — `workspace_root` минус префикс.
+
+    `GitOps.toplevel_prefix()` отдаёт ОТНОСИТЕЛЬНЫЙ путь `workspace_root` от
+    toplevel (`"proj/"`, либо `""`, когда они совпадают); порт не даёт
+    операции, отвечающей абсолютным путём toplevel напрямую (`--show-
+    toplevel` не заведён — задача 13 остановилась на минимально нужном).
+    Поднимаемся на каждый сегмент префикса от канонического
+    `workspace_root` — то же число `.parent`, каким git развернул бы `cwd`
+    обратно к toplevel.
+    """
+    canonical = workspace_root.expanduser().resolve()
+    prefix = git.toplevel_prefix()
+    segments = prefix.rstrip("/").split("/") if prefix else []
+    for _ in segments:
+        canonical = canonical.parent
+    return canonical
+
+
+def validate_anchor_path(anchor_path: Path, containment_root: Path) -> None:
+    """`anchor_path` обязан канонически резолвиться вне `containment_root` (P9).
 
     Общая проверка `run` и `resume` (§3.1: «та же проверка повторяется при
     каждом `resume`») — вынесена отдельной функцией, а не встроена в
     `check_run_preconditions`, ровно затем, чтобы resume мог переиспользовать
-    её без дублирования containment-логики.
+    её без дублирования containment-логики. Сама функция не знает про git и
+    про toplevel — она проверяет чистое containment одного пути в другом;
+    ВЫБОР границы (toplevel репозитория, а не буквальный `workspace_root` —
+    см. докстринг `check_run_preconditions`, Important-3) остаётся на
+    вызывающем.
 
     Канонизация — `expanduser` + `resolve`: без неё символическую ссылку,
-    ведущую внутрь `workspace_root`, либо `..`-путь, возвращающийся туда же,
-    проверка пропустила бы буквальным сравнением префиксов. `resolve()` не
-    требует существования пути (`strict=False` по умолчанию) — anchor_root
-    законно ещё не создан на первом `run`.
+    ведущую внутрь `containment_root`, либо `..`-путь, возвращающийся туда
+    же, проверка пропустила бы буквальным сравнением префиксов. `resolve()`
+    не требует существования пути (`strict=False` по умолчанию) —
+    anchor_root законно ещё не создан на первом `run`.
 
-    Совпадение с `workspace_root` — тоже нарушение, не только вложенность:
+    Совпадение с `containment_root` — тоже нарушение, не только вложенность:
     анкер, лежащий вровень с рабочим деревом, точно так же становится
     предметом собственной сверки, которую призван проверять.
     """
     canonical_anchor = anchor_path.expanduser().resolve()
-    canonical_workspace = workspace_root.expanduser().resolve()
-    if canonical_anchor.is_relative_to(canonical_workspace):
+    canonical_root = containment_root.expanduser().resolve()
+    if canonical_anchor.is_relative_to(canonical_root):
         raise ConfigError(
             f"anchor_path {anchor_path} резолвится в {canonical_anchor}, "
-            f"а он лежит внутри рабочего каталога {canonical_workspace} — "
-            "P9 требует, чтобы журнал целостности жил вне репозитория, "
-            "который он проверяет; укажите anchor_path вне workspace_root"
+            f"а он лежит внутри репозитория ({canonical_root}) — P9 требует, "
+            "чтобы журнал целостности жил вне репозитория, который он "
+            "проверяет; укажите anchor_path вне рабочего дерева"
         )
 
 
@@ -252,26 +286,27 @@ def _check_pipeline_dir_absent(workspace_root: Path, slug: str) -> None:
 
 def _from_pipeline_table(table: Mapping[str, Any]) -> PipelineConfig:
     """Собирает `PipelineConfig` из разобранной таблицы `[pipeline]`."""
+    where = "pipeline"
     kwargs: dict[str, Any] = {
-        "spec_path": Path(_text(table, "spec_path", where="pipeline")),
-        "plan_path": Path(_text(table, "plan_path", where="pipeline")),
+        "spec_path": Path(_toml.text(table, "spec_path", where=where)),
+        "plan_path": Path(_toml.text(table, "plan_path", where=where)),
     }
     if "max_architectural_returns" in table:
-        kwargs["max_architectural_returns"] = _integer(
-            table, "max_architectural_returns", where="pipeline"
+        kwargs["max_architectural_returns"] = _toml.integer(
+            table, "max_architectural_returns", where=where
         )
     if "soft_max_pipeline_tokens" in table:
-        kwargs["soft_max_pipeline_tokens"] = _integer(
-            table, "soft_max_pipeline_tokens", where="pipeline"
+        kwargs["soft_max_pipeline_tokens"] = _toml.integer(
+            table, "soft_max_pipeline_tokens", where=where
         )
     if "soft_max_pipeline_wall_seconds" in table:
-        kwargs["soft_max_pipeline_wall_seconds"] = _integer(
-            table, "soft_max_pipeline_wall_seconds", where="pipeline"
+        kwargs["soft_max_pipeline_wall_seconds"] = _toml.integer(
+            table, "soft_max_pipeline_wall_seconds", where=where
         )
     if "protected_branches" in table:
-        kwargs["protected_branches"] = _texts(table, "protected_branches")
+        kwargs["protected_branches"] = _toml.texts(table, "protected_branches")
     if "anchor_path" in table:
-        kwargs["anchor_path"] = Path(_text(table, "anchor_path", where="pipeline"))
+        kwargs["anchor_path"] = Path(_toml.text(table, "anchor_path", where=where))
     if "checklists" in table:
         kwargs["checklists"] = _checklists(table["checklists"])
     kwargs["extra_gates"] = _extra_gates(table)
@@ -286,7 +321,10 @@ def _extra_gates(table: Mapping[str, Any]) -> tuple[GateSpec, ...]:
     затем переводит `load_pipeline_config`: перепутать переопределение
     baseline с опечаткой ключа значило бы дать пользователю неверный совет.
     """
-    gates = tuple(_gate(item) for item in _gate_tables(table))
+    gates = tuple(
+        _toml.gate(item, where="pipeline.gates")
+        for item in _toml.table_array(table, "gates")
+    )
     for gate in gates:
         if gate.name in BASELINE_GATE_NAMES:
             raise ConfigError(
@@ -299,81 +337,40 @@ def _extra_gates(table: Mapping[str, Any]) -> tuple[GateSpec, ...]:
 
 
 def _checklists(value: Any) -> dict[str, dict[str, str]]:
-    """`[pipeline.checklists.<contour>]` → `{contour: {id: text}}` (§5.3)."""
+    """`[pipeline.checklists.<contour>]` — merge поверх вендоренного дефолта
+    задачи 2, по контуру и по id (§5.3, фикс-раунд 1, Important-1).
+
+    Merge, а не замена: override одного `S1` не вправе тихо унести остальные
+    пункты `spec` и весь контур `pair` — чеклист сходимости определяет
+    критерий, по которому судят ревьюера, и «одна строка override молча
+    выключает P1–P5» была бы единственным местом §5.3, не fail-closed.
+    Неизвестный контур или id — тоже `ConfigError`, а не тихое добавление:
+    опечатка в имени контура иначе дала бы конфиг без обоих контуров молча,
+    а опечатка в id — чеклист с пунктом, которого ревьюер никогда не увидит
+    покрытым ни дефолтом, ни override.
+    """
     if not isinstance(value, Mapping):
         raise TypeError("pipeline.checklists обязана быть таблицей")
-    result: dict[str, dict[str, str]] = {}
+    merged = _default_checklists()
     for contour, items in value.items():
+        if contour not in merged:
+            raise ConfigError(
+                f"[pipeline.checklists.{contour}] называет неизвестный "
+                f"контур {contour!r} — допустимые контуры: "
+                f"{sorted(merged)}"
+            )
         if not isinstance(items, Mapping):
             raise TypeError(f"pipeline.checklists.{contour} обязана быть таблицей")
-        checklist: dict[str, str] = {}
         for item_id, text in items.items():
+            if item_id not in merged[contour]:
+                raise ConfigError(
+                    f"[pipeline.checklists.{contour}] называет неизвестный "
+                    f"пункт {item_id!r} — допустимые id: "
+                    f"{sorted(merged[contour])}"
+                )
             if not isinstance(text, str):
                 raise TypeError(
                     f"pipeline.checklists.{contour}.{item_id} обязан быть строкой"
                 )
-            checklist[item_id] = text
-        result[contour] = checklist
-    return result
-
-
-def _gate_tables(table: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
-    """Массив `[[pipeline.gates]]`; отсутствие — пустой список, не ошибка."""
-    value = table.get("gates", [])
-    if not isinstance(value, list):
-        raise TypeError("[[pipeline.gates]] обязан быть массивом таблиц")
-    for item in value:
-        if not isinstance(item, Mapping):
-            raise TypeError("элемент [[pipeline.gates]] обязан быть таблицей")
-    return value
-
-
-def _gate(item: Mapping[str, Any]) -> GateSpec:
-    """Один `GateSpec` из элемента `[[pipeline.gates]]`."""
-    enabled = item.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise TypeError("pipeline.gates.enabled обязан быть true/false")
-    return GateSpec(
-        name=_text(item, "name", where="pipeline.gates"),
-        cmd=_text(item, "cmd", where="pipeline.gates"),
-        enabled=enabled,
-    )
-
-
-def _table(raw: Mapping[str, Any], name: str) -> Mapping[str, Any]:
-    """Обязательная таблица верхнего уровня; иначе `KeyError`/`TypeError`."""
-    if name not in raw:
-        raise KeyError(f"нет обязательной таблицы [{name}]")
-    value = raw[name]
-    if not isinstance(value, Mapping):
-        raise TypeError(f"[{name}] обязана быть таблицей, а не {type(value).__name__}")
-    return value
-
-
-def _text(table: Mapping[str, Any], key: str, *, where: str) -> str:
-    """Обязательное строковое значение таблицы `where`."""
-    if key not in table:
-        raise KeyError(f"нет обязательного ключа {where}.{key}")
-    value = table[key]
-    if not isinstance(value, str):
-        raise TypeError(f"{where}.{key} обязан быть строкой")
-    return value
-
-
-def _texts(table: Mapping[str, Any], key: str) -> tuple[str, ...]:
-    """Массив строк; каждый элемент обязан быть строкой."""
-    value = table.get(key, [])
-    if not isinstance(value, list):
-        raise TypeError(f"{key} обязан быть массивом строк")
-    for item in value:
-        if not isinstance(item, str):
-            raise TypeError(f"элемент {key} обязан быть строкой")
-    return tuple(value)
-
-
-def _integer(table: Mapping[str, Any], key: str, *, where: str) -> int:
-    """Целое поле `where.key`; `bool` — подкласс `int`, но не считается."""
-    value = table[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{where}.{key} обязан быть целым числом")
-    return value
+            merged[contour][item_id] = text
+    return merged
