@@ -157,6 +157,57 @@ def test_inline_code_line_ref_is_recognized() -> None:
     assert refs[0].target == "src/disputatio/verifier/doc_gates.py:42"
 
 
+def test_code_line_ref_with_matching_trailing_quote_sets_expected_text() -> None:
+    doc_refs = _import_doc_refs()
+    text = "См. `src/mod.py:2` («b = 2») за деталями.\n"
+
+    refs = doc_refs.parse_doc_refs(text)
+
+    assert len(refs) == 1
+    assert refs[0].kind == "code_line_ref"
+    assert refs[0].expected_text == "b = 2"
+
+
+# ---------------------------------------------------------------------------
+# expected_text — форма фиксирована однозначно (фикс-раунд 1, Important-2):
+# обманные формы обязаны давать `expected_text is None`, а не угаданное
+# значение (fail-closed на распознавании, не на сравнении).
+# ---------------------------------------------------------------------------
+
+
+def test_code_line_ref_with_comma_before_quote_is_not_expected_text() -> None:
+    """Запятая между спаном и скобкой — не часть зафиксированной формы."""
+    doc_refs = _import_doc_refs()
+    text = "См. `src/mod.py:2`, («b = 2»).\n"
+
+    refs = doc_refs.parse_doc_refs(text)
+
+    assert len(refs) == 1
+    assert refs[0].expected_text is None
+
+
+def test_code_line_ref_with_quote_on_next_line_is_not_expected_text() -> None:
+    """Кавычки на следующей строке — форма привязана к той же строке."""
+    doc_refs = _import_doc_refs()
+    text = "См. `src/mod.py:2`\n(«b = 2»).\n"
+
+    refs = doc_refs.parse_doc_refs(text)
+
+    assert len(refs) == 1
+    assert refs[0].expected_text is None
+
+
+def test_code_line_ref_with_straight_quotes_is_not_expected_text() -> None:
+    """Прямые кавычки вместо «ёлочек» — не распознаются эвристически."""
+    doc_refs = _import_doc_refs()
+    text = 'См. `src/mod.py:2` ("b = 2").\n'
+
+    refs = doc_refs.parse_doc_refs(text)
+
+    assert len(refs) == 1
+    assert refs[0].expected_text is None
+
+
 def test_inline_code_without_slash_is_not_a_path() -> None:
     """`pytest`, `v1.2.3` — не пути: нет `/`, распознавание не эвристическое."""
     doc_refs = _import_doc_refs()

@@ -100,6 +100,22 @@ def test_gate_doc_line_refs_skips_on_missing_document(tmp_path: Path) -> None:
     assert result.reason
 
 
+def test_line_ref_with_unrecognized_quote_form_only_checks_existence(
+    tmp_path: Path,
+) -> None:
+    """Important-2 (фикс-раунд 1): прямые кавычки — не форма `expected_text`
+    (см. `test_doc_refs.py`), парсер отдаёт `expected_text is None` — гейт
+    обязан свестись к проверке существования строки, не выдумывать
+    сравнение и не падать на нём."""
+    _write(tmp_path / "src" / "mod.py", "a = 1\nb = 999\nc = 3\n")
+    doc = _write(tmp_path / "spec.md", 'См. `src/mod.py:2` ("b = 2").\n')
+
+    result = doc_gates.gate_doc_line_refs(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
 def test_gate_doc_line_refs_ignores_non_line_ref_kinds(tmp_path: Path) -> None:
     """`code_path`/`md_link` не должны попадать в `doc-line-refs`."""
     _write(tmp_path / "docs" / "plans" / "foo.md", "# Foo\n")
@@ -155,11 +171,46 @@ def test_scope_patch_touching_disallowed_path_fails() -> None:
 
     assert result.status is GateStatus.FAIL
     entries = _tail_entries(result.tail)
-    assert entries == [{"code": "scope_escape", "target": "other.py", "line": 9}]
+    # Путь фиксируется по первому заголовку, где он встретился (`--- a/…`),
+    # а не по каждому заголовку, где он назван — иначе обычная правка того
+    # же файла дала бы две записи вместо одной (см. gate_doc_scope).
+    assert entries == [{"code": "scope_escape", "target": "other.py", "line": 8}]
 
 
 def test_scope_empty_patch_passes() -> None:
     result = doc_gates.gate_doc_scope("", ("spec.md",))
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_scope_pure_rename_outside_allowed_fails() -> None:
+    """Critical (фикс-раунд 1): `git mv` без правки содержимого печатает
+    только `rename from`/`rename to`, без пары `---`/`+++` вовсе."""
+    patch = (
+        "diff --git a/spec.md b/other/spec.md\n"
+        "similarity index 100%\n"
+        "rename from spec.md\n"
+        "rename to other/spec.md\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
+
+    assert result.status is GateStatus.FAIL
+    entries = _tail_entries(result.tail)
+    assert entries == [{"code": "scope_escape", "target": "other/spec.md", "line": 4}]
+
+
+def test_scope_pure_rename_within_allowed_passes() -> None:
+    """Переименование целиком внутри `allowed` не должно фейлить раунд."""
+    patch = (
+        "diff --git a/spec.md b/spec.md.bak\n"
+        "similarity index 100%\n"
+        "rename from spec.md\n"
+        "rename to spec.md.bak\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md", "spec.md.bak"))
 
     assert result.status is GateStatus.PASS
     assert _tail_entries(result.tail) == []

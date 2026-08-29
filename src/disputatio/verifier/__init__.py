@@ -7,6 +7,23 @@ CLI ([REQ-010]).
 """
 
 from disputatio.verifier.config import GateSpec
+from disputatio.verifier.doc_gates import (
+    gate_doc_anchors,
+    gate_doc_line_refs,
+    gate_doc_links,
+    gate_doc_paths,
+    gate_doc_scope,
+)
+from disputatio.verifier.doc_verifier import DocVerifier
 from disputatio.verifier.runner_impl import VerifierRunner
 
-__all__ = ["GateSpec", "VerifierRunner"]
+__all__ = [
+    "DocVerifier",
+    "GateSpec",
+    "VerifierRunner",
+    "gate_doc_anchors",
+    "gate_doc_line_refs",
+    "gate_doc_links",
+    "gate_doc_paths",
+    "gate_doc_scope",
+]

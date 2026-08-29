@@ -211,48 +211,55 @@ def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
 
 _DIFF_MINUS_RE = re.compile(r"^--- (?:a/(?P<path>.+)|/dev/null)$")
 _DIFF_PLUS_RE = re.compile(r"^\+\+\+ (?:b/(?P<path>.+)|/dev/null)$")
+_RENAME_FROM_RE = re.compile(r"^rename from (?P<path>.+)$")
+_RENAME_TO_RE = re.compile(r"^rename to (?P<path>.+)$")
+_DIFF_PATH_PATTERNS = (
+    _DIFF_MINUS_RE,
+    _DIFF_PLUS_RE,
+    _RENAME_FROM_RE,
+    _RENAME_TO_RE,
+)
 
 
 def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
     """Диф раунда трогает только пути из `allowed` (§6, doc-scope).
 
-    Пути читаются из парных заголовков unified diff — `--- a/<path>`
-    сразу за ней `+++ b/<path>` (`/dev/null` на любой стороне — сторона
-    создания/удаления файла, не путь): эта форма однозначна и не требует
-    разбора неоднозначной `diff --git a/… b/…` строки с пробелом-
-    разделителем, который в общем случае не отличим от пробела в самом
-    имени файла. Обычная правка называет один и тот же путь в обеих строках
-    заголовка — он даёт ровно одну запись, не две; переименование называет
-    разные пути на `---`/`+++` — проверяются оба, каждый в `allowed` или нет
-    сам по себе. Каждый непустой путь вне `allowed` даёт `scope_escape` —
-    граница контура, а не список для галочки.
+    Пути читаются из заголовков unified diff — `--- a/<path>`/`+++ b/<path>`
+    (`/dev/null` на любой стороне — сторона создания/удаления файла, не
+    путь) — и из `rename from <path>`/`rename to <path>`: **чистое**
+    переименование (`git mv` без правки содержимого) печатает ТОЛЬКО пару
+    `rename from`/`rename to`, без `---`/`+++` вовсе — пропуск этой формы
+    открыл бы обход всего baseline одной командой (фикс-раунд 1, Critical:
+    ревьюер воспроизвёл живым `git mv`, четыре content-гейта уходят в
+    `skip`, потому что документ по старому пути исчезает, а `doc-scope` без
+    этой формы молчал). Эта форма однозначна и не требует разбора
+    неоднозначной `diff --git a/… b/…` строки с пробелом-разделителем,
+    который в общем случае не отличим от пробела в самом имени файла.
+
+    Путь фиксируется по **первому** заголовку, где он встретился: обычная
+    правка называет один и тот же путь и в `---`, и в `+++` — одна запись,
+    не две; переименование с одновременной правкой содержимого печатает обе
+    формы для разных путей (`rename from`/`to` и следом `---`/`+++` с теми
+    же двумя путями) — дедуп по пути на весь патч не даёт задвоения записи
+    об одном и том же файле. Каждый непустой путь вне `allowed` даёт
+    `scope_escape` — граница контура, а не список для галочки.
     """
     allowed_set = set(allowed)
-    entries: list[dict[str, object]] = []
-    lines = patch.splitlines()
-    index = 0
-    total = len(lines)
-    while index < total:
-        minus_match = _DIFF_MINUS_RE.match(lines[index])
-        if minus_match is None:
-            index += 1
-            continue
-        plus_match = (
-            _DIFF_PLUS_RE.match(lines[index + 1]) if index + 1 < total else None
-        )
-        lineno = index + 2  # 1-based номер строки `+++` (или следующей за `---`)
-        paths = {
-            path
-            for path in (
-                minus_match.group("path"),
-                plus_match.group("path") if plus_match else None,
-            )
-            if path is not None
-        }
-        for path in sorted(paths):
-            if path not in allowed_set:
-                entries.append(_entry(CODE_SCOPE_ESCAPE, path, lineno))
-        index += 2 if plus_match else 1
+    first_seen: dict[str, int] = {}
+    for lineno, raw_line in enumerate(patch.splitlines(), start=1):
+        for pattern in _DIFF_PATH_PATTERNS:
+            match = pattern.match(raw_line)
+            if match is None:
+                continue
+            path = match.group("path")
+            if path is not None and path not in first_seen:
+                first_seen[path] = lineno
+            break
+    entries = [
+        _entry(CODE_SCOPE_ESCAPE, path, lineno)
+        for path, lineno in first_seen.items()
+        if path not in allowed_set
+    ]
     status = GateStatus.FAIL if entries else GateStatus.PASS
     return _build_result("doc-scope", "internal:doc-scope", status, entries)
 

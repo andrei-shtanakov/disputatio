@@ -53,11 +53,26 @@ class DocVerifier:
     ) -> None:
         """Запоминает конфигурацию прогона; ничего не запускает.
 
+        `doc_paths` обязан быть непустым: пустой кортеж выключил бы четыре
+        из пяти baseline-гейтов (`doc-paths`/`doc-links`/`doc-anchors`/
+        `doc-line-refs` попросту не итерируются) — тот же запрещённый §6
+        "флаг отключения", только выраженный типом входа, а не булем
+        конфигурации (фикс-раунд 1, Critical: пустой `doc_paths` — не
+        гипотетический кейс, а обязательный вход по аннотации типа, значит
+        и вызывающий код мог собрать его пустым по ошибке). Отказ здесь, а
+        не молчаливый пропуск гейтов — тот же принцип, что и `tail_lines`
+        у `VerifierRunner`.
+
         `extra` копируется в `list` — тот же довод, что и у
         `VerifierRunner`: список принадлежит вызывающему коду, и его
         последующая правка не должна менять состав уже настроенного
         верификатора.
         """
+        if not doc_paths:
+            raise ValueError(
+                "doc_paths must not be empty: doc-paths/doc-links/"
+                "doc-anchors/doc-line-refs would never run"
+            )
         self._doc_paths = doc_paths
         self._allowed = allowed
         self._repo_root = repo_root
