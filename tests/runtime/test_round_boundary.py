@@ -19,6 +19,10 @@
   обязательного возврата к спеке (P6). Оба стоп-условия проверяются
   параметрами одного теста: они возвращаются из разных веток `decide()`, и
   пройденный `max_rounds` ничего не говорит про бюджет.
+* **Прокладка `resume_session` везёт политику до цикла.** Отдельным
+  утверждением, потому что теряется она отдельно: тесты, зовущие `drive`
+  напрямую, потерю kwarg'а в `resume_session` не видят вовсе. А поднимает
+  припаркованные сессии runner пайплайна именно этим вызовом.
 
 Подменены ровно три порта — автор, ревьюер и верификатор: первые два
 разговаривают с сетью, третий запускает чужие процессы. Git настоящий во
@@ -31,6 +35,7 @@
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -61,11 +66,22 @@ from disputatio.contracts import (
     VerificationReport,
 )
 from disputatio.core import SessionFsm
-from disputatio.events import FileStateStore, JsonlEventSink, bootstrap_session
+from disputatio.events import (
+    FileStateStore,
+    JsonlEventSink,
+    bootstrap_session,
+    write_config_snapshot,
+)
 from disputatio.events.paths import events_jsonl_path, result_dir, session_dir
-from disputatio.runtime import GitCli, RuntimeDeps
+from disputatio.runtime import (
+    AgentConfig,
+    GitCli,
+    LimitsConfig,
+    RuntimeConfig,
+    RuntimeDeps,
+)
 from disputatio.runtime.layout import DECISION_NAME, round_artifact, round_dir
-from disputatio.runtime.loop import drive
+from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.steps import StepContext
 from disputatio.verifier import GateSpec
 
@@ -75,6 +91,10 @@ _CLOCK_STEP = timedelta(seconds=1)
 _MONOTONIC_STEP = 0.25
 
 _GATE = GateSpec(name="pytest", cmd="uv run pytest -q", enabled=True)
+
+# Имя фейкового адаптера в реестре композиции — нужно только
+# `resume_session`, который собирает порты сам, из снапшота конфига.
+_ADAPTER_NAME = "boundary_fake"
 
 # Эталон дефолтного прогона: две итерации раунда и терминальная цепочка §5.
 # Список сверяется целиком, а не по вхождению: пропущенный переход и лишний
@@ -145,6 +165,27 @@ class ScriptedReviewer:
         self.prompts.append(prompt)
         assert self.replies, f"ревьюера позвали лишний раз (вызов {len(self.prompts)})"
         return AgentTurn(text=self.replies.pop(0), session_ref=session_ref)
+
+
+@dataclass
+class BarrenAgent:
+    """`AgentAdapter`-фейк, у которого нет ответа ни на один промпт.
+
+    Существует ради диагноза, а не ради сценария: промпт ему приходит
+    только если припаркованная сессия двинулась дальше, и сообщение обязано
+    назвать роль и фазу — иначе потерянная прокладка политики читалась бы
+    как «у фейка кончилась очередь ответов».
+    """
+
+    role: Role
+
+    async def run(self, prompt: str, *, session_ref: str | None = None) -> AgentTurn:
+        """Любой вызов — ошибка: припаркованная сессия не зовёт никого."""
+        raise AssertionError(
+            f"припаркованная сессия позвала агента ({self.role.value}): "
+            "resume прошёл границу раунда, то есть политика до цикла не "
+            "доехала"
+        )
 
 
 @dataclass
@@ -339,6 +380,102 @@ def test_park_wins_over_stop_conditions(
     assert [review.round for review in policy.seen] == [1]
 
 
+def test_resume_forwards_the_boundary_policy(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Припаркованная сессия, поднятая `resume_session`, паркуется снова.
+
+    Шов проверяется отдельно от `drive`, потому что теряется он отдельно:
+    политику в `resume_session` передаёт вызывающий, а до цикла её везёт
+    прокладка — и молчаливая её потеря не видна ни одному тесту, который
+    зовёт `drive` напрямую. Цена конкретна: припаркованные сессии
+    runner пайплайна поднимает именно этим вызовом, и сессия без политики
+    ушла бы в `decide()` и в эскалацию — ровно та поломка P6, ради которой
+    точка опроса и выбрана до решения.
+
+    Сессия для resume не сочиняется руками, а получается прогоном: `drive`
+    с парковочной политикой оставляет на диске раунд 1 без `decision.json` и
+    `session.json` в `DECIDING` — то самое состояние, которое runner увидит.
+    """
+    _register_agents_for_resume(monkeypatch)
+    ctx, author, reviewer = _prepared(git_repo, architectural=True)
+    write_config_snapshot(git_repo, _config().render_toml())
+    parked = anyio.run(lambda: drive(ctx, round_boundary=ArchitecturalPolicy()))
+    assert parked.state is SessionPhase.DECIDING
+
+    journal_before = events_jsonl_path(git_repo).read_bytes()
+    policy = ArchitecturalPolicy()
+
+    resumed = anyio.run(lambda: _resume(git_repo, round_boundary=policy))
+
+    assert resumed.state is SessionPhase.DECIDING
+    assert resumed.current_round == 1
+    assert [review.round for review in policy.seen] == [1]
+    # Потеряй прокладка политику — сессия дошла бы до `decide()`: появился бы
+    # `decision.json`, раунд закрылся бы коммитом, а автор получил бы промпт
+    # раунда 2. Каждый из трёх фактов проверяется отдельно, потому что
+    # потерять их можно порознь.
+    assert not round_artifact(git_repo, 1, DECISION_NAME).exists()
+    assert len(author.prompts) == 1
+    assert len(reviewer.prompts) == 1
+    # Опрос стоит до первого шага, поэтому resume припаркованной сессии не
+    # пишет в журнал вовсе: ни перехода, ни события.
+    assert events_jsonl_path(git_repo).read_bytes() == journal_before
+
+
+async def _resume(root: Path, *, round_boundary: ArchitecturalPolicy) -> SessionState:
+    """Поднимает сессию штатным `resume_session` — тем же, что зовёт CLI."""
+    clocks = Clocks()
+    return await resume_session(
+        root,
+        _SESSION_ID,
+        round_boundary=round_boundary,
+        git=GitCli(root),
+        verifier=GreenVerifier(),
+        now=clocks.now,
+        monotonic=clocks.monotonic,
+    )
+
+
+def _register_agents_for_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ставит запрет на агентов в реестр композиции для `resume_session`.
+
+    `resume_session` собирает порты сам, из снапшота конфига, и подсунуть
+    ему готовый адаптер больше негде. Фабрика отдаёт агента, который падает
+    от первого же промпта: припаркованная сессия не вправе звать никого, и
+    молчаливый лишний вызов обязан упасть там, где он случился, назвав роль.
+    """
+    composition = import_module("disputatio.runtime.composition")
+
+    def factory(
+        *, role: Role, session_dir: Path, event_sink: object, session: str
+    ) -> "BarrenAgent":
+        """Агент, которому нечего ответить: любой промпт ему фатален."""
+        return BarrenAgent(role=role)
+
+    monkeypatch.setitem(composition.ADAPTER_FACTORIES, _ADAPTER_NAME, factory)
+
+
+def _config() -> RuntimeConfig:
+    """Снапшот конфига сессии — вход `resume_session`."""
+    return RuntimeConfig(
+        session_id=_SESSION_ID,
+        mode=Mode.DEVELOP,
+        base_commit="HEAD",
+        task_prompt="ЗАДАЧА-ПОЛЬЗОВАТЕЛЯ: почини экспорт CSV",
+        author=AgentConfig(adapter=_ADAPTER_NAME, model="opus"),
+        reviewer=AgentConfig(adapter=_ADAPTER_NAME, model="sonnet"),
+        limits=LimitsConfig(
+            max_rounds=5,
+            max_total_tokens=100_000,
+            max_wall_seconds=600,
+            schema_retries=1,
+        ),
+        gates=(_GATE,),
+        attachments=(),
+    )
+
+
 def _prepared(
     root: Path,
     *,
@@ -406,8 +543,12 @@ def _state(*, limits: Limits | None = None, tokens_used: int = 0) -> SessionStat
             mode=Mode.DEVELOP,
         ),
         agents={
-            Role.AUTHOR: AgentRef(adapter="fake", model="opus", session_ref=None),
-            Role.REVIEWER: AgentRef(adapter="fake", model="sonnet", session_ref=None),
+            Role.AUTHOR: AgentRef(
+                adapter=_ADAPTER_NAME, model="opus", session_ref=None
+            ),
+            Role.REVIEWER: AgentRef(
+                adapter=_ADAPTER_NAME, model="sonnet", session_ref=None
+            ),
         },
         limits=limits
         if limits is not None
