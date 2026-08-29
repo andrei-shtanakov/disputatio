@@ -2,7 +2,7 @@
 
 P9 говорит про **ход автора**, а ход — это один вызов адаптера, а не один
 раунд: внутри одного `PROPOSING` их несколько, если вывод не прошёл схему и
-сработал `schema_retries`. Отсюда три утверждения набора.
+сработал `schema_retries`. Отсюда четыре утверждения набора.
 
 * **Счёт идёт по вызовам адаптера, а не по раундам и не по агентам.**
   Ревьюер лицензии на запись не имеет вовсе (§7), и обрамлять его ход
@@ -17,11 +17,17 @@ P9 говорит про **ход автора**, а ход — это один 
   иначе следующий `resume` счёл бы сессию активной — и подмену control plane
   никто не заметил бы во второй раз. Причина уходит в журнал событием
   `error` с кодом `invariant_violation`.
+* **Прокладка `resume_session` везёт политику до цикла.** Отдельным
+  утверждением, потому что теряется она отдельно и тише всех прочих: снятый
+  `lifecycle=` не сдвигает ни маршрута, ни артефактов — ходы автора просто
+  остаются без обрамления. А именно эту тропу P9 называет своей: снапшот
+  durable, поэтому kill во время хода автора окна не открывает — resume
+  обязан провести ту же сверку.
 
 Порты подменены по тем же причинам, что и в `test_round_boundary.py`: автор,
 ревьюер и верификатор — фейки, git настоящий во временном репозитории (цель
 сброса раунда 2 вычисляется по истории), журнал и хранилище настоящие —
-утверждения третьего теста именно о них.
+утверждения про fail-closed и про resume именно о них.
 """
 
 import json
@@ -308,12 +314,69 @@ def test_lifecycle_error_fails_session(
     assert len(author.prompts) == seen_before_resume
 
 
-async def _resume(root: Path) -> SessionState:
+def test_resume_forwards_the_lifecycle_policy(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ход автора на тропе resume обрамлён так же, как на холодном старте.
+
+    Шов проверяется отдельно от `drive` и отдельно от границы раунда, потому
+    что теряется он отдельно: снятый `lifecycle=` в прокладке
+    `resume_session` не сдвигает ни маршрута, ни артефактов — ходы автора
+    просто остаются без обрамления, и не замечает этого никто.
+
+    Именно эту тропу P9 называет своей: снапшот durable, поэтому kill во
+    время хода автора окна не открывает — resume обязан провести ту же
+    сверку. Сессия, durable-но стоящая в `PROPOSING` (ровно то, что
+    оставляет убитый посреди хода процесс), поднимается штатным
+    `resume_session`, и пара before/after обязана состояться.
+    """
+    log: list[str] = []
+    author = ScriptedAgent(
+        role=Role.AUTHOR, root=git_repo, replies=[_proposal(1)], log=log
+    )
+    reviewer = ScriptedAgent(
+        role=Role.REVIEWER, root=git_repo, replies=[_request_changes(1)], log=log
+    )
+    policy = SpyLifecycle(log=log)
+    _seed_interrupted_author_turn(git_repo)
+    _register_agents(monkeypatch, author=author, reviewer=reviewer)
+
+    resumed = anyio.run(lambda: _resume(git_repo, lifecycle=policy))
+
+    # `max_rounds=1` в сохранённом состоянии: раунд доигрывается до
+    # терминала, поэтому тест смотрит на завершённую сессию, а не на
+    # оборванную на полпути.
+    assert resumed.state is SessionPhase.DONE
+    assert len(author.prompts) == 1
+    assert policy.pairs == 1
+    assert log[:3] == ["before", "run:author:1", "after"]
+    assert policy.phases == [SessionPhase.PROPOSING.value] * 2
+    assert len(reviewer.prompts) == 1
+
+
+def _seed_interrupted_author_turn(root: Path) -> None:
+    """Кладёт на диск сессию, durable-но стоящую в `PROPOSING` раунда 1.
+
+    Состояние пишется прямо в хранилище, а не получается прогоном: цикл
+    доводит `PROPOSING` до конца, и оборвать его посреди хода можно только
+    падением фейка — то есть лишним агентом, который к утверждению теста
+    отношения не имеет. Записанное здесь — ровно то, что оставляет убитый
+    посреди хода процесс, и ровно то, что увидит resume.
+    """
+    bootstrap_session(root)
+    write_config_snapshot(root, _config().render_toml())
+    FileStateStore(root).save(
+        _state(limits=_limits(max_rounds=1), phase=SessionPhase.PROPOSING, round_no=1)
+    )
+
+
+async def _resume(root: Path, *, lifecycle: SpyLifecycle | None = None) -> SessionState:
     """Поднимает сессию штатным `resume_session` — тем же, что зовёт CLI."""
     clocks = Clocks()
     return await resume_session(
         root,
         _SESSION_ID,
+        lifecycle=lifecycle,
         git=GitCli(root),
         verifier=GreenVerifier(),
         now=clocks.now,
@@ -406,13 +469,18 @@ def _config() -> RuntimeConfig:
     )
 
 
-def _state(*, limits: Limits | None = None) -> SessionState:
-    """Стартовое состояние сессии: `IDLE`, раунд 0."""
+def _state(
+    *,
+    limits: Limits | None = None,
+    phase: SessionPhase = SessionPhase.IDLE,
+    round_no: int = 0,
+) -> SessionState:
+    """Состояние сессии; по умолчанию стартовое — `IDLE`, раунд 0."""
     return SessionState(
         session_id=_SESSION_ID,
         created_at=_CREATED_AT,
-        state=SessionPhase.IDLE,
-        current_round=0,
+        state=phase,
+        current_round=round_no,
         task=TaskSpec(
             prompt="ЗАДАЧА-ПОЛЬЗОВАТЕЛЯ: почини экспорт CSV",
             attachments=[],

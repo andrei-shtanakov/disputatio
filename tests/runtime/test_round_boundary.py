@@ -398,7 +398,7 @@ def test_resume_forwards_the_boundary_policy(
     `session.json` в `DECIDING` — то самое состояние, которое runner увидит.
     """
     _register_agents_for_resume(monkeypatch)
-    ctx, author, reviewer = _prepared(git_repo, architectural=True)
+    ctx, _, _ = _prepared(git_repo, architectural=True)
     write_config_snapshot(git_repo, _config().render_toml())
     parked = anyio.run(lambda: drive(ctx, round_boundary=ArchitecturalPolicy()))
     assert parked.state is SessionPhase.DECIDING
@@ -411,13 +411,12 @@ def test_resume_forwards_the_boundary_policy(
     assert resumed.state is SessionPhase.DECIDING
     assert resumed.current_round == 1
     assert [review.round for review in policy.seen] == [1]
-    # Потеряй прокладка политику — сессия дошла бы до `decide()`: появился бы
-    # `decision.json`, раунд закрылся бы коммитом, а автор получил бы промпт
-    # раунда 2. Каждый из трёх фактов проверяется отдельно, потому что
-    # потерять их можно порознь.
+    # Потеряй прокладка политику — сессия дошла бы до `decide()`, и это видно
+    # двумя независимыми способами: появился бы `decision.json` раунда, а
+    # раунд 2 позвал бы агента. Второе ловит не счётчик, а сам `BarrenAgent`:
+    # на тропе resume агенты собраны из снапшота конфига, поэтому промпт
+    # уходит ему, а не фейкам до-resume прогона.
     assert not round_artifact(git_repo, 1, DECISION_NAME).exists()
-    assert len(author.prompts) == 1
-    assert len(reviewer.prompts) == 1
     # Опрос стоит до первого шага, поэтому resume припаркованной сессии не
     # пишет в журнал вовсе: ни перехода, ни события.
     assert events_jsonl_path(git_repo).read_bytes() == journal_before
