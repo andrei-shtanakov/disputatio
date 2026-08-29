@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
+from disputatio.contracts.base import SCHEMA_V2
 from disputatio.contracts.verification import VerificationReport
 from disputatio.verifier.aggregate import compute_overall
 from disputatio.verifier.config import GateSpec
@@ -111,6 +112,12 @@ class DocVerifier:
         gates.append(gate_doc_scope(self._patch_reader(round_no), self._allowed))
         gates.extend(run_gate(spec, self._repo_root) for spec in self._extra)
         return VerificationReport(
+            # `disputatio/v2` безусловно: этот верификатор существует только
+            # для doc-контуров, а §5.1 SPEC-002 требует, чтобы артефакты
+            # doc-сессии несли тег v2. Развилки по режиму здесь нет и быть не
+            # должно — `VerifierRunner` остаётся v1-писателем, и два тега
+            # различаются реализацией, а не флагом.
+            schema=SCHEMA_V2,
             round=round_no,
             gates=gates,
             overall=compute_overall(gates),

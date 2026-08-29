@@ -1172,3 +1172,33 @@ def test_operator_flags_are_mutually_exclusive(
 
     assert raised.value.code == EXIT_ERROR
     assert not stand.pipeline_dir().exists()
+
+
+def test_document_session_artifacts_carry_the_v2_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Все артефакты doc-сессии несут `disputatio/v2` (§5.1 SPEC-002).
+
+    Тег описывает семейство артефакта, а не набор заполненных полей: под v1
+    `session.json` doc-режим попросту не принимает, а `verification.json` и
+    `decision.json` v2-полей не имеют — и именно поэтому разойтись могли бы
+    молча. `review.json` держится сам: V1 требует чеклист, а чеклист под
+    тегом v1 отвергает схема.
+
+    Проверяются оба контура: `DocVerifier` пишет тег безусловно, а
+    `decide_step` — по режиму сессии, и две развилки обязаны сойтись на
+    одном значении.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    for session_id in ("spec-r1", "pair-r1"):
+        assert stand.session_state(session_id).schema_ == SCHEMA_V2, session_id
+        for round_no in (1, 2):
+            for name in ("verification.json", "review.json", "decision.json"):
+                payload = json.loads(
+                    (stand.round_dir(session_id, round_no) / name).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                assert payload["schema"] == SCHEMA_V2, f"{session_id}/{round_no}/{name}"

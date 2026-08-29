@@ -34,6 +34,8 @@ from disputatio.context import (
 )
 from disputatio.contracts import (
     CHECKLIST_BY_CONTOUR,
+    SCHEMA_V1,
+    SCHEMA_V2,
     AgentTurn,
     Decision,
     Event,
@@ -453,6 +455,12 @@ def decide_step(ctx: StepContext) -> None:
     _purge_partial_artifacts(artifacts, round_no)
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
+        # Тег схемы выбирается режимом сессии: §5.1 SPEC-002 требует, чтобы
+        # артефакты doc-сессии несли `disputatio/v2`. `decision.json` своих
+        # v2-полей не имеет, но тег описывает семейство артефакта, а не
+        # набор заполненных полей — v1 в doc-раунде читался бы как «сессия
+        # develop», и sha-сверка версий разошлась бы с `session.json`.
+        schema=SCHEMA_V2 if ctx.fsm.state.task.mode is Mode.DOCUMENT else SCHEMA_V1,
         round=round_no,
         outcome=draft.outcome,
         reason=draft.reason,
