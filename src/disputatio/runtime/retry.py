@@ -37,7 +37,7 @@
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
 
@@ -49,12 +49,25 @@ from disputatio.contracts import (
     EventSource,
     EventType,
     ProposalParseError,
+    SessionLifecyclePolicy,
+    SessionPhase,
 )
 from disputatio.core import RetryAction
 from disputatio.runtime.errors import ReviewNotAccepted, ReviewParseError
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотации, импорта нет
     from disputatio.runtime.steps import StepContext
+
+_BEFORE_TURN: Final = "before_author_turn"
+_AFTER_TURN: Final = "after_author_turn"
+
+REASON_INVARIANT_VIOLATION: Final = "invariant_violation"
+"""Код причины отказа сессии по несошедшейся сверке P9 (SPEC-002 §7.1).
+
+Код, а не текст: событие `error` читает подписчик журнала, и отличить
+сорванную проверку целостности control plane от невалидного вывода агента
+он обязан значением поля, а не разбором прозы.
+"""
 
 SCHEMA_INVALID_ERRORS: tuple[type[Exception], ...] = (
     ValidationError,
@@ -90,6 +103,7 @@ async def run_with_schema_retry[T](
     source: EventSource,
     session_ref: str | None = None,
     on_invalid: Callable[[Exception], None] | None = None,
+    lifecycle: SessionLifecyclePolicy | None = None,
 ) -> tuple[T, AgentTurn] | None:
     """Зовёт агента, пока его вывод не пройдёт `parse` или не кончится лимит.
 
@@ -102,6 +116,15 @@ async def run_with_schema_retry[T](
     же результат плюс секция с ошибкой предыдущей попытки. Промпт
     пересобирается на каждой попытке, а не кэшируется: §6 требует, чтобы он
     оставался самодостаточным, а `--resume` адаптера был оптимизацией.
+
+    `lifecycle` обнимает КАЖДУЮ попытку, а не весь шаг (SPEC-002 §7.1, P9):
+    ход автора — это один вызов адаптера, и при невалидной схеме их внутри
+    одного `PROPOSING` несколько. Обними хелпер целиком одной парой — и
+    подмена управляющих файлов между попытками осталась бы невидимой:
+    вторая попытка успела бы вернуть байты на место, а сверка после шага
+    увидела бы исходный снапшот. Передаёт политику только шаг автора: право
+    писать есть у него одного (§7), и сверять control plane вокруг хода
+    ревьюера незачем. `None` — no-op, путь до пайплайна байт-в-байт.
     """
     detail: str | None = None
     attempt = 0
@@ -111,7 +134,9 @@ async def run_with_schema_retry[T](
         if detail is not None:
             prompt = f"{prompt}\n\n{_retry_section(detail)}"
 
+        _run_lifecycle_hook(ctx, lifecycle, point=_BEFORE_TURN)
         turn = await adapter.run(prompt, session_ref=session_ref)
+        _run_lifecycle_hook(ctx, lifecycle, point=_AFTER_TURN)
         try:
             parsed = parse(turn.text)
         except SCHEMA_INVALID_ERRORS as exc:
@@ -123,6 +148,67 @@ async def run_with_schema_retry[T](
                 return None
             continue
         return parsed, turn
+
+
+def _run_lifecycle_hook(
+    ctx: "StepContext", lifecycle: SessionLifecyclePolicy | None, *, point: str
+) -> None:
+    """Зовёт хук политики P9; её отказ закрывает сессию fail-closed.
+
+    Перевод в `FAILED` здесь — новая работа, а не «существующий механизм».
+    Единственный `transition(FAILED)` runtime'а живёт в исчерпании
+    schema-повторов, а исключение шага уходит из `drive()` наружу мимо
+    любого перехода. Без этой ветки durable-состояние осталось бы
+    `PROPOSING`, и следующий `resume` счёл бы сессию активной — то есть
+    подмену control plane не заметил бы и во второй раз.
+
+    Порядок трёх операций фиксирован. Событие `error` — ПЕРВЫМ: его
+    `phase` называет шаг, на котором сорвалась сверка, а после перехода
+    последняя запись журнала назвала бы фазой `failed` и потеряла бы место
+    сбоя (та же причина, что у `_emit_error`). Переход — вторым: он несёт
+    write-ahead `session.json` и собственное `state_change`. Исходное
+    исключение — третьим, как есть: почему снапшот не сошёлся, знает
+    политика, и переписывать её причину в свой текст значило бы завести
+    второй источник правды о P9.
+    """
+    if lifecycle is None:
+        return
+    hook = (
+        lifecycle.before_author_turn
+        if point == _BEFORE_TURN
+        else lifecycle.after_author_turn
+    )
+    try:
+        hook(ctx.fsm.state)
+    except Exception as exc:
+        _emit_invariant_violation(ctx, point=point, detail=str(exc))
+        ctx.fsm.transition(SessionPhase.FAILED)
+        raise
+
+
+def _emit_invariant_violation(ctx: "StepContext", *, point: str, detail: str) -> None:
+    """Кладёт в журнал причину отказа политики §8 кодом, а не прозой.
+
+    `reason` — machine-readable: подписчик журнала обязан отличать сорванную
+    сверку control plane от невалидного вывода агента, и человеческий текст
+    таким различителем не бывает. Источник — оркестратор: сверку P9 ведёт
+    он, а не агент, чей ход обрамляется.
+    """
+    ctx.deps.sink.emit(
+        Event(
+            ts=ctx.deps.now(),
+            session=ctx.fsm.state.session_id,
+            round=ctx.round,
+            source=EventSource.ORCHESTRATOR,
+            type=EventType.ERROR,
+            payload={
+                "reason": REASON_INVARIANT_VIOLATION,
+                "point": point,
+                "detail": detail,
+                "phase": ctx.fsm.state.state.value,
+            },
+        )
+    )
 
 
 def _retry_section(detail: str) -> str:

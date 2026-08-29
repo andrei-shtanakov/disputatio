@@ -107,9 +107,19 @@ ACCEPTANCE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("§5.4", "runtime/test_acceptance.py"),
 )
 
+#: Расширения цикла из SPEC-002: точки опроса политик границы раунда и
+#: жизненного цикла хода автора. Отдельной парой, а не строкой в
+#: `REQUIREMENT_COVERAGE`: REQ-001…REQ-025 — требования SPEC-001, и приписать
+#: им чужое покрытие значило бы утверждать про требование то, чего оно не
+#: говорит. Трассировка — §7.1 и инварианты P4/P6/P9.
+PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
+    ("SPEC-002 §7.1", "runtime/test_round_boundary.py"),
+    ("SPEC-002 §7.1", "runtime/test_lifecycle_policy.py"),
+)
+
 #: Полная матрица.
 COVERAGE: Final[tuple[tuple[str, str], ...]] = (
-    REQUIREMENT_COVERAGE + ACCEPTANCE_COVERAGE
+    REQUIREMENT_COVERAGE + ACCEPTANCE_COVERAGE + PIPELINE_COVERAGE
 )
 
 #: Требования workstream'а по спецификации: REQ-001…REQ-025.

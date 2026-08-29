@@ -38,7 +38,14 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from disputatio.contracts import AgentTurn, SessionPhase, SessionState
+from disputatio.contracts import (
+    AgentTurn,
+    BoundaryVerdict,
+    RoundBoundaryPolicy,
+    SessionLifecyclePolicy,
+    SessionPhase,
+    SessionState,
+)
 from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import exporting, steps
 from disputatio.runtime.budget import charge_step
@@ -91,6 +98,8 @@ async def resume_session(
     session_id: str,
     *,
     artifact_root: Path | None = None,
+    round_boundary: RoundBoundaryPolicy | None = None,
+    lifecycle: SessionLifecyclePolicy | None = None,
     **overrides: Any,
 ) -> SessionState:
     """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
@@ -127,8 +136,14 @@ async def resume_session(
     repr'ом ключа в кавычках ([DESIGN-020]). Нечитаемый снапшот приходит
     `ConfigError` оттуда же, из `load_config`.
 
-    `overrides` передаются в `build_runtime` как есть: подмена любого порта
-    фейком не требует ни отдельного пути, ни правок цикла ([REQ-001]).
+    `round_boundary` и `lifecycle` — прокладка до `drive` (SPEC-002 §7.1):
+    политики принадлежат вызывающему циклу, а не сборке портов, и в
+    `overrides` попасть не должны — `build_runtime` их не знает. Дефолт
+    `None` оставляет resume ровно тем, чем он был.
+
+    Остальные `overrides` передаются в `build_runtime` как есть: подмена
+    любого порта фейком не требует ни отдельного пути, ни правок цикла
+    ([REQ-001]).
     """
     journal_root = artifact_root if artifact_root is not None else workspace_root
     config = load_config(journal_root)
@@ -149,12 +164,40 @@ async def resume_session(
             fsm=fsm,
             base_commit=config.base_commit,
             gates=config.gates,
-        )
+        ),
+        round_boundary=round_boundary,
+        lifecycle=lifecycle,
     )
 
 
-async def drive(ctx: StepContext) -> SessionState:
+async def drive(
+    ctx: StepContext,
+    *,
+    round_boundary: RoundBoundaryPolicy | None = None,
+    lifecycle: SessionLifecyclePolicy | None = None,
+) -> SessionState:
     """Крутит сессию от текущей фазы до терминальной ([REQ-008], [REQ-014]).
+
+    Обе политики (SPEC-002 §7.1) опциональны и по умолчанию отсутствуют:
+    без них цикл идёт тем же путём, что и до пайплайна, — ни одной лишней
+    ветки, ни одного лишнего чтения с диска. `spec`-контур гонит сессию до
+    её собственного терминала и не передаёт ни одной.
+
+    `round_boundary` опрашивается на границе раунда: после того, как
+    `REVIEWING` положил `review.json` на диск, и ДО `decide()`. Точка
+    выбрана так, а не после ветки `CONTINUE`: `decide()` идёт строго
+    top-down (`core/deciding.py`), и на последнем разрешённом раунде или
+    при исчерпанном бюджете он вернул бы `DEADLOCK`/`BUDGET_HIT` раньше
+    `CONTINUE` — политика не была бы опрошена вовсе, а архитектурная
+    находка ушла бы в эскалацию вместо обязательного возврата к спеке (P6).
+    `PARK` означает: `decide()` не вызывается, `decision.json` раунда не
+    пишется, `drive` возвращает управление с текущим нетерминальным
+    состоянием (`DECIDING`) — на отсутствии решения §8.1 и строит identity
+    припаркованного checkpoint'а.
+
+    `lifecycle` уезжает в контекст, потому что зовёт его не цикл, а шаг
+    автора — точнее, `run_with_schema_retry` вокруг каждого вызова адаптера
+    (P9). Цикл здесь только доставляет политику до шага.
 
     Итерация читается сверху вниз и вся состоит из порядка:
 
@@ -184,8 +227,14 @@ async def drive(ctx: StepContext) -> SessionState:
     именно программная — сюда приводит незарегистрированный шаг, а не
     действие пользователя.
     """
+    if lifecycle is not None:
+        ctx = ctx.with_lifecycle(lifecycle)
+
     while ctx.fsm.state.state not in TERMINAL_PHASES:
         phase = ctx.fsm.state.state
+
+        if phase is SessionPhase.DECIDING and _parks(round_boundary, ctx):
+            return ctx.fsm.state
 
         step = STEP_BY_PHASE.get(phase)
         if step is not None:
@@ -202,6 +251,21 @@ async def drive(ctx: StepContext) -> SessionState:
             )
 
     return ctx.fsm.state
+
+
+def _parks(policy: RoundBoundaryPolicy | None, ctx: StepContext) -> bool:
+    """Опрашивает политику границы раунда; `True` — цикл обязан вернуться.
+
+    Ревью читается тем же `steps.round_review`, которым его читает снимок
+    `DECIDING`: собственный разбор артефакта разошёлся бы с ядром ровно
+    тогда, когда политика паркует сессию по находке, которой решение не
+    видело. Отсутствие политики — ни чтения, ни вопроса: дефолтный путь
+    цикла не трогает диск ни на байт больше прежнего.
+    """
+    if policy is None:
+        return False
+    review = steps.round_review(ctx.artifact_root, ctx.round)
+    return policy.after_deciding(review) is BoundaryVerdict.PARK
 
 
 async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:

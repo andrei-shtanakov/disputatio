@@ -36,6 +36,7 @@ from disputatio.contracts import (
     Review,
     ReviewAcceptance,
     Role,
+    SessionLifecyclePolicy,
     VerificationReport,
     parse_proposal,
     validate_review,
@@ -115,12 +116,19 @@ class StepContext:
     `workspace_root`, артефакты и история — по `artifact_root`. Единого
     `root` здесь нет намеренно: пока имя было одно, выбор корня не был
     решением, и вызывающий не мог перепутать их иначе как молча.
+
+    `lifecycle` — политика P9 (SPEC-002 §7.1), которой `PROPOSING` обрамляет
+    ход автора. Живёт она в контексте, а не в `RuntimeDeps`, потому что
+    приходит от вызывающего `drive`, а не от сборки портов: спека
+    (`spec`-контур) её не передаёт вовсе, пара — передаёт. `None` — no-op,
+    то есть путь до пайплайна байт-в-байт.
     """
 
     deps: RuntimeDeps
     fsm: SessionFsm
     base_commit: str
     gates: tuple[GateSpec, ...] = field(default=())
+    lifecycle: SessionLifecyclePolicy | None = None
 
     @property
     def workspace_root(self) -> Path:
@@ -156,6 +164,22 @@ class StepContext:
             fsm=fsm,
             base_commit=self.base_commit,
             gates=self.gates,
+            lifecycle=self.lifecycle,
+        )
+
+    def with_lifecycle(self, lifecycle: "SessionLifecyclePolicy") -> "StepContext":
+        """Тот же контекст с политикой жизненного цикла хода автора (§7.1).
+
+        Копия по тому же списку полей и по той же причине, что и
+        `with_fsm`: `StepContext` frozen, а политику подаёт вызывающий
+        `drive`, а не сборка портов.
+        """
+        return StepContext(
+            deps=self.deps,
+            fsm=self.fsm,
+            base_commit=self.base_commit,
+            gates=self.gates,
+            lifecycle=lifecycle,
         )
 
 
@@ -171,7 +195,10 @@ async def propose(ctx: StepContext) -> AgentTurn:
     2. Промпт собирается `context.build_author_prompt` из артефактов раунда
        N−1, прочитанных с диска (§6.1). Прошлых proposal среди них нет —
        источник истины для автора это файлы рабочей директории.
-    3. Единственный `await` шага — вызов адаптера.
+    3. Единственный `await` шага — вызов адаптера. Политика `ctx.lifecycle`
+       уходит в `run_with_schema_retry`, а не обнимает шаг здесь: ходов
+       автора внутри одного `PROPOSING` столько, сколько попыток у
+       schema-retry, а P9 требует снапшот перед КАЖДЫМ (SPEC-002 §7.1).
     4. Ответ разбирается `parse_proposal` **до** записи: `proposal.md` с
        битым фронтматтером на диске означал бы, что следующий раунд читает
        как артефакт то, что артефактом не является. Разбор идёт внутри
@@ -213,6 +240,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
         source=EventSource.AUTHOR,
         session_ref=_author_session_ref(ctx),
         on_invalid=failures.append,
+        lifecycle=ctx.lifecycle,
     )
     if outcome is None:
         raise _exhausted(failures)
@@ -464,7 +492,7 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
     return DecidingInputs(
         round=round_no,
         mode=state.task.mode,
-        review=_round_review(artifacts, round_no),
+        review=round_review(artifacts, round_no),
         verification=_round_verification(artifacts, round_no),
         carried_issues=carried_issues(artifacts, round_no - 1),
         patch_current=load_patch(artifacts, round_no) or "",
@@ -545,13 +573,19 @@ def _exhausted(failures: Sequence[Exception]) -> Exception:
     return failures[-1]
 
 
-def _round_review(artifact_root: Path, round_no: int) -> Review:
+def round_review(artifact_root: Path, round_no: int) -> Review:
     """Ревью раунда `round_no`; его отсутствие — ошибка порядка.
 
     `AssertionError` по той же причине, что и у отчёта проверок: войти в
     DECIDING раньше, чем REVIEWING положил ревью на диск, write-ahead-
     переход не даёт. Значит пустое место здесь означает сломанную
     диспетчеризацию цикла, а не действие пользователя.
+
+    Публичная, потому что читателя двое: снимок `DECIDING` и опрос
+    `RoundBoundaryPolicy` на границе раунда (`runtime/loop.py`, SPEC-002
+    §7.1). Оба обязаны видеть ОДНО ревью — второй читатель с собственным
+    разбором артефакта разошёлся бы с ядром ровно тогда, когда политика
+    паркует сессию по находке, которой решение не видело.
     """
     review_model = load_review(artifact_root, round_no)
     if review_model is None:
