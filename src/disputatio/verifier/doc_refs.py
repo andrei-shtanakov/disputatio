@@ -15,7 +15,8 @@
   текстах этого проекта ``[DESIGN-002]``, ``[REQ-004]`` и т. п. — метки
   трассируемости, а не ссылки, и отличить их от настоящего shortcut
   reference эвристически нельзя. Ссылка без найденного определения тоже не
-  порождает `DocRef` — цель не выводима, а не наоборот.
+  порождает `DocRef` — цель не выводима, а не наоборот, — но и молча не
+  исчезает: она попадает в `ParsedDocument.unresolved` (см. ниже).
 - Автоссылка ``<target>`` — только когда `target` не начинается с
   URI-схемы (``scheme:`` — внешняя ссылка вне области действия гейтов) и
   содержит `/` или `.` (иначе неотличимо от HTML-тега вроде ``<br>``).
@@ -35,6 +36,15 @@
   `declared_planned` (объявление намерения, см. `doc_gates.gate_doc_paths`).
 
 Всё прочее не порождает `DocRef` вовсе.
+
+**`DocRef` — не единственный результат разбора.** `parse_document` возвращает
+пару: распознанные ссылки и `unresolved` — reference-ссылки правильной формы
+``[text][ref]``, для которых определения в документе нет. Ссылка без цели —
+не `DocRef` (резолвить нечего), но и не ничто: `doc-links` — baseline-гейт
+детерминированного критерия сходимости, и `pass` по документу, где такая
+форма прошла молча, означал бы «проверено» про непроверенное. Bare-метка
+``[REQ-004]`` сюда не попадает: она не ссылка ни в каком виде, и warning на
+каждой метке трассируемости был бы шумом, а не находкой.
 """
 
 from __future__ import annotations
@@ -70,6 +80,27 @@ class DocRef:
     expected_text: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class UnresolvedRef:
+    """Reference-ссылка правильной формы, определения для которой нет.
+
+    `label` — метка как она написана (регистр сохранён: сообщение гейта
+    должно совпасть с текстом документа, а не с ключом поиска). `line` —
+    строка использования, 1-based, как у `DocRef`.
+    """
+
+    label: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedDocument:
+    """Полный результат разбора: распознанное и увиденное, но не выводимое."""
+
+    refs: list[DocRef]
+    unresolved: list[UnresolvedRef]
+
+
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _CODE_LINE_REF_RE = re.compile(r"^[\w./-]*/[\w./-]+\.\w+:\d+$")
 _CODE_PATH_RE = re.compile(r"^[\w./-]*/[\w./-]+\.\w+$")
@@ -92,10 +123,23 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 def parse_doc_refs(text: str) -> list[DocRef]:
     """Разбирает `text` на `DocRef` по замкнутому набору форм (см. модуль)."""
+    return parse_document(text).refs
+
+
+def parse_document(text: str) -> ParsedDocument:
+    """Полный разбор: `DocRef`-ы и неразрешённые reference-ссылки.
+
+    Один проход на оба результата намеренно: маскирование inline-code,
+    список определений и строки, съеденные декларациями `Modify:`/`Create:`,
+    обязаны быть одними и теми же для обеих половин. Второй проход по своей
+    копии этих правил разошёлся бы с первым — и разошёлся бы именно там, где
+    расхождение выглядит как отсутствие находки.
+    """
     lines = text.splitlines()
     definitions = _collect_link_definitions(lines)
     declared_refs, consumed_lines = _parse_declared_paths(lines)
     refs: list[DocRef] = list(declared_refs)
+    unresolved: list[UnresolvedRef] = []
     for lineno, raw_line in enumerate(lines, start=1):
         if lineno in consumed_lines:
             # Строка уже разобрана как Modify:/Test:/Create: — те же
@@ -106,9 +150,11 @@ def parse_doc_refs(text: str) -> list[DocRef]:
             ref = _match_code_span(content, lineno, expected_text)
             if ref is not None:
                 refs.append(ref)
-        refs.extend(_match_md_links(masked, lineno, definitions))
+        line_refs, line_unresolved = _match_md_links(masked, lineno, definitions)
+        refs.extend(line_refs)
+        unresolved.extend(line_unresolved)
         refs.extend(_match_autolinks(masked, lineno))
-    return refs
+    return ParsedDocument(refs=refs, unresolved=unresolved)
 
 
 def github_slug(heading: str, seen: dict[str, int]) -> str:
@@ -190,19 +236,23 @@ def _collect_link_definitions(lines: list[str]) -> dict[str, str]:
 
 def _match_md_links(
     line: str, lineno: int, definitions: dict[str, str]
-) -> list[DocRef]:
+) -> tuple[list[DocRef], list[UnresolvedRef]]:
     refs: list[DocRef] = []
+    unresolved: list[UnresolvedRef] = []
     for match in _MD_INLINE_LINK_RE.finditer(line):
         path, anchor = _split_target_anchor(match.group("target"))
         refs.append(DocRef(kind="md_link", target=path, line=lineno, anchor=anchor))
     for match in _MD_REF_LINK_RE.finditer(line):
-        label = (match.group("ref") or match.group("text")).casefold()
-        raw_target = definitions.get(label)
+        written = match.group("ref") or match.group("text")
+        raw_target = definitions.get(written.casefold())
         if raw_target is None:
-            continue  # определение не найдено — цель не выводима
+            # Определение не найдено — цель не выводима, `DocRef` не
+            # порождается; но форма увидена, и гейт обязан о ней сказать.
+            unresolved.append(UnresolvedRef(label=written, line=lineno))
+            continue
         path, anchor = _split_target_anchor(raw_target)
         refs.append(DocRef(kind="md_link", target=path, line=lineno, anchor=anchor))
-    return refs
+    return refs, unresolved
 
 
 def _match_autolinks(line: str, lineno: int) -> list[DocRef]:

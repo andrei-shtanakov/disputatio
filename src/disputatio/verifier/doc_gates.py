@@ -18,6 +18,13 @@
 `fail`: спека, проектирующая ещё не написанный модуль, иначе не сошлась бы
 никогда.
 
+**Третий вид `warning` — форма, которую гейт проверить не может.**
+Reference-ссылка ``[text][ref]`` без определения не даёт цели, то есть не
+порождает `DocRef` вовсе; `doc-links` записывает её кодом `unresolved_ref`,
+оставляя статус `pass`. Молчать нельзя: гейт входит в детерминированный
+критерий сходимости, и `pass` без единого следа означал бы, что документ
+проверен целиком, — а проверен он был не весь.
+
 **База резолвинга различается по виду `DocRef` (фикс-раунд 1).**
 `md_link`/`autolink` — синтаксис относительных Markdown-ссылок: по
 CommonMark/GitHub они резолвятся относительно **каталога документа**, а
@@ -40,6 +47,7 @@ from disputatio.verifier.doc_refs import (
     github_slug,
     iter_headings,
     parse_doc_refs,
+    parse_document,
 )
 
 CODE_MISSING = "missing"
@@ -47,6 +55,12 @@ CODE_ESCAPE = "escape"
 CODE_WARNING = "warning"
 CODE_LINE_DRIFT = "line_drift"
 CODE_SCOPE_ESCAPE = "scope_escape"
+CODE_UNRESOLVED_REF = "unresolved_ref"
+
+#: Коды, не роняющие раунд: находка записана, но статус остаётся `pass`.
+#: Набор один и тот же для статуса и для строки `reason` — иначе гейт
+#: печатал бы «1 fail» на записи, из-за которой сам же не упал.
+_WARNING_CODES = frozenset({CODE_WARNING, CODE_UNRESOLVED_REF})
 
 _WARN_ONLY_IF_MISSING = {"code_path"}
 _DOC_RELATIVE_KINDS = {"md_link", "autolink"}
@@ -109,12 +123,27 @@ def gate_doc_paths(doc: Path, repo_root: Path) -> GateResult:
 
 
 def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
-    """Разрешимость относительных Markdown-ссылок (`md_link` кроме прочих)."""
+    """Разрешимость относительных Markdown-ссылок (`md_link` кроме прочих).
+
+    Reference-ссылка без определения (``[text][ref]``, определения нет) —
+    `warning` с кодом `unresolved_ref`, не `fail`: цель не выводима, и
+    судить о существовании файла, имени которого документ не назвал, гейт
+    не может. Но и молчать не вправе — `doc-links` входит в
+    детерминированный критерий сходимости, а `pass` по документу, где
+    целая форма прошла мимо проверки, был бы «проверено» про
+    непроверенное. Этот вид проверяет только `doc-links`: `doc-paths`
+    видит те же формы, и вторая запись о той же ссылке выглядела бы второй
+    находкой.
+    """
     text = _read_document("doc-links", doc)
     if isinstance(text, GateResult):
         return text
-    refs = [ref for ref in parse_doc_refs(text) if ref.kind == "md_link"]
+    parsed = parse_document(text)
+    refs = [ref for ref in parsed.refs if ref.kind == "md_link"]
     status, entries = _check_paths(refs, doc, repo_root)
+    entries += [
+        _entry(CODE_UNRESOLVED_REF, item.label, item.line) for item in parsed.unresolved
+    ]
     return _build_result("doc-links", f"internal:doc-links:{doc}", status, entries)
 
 
@@ -338,8 +367,8 @@ def _build_result(
     name: str, cmd: str, status: GateStatus, entries: list[dict[str, object]]
 ) -> GateResult:
     tail = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
-    fails = sum(1 for entry in entries if entry["code"] != CODE_WARNING)
-    warnings = sum(1 for entry in entries if entry["code"] == CODE_WARNING)
+    fails = sum(1 for entry in entries if entry["code"] not in _WARNING_CODES)
+    warnings = sum(1 for entry in entries if entry["code"] in _WARNING_CODES)
     parts = []
     if fails:
         parts.append(f"{fails} fail")

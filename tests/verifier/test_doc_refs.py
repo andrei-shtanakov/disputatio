@@ -95,6 +95,51 @@ def test_reference_style_link_without_definition_is_not_recognized() -> None:
     assert refs == []
 
 
+def test_unresolved_reference_link_is_reported_separately() -> None:
+    """Цель не выводима — но сама форма увидена и названа (задача 7, фикс).
+
+    `DocRef` такая ссылка по-прежнему не порождает: резолвить нечего. Но
+    молчать о ней парсер не вправе — `doc-links` baseline-гейт, и `pass`
+    по документу с битой reference-ссылкой означал бы «проверено», хотя
+    проверена была не вся форма.
+    """
+    doc_refs = _import_doc_refs()
+    text = "Смотри [план][no-such-ref] за подробностями.\n"
+
+    parsed = doc_refs.parse_document(text)
+
+    assert parsed.refs == []
+    assert [(item.label, item.line) for item in parsed.unresolved] == [
+        ("no-such-ref", 1)
+    ]
+
+
+def test_resolved_reference_link_leaves_nothing_unresolved() -> None:
+    """Определение найдено — форма разрешена, о ней сообщать нечего."""
+    doc_refs = _import_doc_refs()
+    text = "Смотри [план][plan-ref].\n\n[plan-ref]: docs/plans/foo.md\n"
+
+    parsed = doc_refs.parse_document(text)
+
+    assert parsed.unresolved == []
+    assert [ref.target for ref in parsed.refs] == ["docs/plans/foo.md"]
+
+
+def test_bare_bracket_label_is_not_unresolved_either() -> None:
+    """`[DESIGN-002]` не ссылка вовсе — и в неразрешённые не попадает.
+
+    Иначе новый `warning` сыпался бы на каждой метке трассируемости, а
+    ровно этой эвристики §6 и запрещает: shortcut-ссылку от метки не
+    отличить, поэтому обе формы парсер не признаёт ссылкой изначально.
+    """
+    doc_refs = _import_doc_refs()
+
+    parsed = doc_refs.parse_document("Требование [REQ-004] описано ниже.\n")
+
+    assert parsed.refs == []
+    assert parsed.unresolved == []
+
+
 def test_bare_bracket_label_is_not_a_reference_link() -> None:
     """`[DESIGN-002]` — трассируемостная метка, не shortcut-ссылка."""
     doc_refs = _import_doc_refs()

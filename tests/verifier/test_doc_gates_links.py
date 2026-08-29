@@ -276,6 +276,45 @@ def test_gate_doc_links_resolves_reference_style_link(tmp_path: Path) -> None:
     assert _tail_entries(result.tail) == []
 
 
+def test_gate_doc_links_warns_on_a_reference_link_without_a_definition(
+    tmp_path: Path,
+) -> None:
+    """Битая `[text][ref]` не проходит молча — `warning`, а не тишина.
+
+    Цель такой ссылки не выводима, резолвить нечего, и `fail` был бы
+    неправдой той же природы. Но `doc-links` — baseline-гейт и часть
+    детерминированного критерия сходимости: `pass` без единой записи о
+    форме, которую гейт не проверял, — это «проверено» про непроверенное.
+    """
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "spec.md", "Смотри [план][no-such-ref].\n")
+
+    result = doc_gates.gate_doc_links(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == [
+        {"code": "unresolved_ref", "target": "no-such-ref", "line": 1}
+    ]
+    assert result.reason == "1 warning"
+
+
+def test_gate_doc_paths_stays_silent_about_unresolved_reference_links(
+    tmp_path: Path,
+) -> None:
+    """Форма без цели — забота `doc-links`; `doc-paths` её не дублирует.
+
+    Второй записи о той же ссылке в другом гейте быть не должно: она
+    ничего не добавляет и создаёт впечатление двух разных находок.
+    """
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "spec.md", "Смотри [план][no-such-ref].\n")
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
 # ---------------------------------------------------------------------------
 # gate_doc_anchors — существование section anchors
 # ---------------------------------------------------------------------------
