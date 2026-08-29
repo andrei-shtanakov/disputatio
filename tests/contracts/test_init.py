@@ -74,7 +74,17 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "check_verdict_vs_verification",
         "check_checked_nonempty",
     ),
-    "ports": ("StateStore", "EventSink", "AgentAdapter", "Verifier", "AgentTurn"),
+    "ports": (
+        "StateStore",
+        "EventSink",
+        "AgentAdapter",
+        "Verifier",
+        "AgentTurn",
+        "PipelineStateStore",
+        "BoundaryVerdict",
+        "RoundBoundaryPolicy",
+        "SessionLifecyclePolicy",
+    ),
     "pipeline": (
         "SCHEMA_PIPELINE_V1",
         "ALLOWED_TRANSITIONS",
