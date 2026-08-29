@@ -60,6 +60,8 @@ from disputatio.runtime.layout import (
 )
 from disputatio.runtime.steps import StepContext, propose, review
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "s-retry-wiring"
 _AUTHOR_REF = "ref-author"
@@ -149,7 +151,7 @@ class NoVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк: сброс и уборку журналирует, коммит запрещает."""
 
     log: list[str] = field(default_factory=list)

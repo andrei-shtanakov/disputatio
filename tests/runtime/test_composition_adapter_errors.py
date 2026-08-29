@@ -28,8 +28,10 @@ from disputatio.runtime import (
     build_runtime,
 )
 
+from ._fakes import GitOpsFakeBase
 
-class FakeGit:
+
+class FakeGit(GitOpsFakeBase):
     """`GitOps`-фейк: сборке нужен объект, git-команд не запускает."""
 
     def diff_head(self) -> str:

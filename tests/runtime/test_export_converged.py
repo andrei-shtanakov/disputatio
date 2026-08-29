@@ -71,6 +71,8 @@ from disputatio.events import (
 from disputatio.runtime import RuntimeDeps
 from disputatio.runtime.layout import session_dir
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 11, 0, 0, tzinfo=UTC)
 _SESSION_ID = "20260810-110000-e5f6"
 _ROUND = 3
@@ -257,7 +259,7 @@ class NoVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: экспорт читает артефакты, а не рабочее дерево."""
 
     def diff_head(self) -> str:

@@ -49,6 +49,8 @@ from disputatio.contracts import (
 )
 from disputatio.verifier import GateSpec
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 _FROZEN_MONOTONIC = 1234.5
 
@@ -135,7 +137,7 @@ class FakeVerifier:
 
 
 @dataclass
-class FakeGit:
+class FakeGit(GitOpsFakeBase):
     """`GitOps`-фейк: журналирует вызовы, ни одной git-команды не запускает."""
 
     calls: list[str] = field(default_factory=list)

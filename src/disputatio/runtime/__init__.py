@@ -41,6 +41,7 @@ from disputatio.runtime.git import (
     ROUND_COMMIT_TEMPLATE,
     GitCli,
     GitOps,
+    StatusEntry,
     base_rev,
     preflight,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeDeps",
     "SessionNotFound",
+    "StatusEntry",
     "UnknownAdapterError",
     "base_rev",
     "build_runtime",

@@ -72,6 +72,8 @@ from disputatio.runtime.layout import (
 )
 from disputatio.runtime.steps import StepContext, decide_step, propose, review, verify
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _ROUND = 1
 _SESSION_ID = "s-replay-hygiene"
@@ -179,7 +181,7 @@ class CrashingVerifier:
 
 
 @dataclass
-class CountingGit:
+class CountingGit(GitOpsFakeBase):
     """`GitOps`-фейк для DECIDING: коммит считается, дерево не трогается."""
 
     commits: list[int] = field(default_factory=list)

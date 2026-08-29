@@ -78,6 +78,8 @@ from disputatio.core import SessionFsm
 from disputatio.events import write_round_artifact
 from disputatio.runtime import RuntimeDeps
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 _ROUND = 3
 _SESSION_ID = "s-reviewing"
@@ -308,7 +310,7 @@ class NoVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: шаг REVIEWING git не трогает — любой вызов ошибка.
 
     Он же пин «вывод ревьюера не подставляется в argv»: единственный путь

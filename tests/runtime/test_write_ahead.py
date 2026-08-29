@@ -71,6 +71,8 @@ from disputatio.runtime import RuntimeDeps
 from disputatio.runtime.layout import session_dir
 from disputatio.runtime.steps import StepContext
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "s-write-ahead"
 _BASE_COMMIT = "0" * 40
@@ -203,7 +205,7 @@ class SpyVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк: журналирует операции, рабочего дерева не трогает."""
 
     log: list[str]

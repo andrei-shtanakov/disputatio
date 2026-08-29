@@ -74,6 +74,8 @@ from disputatio.runtime.layout import (
 )
 from disputatio.runtime.parsing import extract_json_object
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "s-retry"
 _AUTHOR_REF = "ref-author"
@@ -223,7 +225,7 @@ class NoVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк шага PROPOSING: журналирует вызовы, git не трогает."""
 
     log: list[str] = field(default_factory=list)
@@ -247,7 +249,7 @@ class SpyGit:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк шага REVIEWING: git ему не нужен вовсе."""
 
     def diff_head(self) -> str:

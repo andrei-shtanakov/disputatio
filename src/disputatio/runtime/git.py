@@ -15,7 +15,10 @@
 """
 
 import os
+import shutil
 import subprocess
+import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -75,6 +78,19 @@ _DIFF_FLAGS: Final = (
 ROUND_COMMIT_TEMPLATE: Final = "disputatio: round {round:03d}"
 ROUND_COMMIT_PATTERN: Final = r"^disputatio: round [0-9]{3}$"
 
+# Ключ трейлера операторского чекпоинта (SPEC-002 §3.1). Идентичность
+# операции живёт в трейлере, а не в заголовке: заголовок
+# `disputatio: operator adopt <slug>` одинаков у всех adoption'ов пайплайна,
+# и поиск по нему нашёл бы чужой чекпоинт — а идемпотентность повторного
+# adoption'а держится ровно на том, что свой чекпоинт узнаётся однозначно.
+OPERATION_TRAILER_KEY: Final = "Disputatio-Operation"
+
+# Код `git status --porcelain` для пути, которого нет в индексе. Игнорируемые
+# файлы (`!!`) в выборку не попадают вовсе: `--ignored` не передаётся, и
+# сборочный мусор пользователя предусловие старта §3.1 не блокирует — ровно
+# как его не трогает `clean` SPEC-001.
+_STATUS_UNTRACKED: Final = "??"
+
 # Правило, скрывающее каталог сессии от git. Пишется в `.git/info/exclude` —
 # файл локальный, в дерево не входит и в чужой `.gitignore` не лезет: сессия
 # не вправе править версионируемые файлы пользователя. Без ведущего слэша
@@ -111,9 +127,36 @@ _DROPPED_ENV_VARS: Final = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class StatusEntry:
+    """Одна запись `git status`: путь и то, знает ли о нём индекс.
+
+    `path` — относительно **корня репозитория** (так порцелан и отвечает), а
+    не относительно `root` сессии: разойдись они, потребитель сравнивал бы
+    `spec_path` с путём из другой системы координат.
+
+    `tracked` отделяет untracked-путь от изменения отслеживаемого файла —
+    различие, на котором держится узкое правило §3.1 SPEC-002: собственные
+    untracked control-файлы пайплайна под `.disputatio/` легальны, а
+    tracked-изменённый файл там же — внешняя правка control plane, и
+    adoption её отклоняет.
+    """
+
+    path: str
+    tracked: bool
+
+
 @runtime_checkable
 class GitOps(Protocol):
-    """Порт git-операций рабочего репозитория (SPEC-001 §3)."""
+    """Порт git-операций рабочего репозитория (SPEC-001 §3, SPEC-002 §3.1).
+
+    Четыре первых метода — цикл раунда SPEC-001. Шесть остальных пришли с
+    операторскими решениями SPEC-002 (§3.1), cleanup'ом возврата (§7.3) и
+    сверкой worktree на resume (§8.1): у них нет другого пути к git, а
+    `subprocess` мимо порта был бы вторым слоем доступа к репозиторию
+    (INV-11) — с собственным окружением, собственной идентичностью и
+    собственными представлениями о том, что считать каноническим диффом.
+    """
 
     def diff_head(self) -> str:
         """`git diff HEAD` — дифф рабочего дерева; пустая строка валидна."""
@@ -129,6 +172,30 @@ class GitOps(Protocol):
 
     def clean(self) -> None:
         """Удаляет untracked-файлы прерванной попытки, сохраняя `.disputatio/`."""
+        ...
+
+    def head_sha(self) -> str:
+        """Полный SHA `HEAD` — идентичность состояния дерева (§8.1)."""
+        ...
+
+    def current_branch(self) -> str | None:
+        """Имя текущей ветки; `None` в detached HEAD (предусловие §3.1)."""
+        ...
+
+    def status_entries(self) -> tuple[StatusEntry, ...]:
+        """Статус дерева ЦЕЛИКОМ, без исключения путей (§3.1)."""
+        ...
+
+    def diff_readonly(self) -> str:
+        """Канонический дифф `diff_head`, но без мутации индекса (§8.1)."""
+        ...
+
+    def commit_paths(self, paths: Sequence[str], subject: str, *, trailer: str) -> str:
+        """Операторский чекпоинт ровно по названным путям; отдаёт SHA (§3.1)."""
+        ...
+
+    def find_commit_by_trailer(self, trailer: str) -> str | None:
+        """SHA чекпоинта с трейлером операции; `None` — чекпоинта нет (§3.1)."""
         ...
 
 
@@ -462,8 +529,200 @@ class GitCli:
             *_TREE_PATHSPEC,
         )
 
+    def head_sha(self) -> str:
+        """Полный SHA `HEAD` (SPEC-002 §8.1 — identity состояния дерева).
 
-def _unstage_session_dir(root: Path) -> None:
+        `^{commit}` и `--verify` вместе: без них `rev-parse` подтвердил бы и
+        тег, и дерево, а сверка §8.1 сравнивает записанный SHA коммита с
+        текущим — совпадение с чем-то другим означало бы «HEAD не сдвинулся»
+        там, где он сдвинулся.
+        """
+        return _checked(self.root, "rev-parse", "--verify", "HEAD^{commit}").strip()
+
+    def current_branch(self) -> str | None:
+        """Имя текущей ветки; `None` в detached HEAD (SPEC-002 §3.1).
+
+        Предусловие старта сравнивает ответ со списком `protected_branches`,
+        поэтому detached-состояние обязано отличаться от имени, а не
+        притворяться им. `--abbrev-ref` отвечает в этом случае литералом
+        `HEAD`, и сентинел однозначен: `HEAD` — невалидное имя ветки
+        (`git check-ref-format`), так что перепутать его не с чем.
+
+        Отказ от создания ветки — сознательный: `run` при неподходящей ветке
+        печатает подготовительную команду, а не выполняет её (внешний
+        эффект — решение оператора).
+        """
+        name = _checked(self.root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        return None if name == "HEAD" else name
+
+    def status_entries(self) -> tuple[StatusEntry, ...]:
+        """Статус дерева целиком, БЕЗ исключения путей (SPEC-002 §3.1).
+
+        Каталог оркестратора отсюда **не** вырезается, хотя и `diff_head`, и
+        `clean` его исключают: узкое правило §3.1 требует отличить
+        собственные untracked control-файлы пайплайна (легальны) от
+        tracked-изменённых под тем же `.disputatio/` (adoption отклоняется),
+        и порт, вырезающий каталог сам, эту информацию уничтожил бы
+        безвозвратно. Фильтрация — обязанность потребителя.
+
+        `-z` вместо построчного разбора: без него порцелан C-квотит пути с
+        пробелами и не-ASCII, и путь пришлось бы разэкранировать вручную —
+        а сравнение со `spec_path` идёт по точному совпадению.
+
+        `--no-renames` не косметика: свёрнутое переименование `R new` прячет
+        исходный путь внутрь одной записи, и fail-closed scope §3.1 не увидел
+        бы, что кроме документа пары из дерева исчез посторонний файл. Без
+        свёртки git называет обе половины (`D old`, `A new`), и каждая
+        проходит проверку области отдельно.
+        """
+        raw = _checked(
+            self.root,
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        )
+        return tuple(
+            # `XY<пробел>PATH`: код — два байта, третий разделитель.
+            StatusEntry(path=record[3:], tracked=record[:2] != _STATUS_UNTRACKED)
+            for record in raw.split("\0")
+            if record
+        )
+
+    def diff_readonly(self) -> str:
+        """Дифф `diff_head` байт-в-байт, но без мутации индекса (§8.1 шаг 3).
+
+        Сверка worktree предшествует любому мутирующему шагу resume и сама
+        обязана быть немутирующей — вплоть до индекса. `diff_head` этому не
+        удовлетворяет: он начинается с `git add --intent-to-add`, без
+        которого untracked-файлы в патч не попадают, и оставляет новый файл
+        в индексе — вывод следующего `git status` у пользователя менялся бы
+        от того, что он запустил `resume`.
+
+        Поэтому та же пара команд исполняется поверх ОДНОРАЗОВОГО индекса:
+        `GIT_INDEX_FILE` уводится на копию настоящего во временный каталог,
+        и настоящий не открывается даже на запись (файл блокировки git
+        создаёт рядом с `GIT_INDEX_FILE`, то есть тоже во временном
+        каталоге — параллельно работающему git сверка не мешает).
+
+        Копия, а не пустой индекс: пустой заставил бы git пересчитать
+        содержимое каждого файла дерева заново, а его stat-кеш — ровно то,
+        ради чего индекс существует. На форму патча копия не влияет — флаги
+        диффа и pathspec те же, что у `diff_head`, поэтому байты совпадают.
+        """
+        with tempfile.TemporaryDirectory(prefix="disputatio-index-") as tmp_dir:
+            scratch = Path(tmp_dir) / "index"
+            source = _index_file_path(self.root)
+            if source.is_file():
+                shutil.copyfile(source, scratch)
+            _checked(
+                self.root, "add", "--intent-to-add", "--", ":/", index_file=scratch
+            )
+            _unstage_session_dir(self.root, index_file=scratch)
+            return _checked(
+                self.root,
+                "diff",
+                *_DIFF_FLAGS,
+                "HEAD",
+                "--",
+                *_TREE_PATHSPEC,
+                index_file=scratch,
+            )
+
+    def commit_paths(self, paths: Sequence[str], subject: str, *, trailer: str) -> str:
+        """Операторский чекпоинт ровно по названным путям (SPEC-002 §3.1).
+
+        «Ровно» держится на `--only` с pathspec'ом, а не на предварительном
+        `git add`: adoption применим и к in-flight сессии, где в индексе
+        вправе лежать чужое, и обычный `git commit` унёс бы это чужое в
+        чекпоинт оператора. `--only` собирает коммит из `HEAD` плюс
+        перечисленные пути и оставляет остальной индекс нетронутым.
+        `git add` перед ним всё же нужен: путь, которого в индексе нет вовсе
+        (новый документ пары — легальный случай §3.1), `git commit -- <путь>`
+        не принимает.
+
+        Пустой список — `ValueError`, а не «ну и ладно»: `--only` без
+        pathspec теряет своё «только» и берёт индекс целиком, то есть
+        молчаливо коммитит ровно то, чего оператор не санкционировал.
+
+        Форма коммита та же, что у коммита раунда (`--no-gpg-sign`,
+        `--no-verify`): чужой `commit.gpgsign` сорвал бы неинтерактивное
+        решение запросом ключа, а pre-commit-хук пользователя переписал бы
+        файлы уже после того, как канонический патч adoption'а снят.
+        """
+        if not paths:
+            raise ValueError(
+                "commit_paths вызван с пустым списком путей: операторский "
+                "чекпоинт §3.1 фиксирует названный диф, а `git commit --only` "
+                "без pathspec унёс бы в него весь индекс"
+            )
+        _checked(self.root, "add", "--", *paths)
+        _checked(
+            self.root,
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "--no-verify",
+            "--only",
+            "-m",
+            f"{subject}\n\n{OPERATION_TRAILER_KEY}: {trailer}",
+            "--",
+            *paths,
+        )
+        return self.head_sha()
+
+    def find_commit_by_trailer(self, trailer: str) -> str | None:
+        """SHA чекпоинта операции `trailer`; `None`, если его ещё нет (§3.1).
+
+        Идемпотентность повторного adoption'а: упавший между коммитом и
+        записью решения `resume` находит свой чекпоинт и второго не создаёт.
+        Поиск идёт по трейлеру, а не по заголовку, — заголовок
+        `disputatio: operator adopt <slug>` одинаков у всех adoption'ов
+        пайплайна, и по нему нашёлся бы чужой.
+
+        Схема та же, что у `_find_round_commit`: `--grep` только сужает
+        выборку, а решает **точное** сравнение строки в Python. Разница не
+        теоретическая — `operation_id` детерминирован из sha256, и по
+        вхождению подстроки операция `<id>` совпала бы с чекпоинтом
+        операции `<id>-…`.
+
+        Поиск ограничен предками `HEAD` по той же причине, что и у коммита
+        раунда: чужая ветка вправе нести свой чекпоинт, и признать его своим
+        значило бы пропустить adoption, которого в этой истории не было.
+        """
+        line = f"{OPERATION_TRAILER_KEY}: {trailer}"
+        found = _checked(
+            self.root,
+            "log",
+            "--encoding=UTF-8",
+            "--format=%H",
+            "--fixed-strings",
+            f"--grep={line}",
+            "HEAD",
+            "--",
+        )
+        for sha in found.split():
+            body = _checked(
+                self.root, "log", "-1", "--encoding=UTF-8", "--format=%B", sha, "--"
+            )
+            if any(candidate.strip() == line for candidate in body.splitlines()):
+                return sha
+        return None
+
+
+def _index_file_path(root: Path) -> Path:
+    """Путь индекса репозитория; спрашивается у git, а не собирается.
+
+    Та же причина, что у `_exclude_file_path`: `.git` бывает файлом-ссылкой
+    (submodule, `git worktree`), и у worktree индекс — свой, в приватном
+    каталоге, а не в общем. Относительный ответ достраивается от `root`,
+    абсолютный `Path.__truediv__` поглощает сам.
+    """
+    return root / _checked(root, "rev-parse", "--git-path", "index").strip()
+
+
+def _unstage_session_dir(root: Path, *, index_file: Path | None = None) -> None:
     """Возвращает индексу состояние `HEAD` по `.disputatio/` ([DESIGN-011]).
 
     Снимает и записи intent-to-add, и содержимое, затянутое `git add --all`:
@@ -472,8 +731,12 @@ def _unstage_session_dir(root: Path) -> None:
     `:(exclude)`: он относителен `cwd` (== `root`), а `git add` с явно
     названным игнорируемым путём падает кодом 1. Пустое совпадение ошибкой
     не считается — до первого раунда каталога может ещё не быть.
+
+    `index_file` уводит сброс на одноразовый индекс `diff_readonly`:
+    настоящий при этом не открывается вовсе, и немутирующая сверка §8.1
+    остаётся немутирующей.
     """
-    _checked(root, "reset", "--quiet", "--", SESSION_DIR_NAME)
+    _checked(root, "reset", "--quiet", "--", SESSION_DIR_NAME, index_file=index_file)
 
 
 def _exclude_session_dir(root: Path) -> None:
@@ -510,9 +773,9 @@ def _exclude_file_path(root: Path) -> Path:
     return root / common_dir / "info" / "exclude"
 
 
-def _checked(root: Path, *args: str) -> str:
+def _checked(root: Path, *args: str, index_file: Path | None = None) -> str:
     """stdout команды; ненулевой код — `GitCommandError` с командой и stderr."""
-    completed = _run(root, *args)
+    completed = _run(root, *args, index_file=index_file)
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise GitCommandError(
@@ -521,7 +784,9 @@ def _checked(root: Path, *args: str) -> str:
     return completed.stdout
 
 
-def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    root: Path, *args: str, index_file: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     """Запускает git в `root`, не проверяя код возврата ([DESIGN §4.2]).
 
     Код возврата остаётся вызывающему: для `rev-parse` ненулевой код — это
@@ -529,12 +794,18 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     доменную ошибку делает `_checked` — кроме одного случая: отсутствие
     самого клиента кода возврата не даёт, `exec` роняет `FileNotFoundError`
     мимо любой проверки, поэтому он переводится здесь (NFR-003).
+
+    `index_file` — единственный способ увести команду с настоящего индекса
+    (`diff_readonly`, SPEC-002 §8.1). Он передаётся аргументом, а не
+    экспортом переменной: `_env` унаследованный `GIT_INDEX_FILE` снимает
+    намеренно — молча выполнить операцию раунда в чужом индексе хуже, чем
+    не выполнить вовсе.
     """
     try:
         return subprocess.run(
             ["git", *_IDENTITY_ARGS, *args],
             cwd=root,
-            env=_env(),
+            env=_env(index_file),
             capture_output=True,
             check=False,
             text=True,
@@ -548,12 +819,20 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         ) from exc
 
 
-def _env() -> dict[str, str]:
-    """Окружение git-вызова: без унаследованного, с отключённым конфигом."""
+def _env(index_file: Path | None = None) -> dict[str, str]:
+    """Окружение git-вызова: без унаследованного, с отключённым конфигом.
+
+    `GIT_INDEX_FILE` сначала снимается вместе с остальным унаследованным и
+    только потом выставляется по явному запросу вызывающего — порядок не
+    декоративен: иначе одноразовый индекс `diff_readonly` перебивался бы
+    экспортом из шелла пользователя.
+    """
     env = dict(os.environ)
     for var in _DROPPED_ENV_VARS:
         env.pop(var, None)
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = str(index_file)
     return env

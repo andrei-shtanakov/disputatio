@@ -59,6 +59,8 @@ from disputatio.runtime.layout import VERIFICATION_NAME, round_artifact
 from disputatio.runtime.steps import StepContext, verify
 from disputatio.verifier import GateSpec
 
+from ._fakes import GitOpsFakeBase
+
 _NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 """Часы сессии. Отличаются от `_CREATED` — иначе любой источник времени сойдётся."""
 
@@ -132,7 +134,7 @@ class StubVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: шаг VERIFYING git не трогает — любой вызов ошибка."""
 
     def diff_head(self) -> str:
