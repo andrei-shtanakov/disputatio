@@ -51,7 +51,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import anyio
 
@@ -60,13 +60,17 @@ from disputatio.contracts import (
     EventSource,
     EventType,
     Mode,
+    PipelinePhase,
+    PipelineState,
     SessionPhase,
     SessionState,
     StateStore,
 )
 from disputatio.core import SessionFsm
 from disputatio.events import (
+    FilePipelineStateStore,
     FileStateStore,
+    IntegrityAnchor,
     JsonlEventSink,
     bootstrap_session,
     write_config_snapshot,
@@ -74,13 +78,19 @@ from disputatio.events import (
 from disputatio.runtime import (
     DisputatioError,
     GitCli,
+    PipelineNotResumable,
     base_rev,
     build_runtime,
     load_config_file,
+    load_pipeline_config,
     preflight,
 )
+from disputatio.runtime.composition import PipelineDeps, build_pipeline
 from disputatio.runtime.layout import session_dir
 from disputatio.runtime.loop import drive, resume_session
+from disputatio.runtime.pipeline_config import load_session_profile
+from disputatio.runtime.pipeline_export import export_pipeline
+from disputatio.runtime.pipeline_resume import missing_manifest_message
 from disputatio.runtime.steps import StepContext
 
 EXIT_OK: Final = 0
@@ -101,6 +111,9 @@ DEFAULT_CONFIG_NAME: Final = "disputatio.toml"
 
 _FIRST_ROUND: Final = 1
 _HEAD_REVISION: Final = "HEAD"
+
+_SubParsers = argparse._SubParsersAction
+"""Тип контейнера подкоманд: у argparse публичного имени для него нет."""
 
 
 def main(
@@ -125,7 +138,9 @@ def main(
     """
     args = _build_parser().parse_args(argv)
     clock = now if now is not None else _utcnow
-    journal = _ErrorJournal(root=Path(args.root), now=clock)
+    journal = _ErrorJournal(
+        root=Path(args.root), now=clock, enabled=getattr(args, "journal", True)
+    )
     handler: Callable[..., int] = args.handler
     try:
         return handler(args, now=clock, journal=journal)
@@ -244,6 +259,224 @@ def cmd_resume(
     )
 
 
+def cmd_pipeline_run(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline run` — новый пайплайн полировки пары (SPEC-002 §3.1).
+
+    Своих предусловий CLI не заводит ни одного: чистое дерево, подходящая
+    ветка, отсутствие каталога и расположение анкера проверяет
+    `check_run_preconditions` внутри `PipelineRunner.run`, и второй их список
+    здесь разошёлся бы с первым молча. Сборка портов, наоборот, идёт ДО
+    `run` — по той же причине, что и у `disp run`: опечатка в имени адаптера
+    не вправе оставить после себя каталог пайплайна.
+
+    Порядок «предусловия → анкер → снапшоты → манифест» принадлежит runner'у
+    (§3.1), и CLI его не воспроизводит: он только переводит терминальное
+    состояние манифеста в код возврата.
+    """
+    root = Path(args.root)
+    deps = _pipeline_deps(args, root, now=now)
+    return _pipeline_exit_code(deps.runner.run(args.slug, _task_text(args)))
+
+
+def cmd_pipeline_resume(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline resume` — продолжение пайплайна с санкцией или без (§8.1).
+
+    `--config` здесь так же обязателен по смыслу, как у `run`, и это не
+    симметрия ради симметрии: §8.1 шаг 0 ищет журнал целостности по
+    `anchor_root` из ЖИВОЙ конфигурации, потому что снапшот конфига лежит в
+    каталоге пайплайна — то есть в дереве, доверять которому сверка и
+    призвана запретить. Пайплайн с нестандартным `anchor_path`, возобновлённый
+    без `--config`, смотрел бы в дефолтный журнал; отказывает за это сам
+    `PipelineResume`, а CLI лишь доносит его текст.
+
+    `--discard-round` и `--adopt-external` взаимоисключающи (argparse), и
+    отсутствие обоих — законный вход: на чистом либо атрибутированном дереве
+    решать нечего, а на неатрибутируемом откажет §8.1.
+    """
+    root = Path(args.root)
+    deps = _pipeline_deps(args, root, now=now)
+    return _pipeline_exit_code(deps.resume.resume(args.slug, decision=_decision(args)))
+
+
+def cmd_pipeline_status(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline status` — снимок пайплайна, строго read-only (§3.1).
+
+    Read-only не как обещание, а как форма: команда не собирает ни runner'а,
+    ни портов и не выполняет НИ ОДНОЙ git-команды. Причина конкретна: `git
+    status` обновляет stat-кэш в `.git/index`, то есть пишет — и «status
+    ничего не изменил» перестало бы быть верным утверждением о диске.
+    Отсюда же отсутствие проверки `anchor_path` (она требует `toplevel_prefix`,
+    то есть `git rev-parse`): существование журнала команда показывает,
+    а его расположение судит `run`/`resume`, которым это решать.
+
+    `--config` нужен ровно за одним — за `anchor_root`: где лежит журнал
+    целостности, знает только живая конфигурация (§8.1), и снимок без него
+    молчал бы о единственном файле пайплайна вне рабочего дерева.
+
+    Код возврата — `0` на любом успешно прочитанном манифесте, включая
+    `FAILED`: §3.1 определяет коды для команд, которые пайплайн ДВИГАЮТ, а
+    инспекция, отвечающая ненулём на исправно прочитанное состояние, ломала
+    бы `disp pipeline status && …` на ровном месте.
+    """
+    root = Path(args.root)
+    config = load_pipeline_config(_config_path(args, root))
+    anchor = IntegrityAnchor(config.anchor_path, root, args.slug)
+    try:
+        state = FilePipelineStateStore(root).load(args.slug)
+    except KeyError as exc:
+        raise PipelineNotResumable(
+            missing_manifest_message(root, args.slug, anchor)
+        ) from exc
+    print(render_status(state, anchor.path))
+    return EXIT_OK
+
+
+def cmd_pipeline_export(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline export` — пересобрать `result/` по текущему манифесту (§8.2).
+
+    Манифест не двигается: экспорт идемпотентен по контракту (`manifest.json`
+    — commit marker), и повтор чинит частичный набор тем же кодовым путём,
+    каким писал его в первый раз. Пайплайн, дошедший до `DONE`, свой экспорт
+    уже получил внутри цикла — эта команда нужна там, где набор испортили
+    или потеряли.
+
+    `--partial` пользователь называет сам: честность манифеста (§8.2, P7) —
+    это ЗНАЧЕНИЯ трёх полей, а не отдельный кодовый путь, и угадывать за
+    человека, считает ли он результат полным, команда не вправе.
+    """
+    root = Path(args.root)
+    config = load_pipeline_config(_config_path(args, root))
+    anchor = IntegrityAnchor(config.anchor_path, root, args.slug)
+    try:
+        state = FilePipelineStateStore(root).load(args.slug)
+    except KeyError as exc:
+        raise PipelineNotResumable(
+            missing_manifest_message(root, args.slug, anchor)
+        ) from exc
+    manifest = export_pipeline(
+        state,
+        workspace_root=root,
+        remote_url=None,
+        branch=GitCli(root).current_branch(),
+        partial=args.partial,
+    )
+    print(manifest, flush=True)
+    return EXIT_OK
+
+
+def render_status(state: PipelineState, anchor_path: Path) -> str:
+    """Снимок пайплайна одним текстовым блоком (§3.1).
+
+    Формат плоский и построчный, а не JSON: это ответ человеку на вопрос
+    «где пайплайн стоит», а машинно-читаемый источник у него уже есть —
+    сам `pipeline.json`, и вторая его сериализация начала бы расходиться с
+    первой.
+    """
+    budget = state.budget_used
+    anchor_state = "есть" if anchor_path.is_file() else "нет"
+    lines = [
+        f"pipeline: {state.pipeline_id}",
+        f"phase: {state.phase.value}",
+        f"documents: {state.documents.spec_path} + {state.documents.plan_path}",
+        f"budget: tokens={budget.tokens} wall={budget.wall_seconds:g}s",
+        f"anchor: {anchor_path} ({anchor_state})",
+        f"next_action: {_render_action(state)}",
+        "sessions:",
+    ]
+    for label, records in (
+        ("spec", state.spec_sessions),
+        ("pair", state.pair_sessions),
+    ):
+        for record in records:
+            outcome = "активна" if record.outcome is None else record.outcome.value
+            superseded = (
+                ""
+                if record.superseded_by is None
+                else f", перекрыта {record.superseded_by}"
+            )
+            lines.append(
+                f"  {label} r{record.revision} {record.session_id}: "
+                f"{outcome}{superseded}"
+            )
+    lines.append(f"transitions: {len(state.transitions)}")
+    return "\n".join(lines)
+
+
+def _render_action(state: PipelineState) -> str:
+    """Незавершённый интент манифеста либо явное «нет» (§4.3)."""
+    action = state.next_action
+    if action is None:
+        return "нет — пайплайн остановлен"
+    return f"{action.kind} ({action.operation_id})"
+
+
+def _pipeline_deps(
+    args: argparse.Namespace, root: Path, *, now: Callable[[], datetime]
+) -> PipelineDeps:
+    """Собирает пайплайн из живой конфигурации, названной `--config` (§3.1)."""
+    path = _config_path(args, root)
+    return build_pipeline(
+        load_pipeline_config(path),
+        load_session_profile(path),
+        root,
+        args.slug,
+        git=GitCli(root),
+        now=now,
+    )
+
+
+def _decision(
+    args: argparse.Namespace,
+) -> Literal["discard_round", "adopt_external"] | None:
+    """Санкция оператора из взаимоисключающих флагов `resume` (§3.1)."""
+    if args.discard_round:
+        return "discard_round"
+    if args.adopt_external:
+        return "adopt_external"
+    return None
+
+
+def _task_text(args: argparse.Namespace) -> str:
+    """Текст задачи: содержимое файла, если `--task` называет файл, иначе строка.
+
+    Различие решается существованием файла, а не флагом: §3.1 объявляет
+    `--task <файл|строка>` одним аргументом, и заставлять пользователя
+    называть вид ввода значило бы завести флаг, которого спека не просит.
+    Пустой `--task` — законный вход только как явная пустая строка; отсутствие
+    аргумента argparse отвергает сам.
+    """
+    candidate = Path(args.task)
+    if candidate.is_file():
+        return candidate.read_text(encoding="utf-8")
+    return args.task
+
+
+def _pipeline_exit_code(state: PipelineState) -> int:
+    """`0` только у сошедшегося `DONE` (§3.1).
+
+    `DONE` один на два исхода: пайплайн доходит до него и после сходимости
+    пары, и после эскалации — честный частичный результат тоже экспортируется
+    (P7). Различает их история переходов: `ESCALATED` в ней означает, что
+    результат неполон, а `converged: false` в `result/manifest.json` уже это
+    признал. Отвечать нулём на такой прогон значило бы дать скрипту вокруг
+    CLI считать эскалацию успехом.
+    """
+    escalated = any(
+        transition.to is PipelinePhase.ESCALATED for transition in state.transitions
+    )
+    if state.phase is PipelinePhase.DONE and not escalated:
+        return EXIT_OK
+    return EXIT_FAILED
+
+
 def new_session_id(moment: datetime) -> str:
     """`{UTC:%Y%m%d-%H%M%S}-{4 hex}` — имя сессии ([DESIGN-019]).
 
@@ -291,7 +524,80 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.set_defaults(handler=cmd_resume)
     resume.add_argument("session_id", help="имя сессии, напечатанное `disp run`")
     _add_root(resume)
+
+    _add_pipeline_commands(commands)
     return parser
+
+
+def _add_pipeline_commands(commands: _SubParsers) -> None:
+    """Четыре команды `disp pipeline` (SPEC-002 §3.1).
+
+    Своя группа подкоманд, а не четыре имени верхнего уровня: пайплайн —
+    другой объект, чем сессия (`--slug` против `session_id`), и общий
+    плоский список заставлял бы читателя `--help` угадывать, у какой команды
+    какой предмет.
+
+    `--config` объявлен у ВСЕХ четырёх, включая `status` и `export`. Это не
+    единообразие ради единообразия: живая конфигурация — единственный
+    источник `anchor_root` (§8.1 шаг 0), а снапшот в каталоге пайплайна для
+    этого негоден по построению — он лежит в дереве, доверять которому
+    сверка и запрещает.
+
+    Журнал ошибок §8 у пайплайновых команд выключен (`journal=False`): он
+    пишет в `events.jsonl` СЕССИИ рабочего корня, а у пайплайна такой сессии
+    нет — запись туда завела бы ленту, которую никто не читает, в чужом
+    репозитории ([REQ-010]). Отказы этих команд уходят строкой в stderr, как
+    и требует NFR-003.
+    """
+    pipeline = commands.add_parser(
+        "pipeline", help="пайплайн полировки пары «спека + план» (SPEC-002)"
+    )
+    actions = pipeline.add_subparsers(dest="pipeline_command", required=True)
+
+    run = actions.add_parser("run", help="запустить новый пайплайн")
+    run.set_defaults(handler=cmd_pipeline_run)
+    run.add_argument("--task", required=True, help="задача автору: файл либо строка")
+    _add_pipeline_common(run)
+
+    resume = actions.add_parser("resume", help="продолжить пайплайн")
+    resume.set_defaults(handler=cmd_pipeline_resume)
+    decision = resume.add_mutually_exclusive_group()
+    decision.add_argument(
+        "--discard-round",
+        action="store_true",
+        help="санкционировать сброс раунда; ручные правки будут потеряны",
+    )
+    decision.add_argument(
+        "--adopt-external",
+        action="store_true",
+        help="принять правку как внешнюю и уйти в новую ревизию",
+    )
+    _add_pipeline_common(resume)
+
+    status = actions.add_parser("status", help="снимок пайплайна (read-only)")
+    status.set_defaults(handler=cmd_pipeline_status)
+    _add_pipeline_common(status)
+
+    export = actions.add_parser("export", help="пересобрать result/ по манифесту")
+    export.set_defaults(handler=cmd_pipeline_export)
+    export.add_argument(
+        "--partial",
+        action="store_true",
+        help="объявить результат частичным (converged: false)",
+    )
+    _add_pipeline_common(export)
+
+
+def _add_pipeline_common(command: argparse.ArgumentParser) -> None:
+    """Общие аргументы всех четырёх команд §3.1: `--slug`, `--config`, `--root`."""
+    command.set_defaults(journal=False)
+    command.add_argument("--slug", required=True, help="имя пайплайна (§4.1)")
+    command.add_argument(
+        "--config",
+        default=None,
+        help=f"конфиг пайплайна (по умолчанию <root>/{DEFAULT_CONFIG_NAME})",
+    )
+    _add_root(command)
 
 
 def _add_root(command: argparse.ArgumentParser) -> None:
@@ -367,15 +673,22 @@ class _ErrorJournal:
     `bootstrap_session` не создал `.disputatio/`, любая запись завела бы
     каталог сессии в чужом репозитории ([REQ-010]) — а отказы старта
     случаются именно там.
+
+    `enabled=False` выключает журнал целиком, и выключен он у команд
+    `disp pipeline` (SPEC-002 §3.1): их предмет — не сессия рабочего корня, а
+    пайплайн, и запись отказа в ленту, которой у него нет, создала бы
+    `events.jsonl` сессии, никогда не существовавшей. Пользователь при этом
+    ничего не теряет — строка в stderr уходит в любом случае (NFR-003).
     """
 
     root: Path
     now: Callable[[], datetime]
     session: str = field(default="")
+    enabled: bool = field(default=True)
 
     def record(self, exc: DisputatioError) -> None:
         """Дописывает traceback событием `error`, если сессия уже начата."""
-        if not session_dir(self.root).exists():
+        if not self.enabled or not session_dir(self.root).exists():
             return
         event = Event(
             ts=self.now(),

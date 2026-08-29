@@ -40,7 +40,10 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 TESTS_DIR: Final[Path] = REPO_ROOT / "tests"
 
 #: Каталоги, все тест-модули которых обязаны присутствовать в матрице.
-CHARTED_DIRS: Final[tuple[str, ...]] = ("runtime", "cli")
+#: `integration` добавлен вместе со сквозными сценариями пайплайна (SPEC-002
+#: §10): набор, не попавший ни в один детектор, не виден ничему — а именно он
+#: и доказывает, что собранные по кускам пакеты работают вместе.
+CHARTED_DIRS: Final[tuple[str, ...]] = ("runtime", "cli", "integration")
 
 #: База workstream'а — состояние репозитория до его первой задачи.
 BASE_REV: Final[str] = "pilot/wave-1"
@@ -123,6 +126,7 @@ PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("SPEC-002 §8.1", "runtime/test_pipeline_resume.py"),
     ("SPEC-002 §2 P9", "runtime/test_pipeline_integrity.py"),
     ("SPEC-002 §3.1", "runtime/test_pipeline_adopt.py"),
+    ("SPEC-002 §10", "integration/test_pipeline_e2e.py"),
 )
 
 #: Полная матрица.

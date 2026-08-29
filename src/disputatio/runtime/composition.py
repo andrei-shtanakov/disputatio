@@ -22,19 +22,55 @@
 пинится AST-сканом этого файла в `tests/runtime/test_composition.py`.
 """
 
+import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
+
+import anyio
 
 from disputatio.adapters import ClaudeCodeAdapter, CodexAdapter
-from disputatio.contracts import AgentAdapter, EventSink, Role, StateStore, Verifier
-from disputatio.events import FileStateStore, JsonlEventSink
+from disputatio.contracts import (
+    AgentAdapter,
+    EventSink,
+    Mode,
+    Role,
+    RoundBoundaryPolicy,
+    SessionState,
+    StateStore,
+    Verifier,
+)
+from disputatio.events import (
+    FilePipelineStateStore,
+    FileStateStore,
+    IntegrityAnchor,
+    JsonlEventSink,
+    PipelineEventSink,
+    atomic_write,
+    bootstrap_session,
+    write_config_snapshot,
+)
 from disputatio.runtime.config import RuntimeConfig
 from disputatio.runtime.errors import ConfigError, UnknownAdapterError
 from disputatio.runtime.git import GitOps
-from disputatio.verifier import VerifierRunner
+from disputatio.runtime.history import load_patch
+from disputatio.runtime.layout import adopted_findings_json
+from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_config import PipelineConfig, SessionProfile
+from disputatio.runtime.pipeline_export import ExportFn, export_pipeline
+from disputatio.runtime.pipeline_integrity import ControlPlane, PipelineIntegrityPolicy
+from disputatio.runtime.pipeline_resume import PipelineResume
+from disputatio.runtime.pipeline_runner import (
+    CONTOUR_SPEC,
+    PipelineRunner,
+    SessionCreation,
+    pipeline_dir_of,
+    split_revision,
+)
+from disputatio.verifier import DocVerifier, VerifierRunner
 
 AdapterFactory = Callable[..., AgentAdapter]
 """Фабрика адаптера: вызывается только именованными аргументами сборки."""
@@ -247,3 +283,233 @@ def _build_adapter(
         raise ConfigError(
             f"адаптер {name!r} не собирается для роли {role.value}: {exc}"
         ) from exc
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineDeps:
+    """Связка пайплайновых портов — результат второй композиции (SPEC-002 §9).
+
+    Двух движков здесь нет: `resume` доводит пайплайн до состояния, из
+    которого вправе продолжить `runner`, и передаёт управление ему. Наружу
+    отдаются оба плюс хранилище манифеста — ровно то, что нужно четырём
+    командам §3.1, и ни одной операции сверх.
+    """
+
+    workspace_root: Path
+    slug: str
+    store: FilePipelineStateStore
+    runner: PipelineRunner
+    resume: PipelineResume
+
+
+def build_pipeline(
+    config: PipelineConfig,
+    profile: SessionProfile,
+    workspace_root: Path,
+    slug: str,
+    *,
+    git: GitOps,
+    now: Callable[[], datetime] = _utcnow,
+    monotonic: Callable[[], float] = time.monotonic,
+    exporter: ExportFn = export_pipeline,
+) -> PipelineDeps:
+    """Собирает пайплайн из реальных реализаций (SPEC-002 §3.1, §7, §9).
+
+    Второй composition root, и он не дублирует первый, а надстраивается над
+    ним: каждая ревизия — обычная сессия SPEC-001, и собирает её тот же
+    `build_runtime` внутри `resume_session`. Пайплайн добавляет к ней ровно
+    четыре вещи, и все четыре живут здесь, а не в runner'е:
+
+    1. **Фабрика ревизии** — `bootstrap` каталога, снапшот `config.toml` с
+       `Mode.DOCUMENT` и durable-набор архитектурных находок (§7.3). Находки
+       пишутся файлом, а не передаются в память: интент `create_session`
+       исполняется один раз, а промпт автора собирается в каждом раунде — в
+       том числе в другом процессе после краха.
+    2. **Драйвер ревизии** — `resume_session` под `anyio.run`. Именно
+       resume, а не `drive`, и для холодного старта тоже: фабрика уже
+       положила `session.json` в `IDLE`, поэтому «первый прогон» и
+       «продолжение» отличаются только содержимым файла, а не кодовым путём.
+    3. **`DocVerifier` вместо `VerifierRunner`** — пять baseline-гейтов §6 по
+       документам своего контура. `allowed` (граница `doc-scope`) уже, чем
+       `doc_paths`: pair-контур ЧИТАЕТ спеку, но правит только план (§5.1).
+    4. **Политика целостности P9** вокруг каждого хода автора. Ей нужны пути
+       обоих журналов, и берутся они у их владельцев (`sink.path`), а не
+       вычисляются здесь: [DESIGN-016] запрещает `runtime` строить путь
+       `events.jsonl` вообще.
+
+    Оба журнала сторожатся вместе, а не только пайплайновый: сузь набор до
+    одного — и подмена ленты сессии, из которой UI читает поток §8, перестала
+    бы быть нарушением P9.
+
+    `loop` и `steps` импортируются внутри функции: оба зависят от ЭТОГО
+    модуля (`build_runtime`, `RuntimeDeps`), и импорт на уровне модуля дал бы
+    цикл. Это единственная причина; ни одного другого отложенного импорта
+    здесь нет.
+    """
+    from disputatio.runtime.loop import resume_session
+    from disputatio.runtime.steps import DocSessionSpec
+
+    workspace = workspace_root.resolve()
+    store = FilePipelineStateStore(workspace)
+    try:
+        sink = PipelineEventSink(workspace, slug)
+    except ValueError as exc:
+        raise ConfigError(f"негодный слаг пайплайна: {exc}") from exc
+
+    def session_factory(creation: SessionCreation) -> SessionState:
+        """Материализует ревизию: каталог, снапшот конфига, находки, состояние.
+
+        `base_commit` берётся из `SessionCreation`, когда его назвал
+        операторский adoption (§3.1), и только иначе — из текущего `HEAD`:
+        ревизия, открытая принятой правкой, обязана сбрасываться к
+        чекпоинту, а не к состоянию до него.
+        """
+        bootstrap_session(creation.artifact_root)
+        session_config = RuntimeConfig(
+            session_id=creation.session_id,
+            mode=Mode.DOCUMENT,
+            base_commit=creation.base_commit or git.head_sha(),
+            task_prompt=creation.task_text,
+            author=profile.author,
+            reviewer=profile.reviewer,
+            limits=profile.limits,
+            # Baseline-гейты §6 `GateSpec`-ами не описываются (это функции
+            # пакета `verifier`), поэтому в снапшот едут только добавленные
+            # конфигом: `gate_started`/`gate_finished` §8 сообщают ровно о
+            # том, чьи имена оркестратору известны.
+            gates=config.extra_gates,
+        )
+        write_config_snapshot(creation.artifact_root, session_config.render_toml())
+        atomic_write(
+            adopted_findings_json(creation.artifact_root),
+            json.dumps(
+                [issue.model_dump(mode="json") for issue in creation.findings],
+                ensure_ascii=False,
+            ),
+        )
+        state = session_config.to_session_state(created_at=now())
+        FileStateStore(creation.artifact_root).save(state)
+        return state
+
+    def session_driver(
+        artifact_root: Path, session_id: str, policy: RoundBoundaryPolicy | None
+    ) -> SessionState:
+        """Гонит одну ревизию тем же циклом, что и `disp run` ([REQ-008])."""
+        contour = _contour_of(session_id)
+        session_sink = JsonlEventSink(artifact_root)
+        lifecycle = PipelineIntegrityPolicy(
+            anchor=IntegrityAnchor(config.anchor_path, workspace, slug),
+            control_plane=ControlPlane(
+                workspace_root=workspace,
+                pipeline_dir=pipeline_dir_of(workspace, slug),
+                artifact_root=artifact_root,
+                append_only_paths=(sink.path, session_sink.path),
+            ),
+        )
+
+        async def call() -> SessionState:
+            """Тело прогона ревизии; `anyio.run` — правило проекта."""
+            return await resume_session(
+                workspace,
+                session_id,
+                artifact_root=artifact_root,
+                round_boundary=policy,
+                lifecycle=lifecycle,
+                documents=DocSessionSpec(
+                    contour=contour, doc_paths=_doc_paths(config, contour)
+                ),
+                git=git,
+                sink=session_sink,
+                verifier=_doc_verifier(config, contour, workspace, artifact_root),
+                now=now,
+                monotonic=monotonic,
+            )
+
+        return anyio.run(call)
+
+    runner = PipelineRunner(
+        store=store,
+        sink=sink,
+        git=git,
+        session_driver=session_driver,
+        session_factory=session_factory,
+        exporter=exporter,
+        now=now,
+        config=config,
+        workspace_root=workspace,
+    )
+    return PipelineDeps(
+        workspace_root=workspace,
+        slug=slug,
+        store=store,
+        runner=runner,
+        resume=PipelineResume(
+            runner=runner,
+            store=store,
+            git=git,
+            config=config,
+            workspace_root=workspace,
+            intents=OperatorIntents(
+                store=store,
+                sink=sink,
+                git=git,
+                config=config,
+                workspace_root=workspace,
+                now=now,
+            ),
+        ),
+    )
+
+
+def _contour_of(session_id: str) -> Literal["spec", "pair"]:
+    """Контур ревизии по её имени (`spec-r2` → `spec`, §4.1 SPEC-002).
+
+    Имя ревизии — durable-факт манифеста и каталога, а не догадка: его
+    строит `revision_id`, и обратная операция `split_revision` живёт рядом с
+    ним. Здесь только сужение до `Literal`, которого требуют промпты §5.1/
+    §5.2 и `validate_doc_review`.
+    """
+    contour, _ = split_revision(session_id)
+    return "spec" if contour == CONTOUR_SPEC else "pair"
+
+
+def _doc_paths(
+    config: PipelineConfig, contour: Literal["spec", "pair"]
+) -> tuple[str, ...]:
+    """Документы, которые ревизия ВИДИТ (§5.1): spec — спеку, pair — оба."""
+    spec = config.spec_path.as_posix()
+    if contour == "spec":
+        return (spec,)
+    return (spec, config.plan_path.as_posix())
+
+
+def _doc_verifier(
+    config: PipelineConfig,
+    contour: Literal["spec", "pair"],
+    workspace: Path,
+    artifact_root: Path,
+) -> Verifier:
+    """Пять baseline-гейтов §6 по документам контура плюс добавленные конфигом.
+
+    `allowed` — граница `doc-scope`, и она УЖЕ набора проверяемых документов:
+    pair-контур читает спеку, но правит только план (§5.1), поэтому правка
+    спеки автором пары обязана валить гейт, а не проходить как «документ же
+    из моего контура».
+
+    Патч читается тем же `load_patch`, которым его читает всё остальное
+    runtime: `doc-scope` судит по `changes.patch` раунда, и второй читатель
+    того же файла разошёлся бы с первым на пустом раунде ([REQ-013]).
+    """
+    documents = tuple(workspace / relative for relative in _doc_paths(config, contour))
+    allowed = (
+        (config.spec_path.as_posix(),)
+        if contour == "spec"
+        else (config.plan_path.as_posix(),)
+    )
+    return DocVerifier(
+        doc_paths=documents,
+        allowed=allowed,
+        repo_root=workspace,
+        patch_reader=lambda round_no: load_patch(artifact_root, round_no) or "",
+        extra=config.extra_gates,
+    )

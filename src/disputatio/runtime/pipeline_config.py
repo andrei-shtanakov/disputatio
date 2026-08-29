@@ -31,6 +31,7 @@ from typing import Any, Final
 
 from disputatio.contracts import CHECKLIST_BY_CONTOUR, CHECKLIST_TEXT
 from disputatio.runtime import _toml
+from disputatio.runtime.config import AgentConfig, LimitsConfig
 from disputatio.runtime.errors import (
     ConfigError,
     DirtyWorkingTree,
@@ -110,6 +111,72 @@ class PipelineConfig:
     anchor_path: Path = field(default_factory=_default_anchor_root)
 
 
+@dataclass(frozen=True, slots=True)
+class SessionProfile:
+    """`[agents.*]` + `[limits]` конфига пайплайна — общие на оба контура (§3.2).
+
+    Отдельный тип, а не поля `PipelineConfig`: §3.2 держит эти секции рядом с
+    `[pipeline]` в одном файле, но описывают они ОДНУ сессию debate loop'а, а
+    не контур из нескольких (см. докстринг модуля). Ими фабрика ревизии
+    достраивает `RuntimeConfig` — оставшиеся четыре поля (`session.id`,
+    `session.mode`, `session.base_commit`, `task.prompt`) принадлежат
+    конкретной ревизии и в общем профиле смысла не имеют.
+
+    Своего `[session]`/`[task]` у конфига пайплайна нет намеренно, поэтому
+    `RuntimeConfig.from_toml` на нём не применим: он потребовал бы вписать в
+    общий файл идентификатор одной ревизии — то есть значение, которое к
+    следующей ревизии уже ложь.
+    """
+
+    author: AgentConfig
+    reviewer: AgentConfig
+    limits: LimitsConfig
+
+
+def load_session_profile(path: Path) -> SessionProfile:
+    """Читает `[agents.*]` и `[limits]` из того же файла, что и `[pipeline]`.
+
+    Отдельная функция, а не второе поле `load_pipeline_config`: у двух
+    читателей разные потребители (`check_run_preconditions` и фабрика
+    ревизии), и сцепив их, `disp pipeline status` тянул бы за собой разбор
+    лимитов сессии ради строки о фазе.
+
+    Иерархия ошибок та же, что у `load_pipeline_config` и
+    `RuntimeConfig.from_toml`: любая негодность — `ConfigError`, потому что
+    для пользователя это один факт «конфигом пользоваться нельзя».
+    """
+    raw = _read_toml(path)
+    try:
+        agents = _toml.table(raw, "agents")
+        limits = _toml.table(raw, "limits")
+        return SessionProfile(
+            author=_agent(agents, "author"),
+            reviewer=_agent(agents, "reviewer"),
+            limits=LimitsConfig(
+                max_rounds=_toml.integer(limits, "max_rounds", where="limits"),
+                max_total_tokens=_toml.integer(
+                    limits, "max_total_tokens", where="limits"
+                ),
+                max_wall_seconds=_toml.integer(
+                    limits, "max_wall_seconds", where="limits"
+                ),
+                schema_retries=_toml.integer(limits, "schema_retries", where="limits"),
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"[agents]/[limits] в {path} непригодны: {exc}") from exc
+
+
+def _agent(agents: Mapping[str, Any], role: str) -> AgentConfig:
+    """Агент из вложенной таблицы `[agents.<role>]` конфига пайплайна."""
+    table = _toml.table(agents, role)
+    where = f"agents.{role}"
+    return AgentConfig(
+        adapter=_toml.text(table, "adapter", where=where),
+        model=_toml.text(table, "model", where=where),
+    )
+
+
 def load_pipeline_config(path: Path) -> PipelineConfig:
     """Читает секцию `[pipeline]` из файла `path` ([DESIGN-020], §3.2).
 
@@ -124,6 +191,22 @@ def load_pipeline_config(path: Path) -> PipelineConfig:
     текстом («baseline не отключается»), поднятым явно, а не полученным из
     перехвата чужого типа исключения.
     """
+    raw = _read_toml(path)
+    try:
+        table = _toml.table(raw, "pipeline")
+        return _from_pipeline_table(table)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"[pipeline] в {path} непригодна: {exc}") from exc
+
+
+def _read_toml(path: Path) -> Mapping[str, Any]:
+    """Разобранный TOML конфига пайплайна; любая негодность — `ConfigError`.
+
+    Общий вход обоих читателей файла (`load_pipeline_config`,
+    `load_session_profile`): «файла нет», «файл не в UTF-8» и «это не TOML»
+    — один и тот же факт для пользователя, и вторая копия этих трёх веток
+    рано или поздно ответила бы на него иначе.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -131,14 +214,9 @@ def load_pipeline_config(path: Path) -> PipelineConfig:
     except UnicodeDecodeError as exc:
         raise ConfigError(f"конфиг пайплайна {path} не в UTF-8: {exc}") from exc
     try:
-        raw = tomllib.loads(text)
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path} не разбирается как TOML: {exc}") from exc
-    try:
-        table = _toml.table(raw, "pipeline")
-        return _from_pipeline_table(table)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ConfigError(f"[pipeline] в {path} непригодна: {exc}") from exc
 
 
 def check_run_preconditions(

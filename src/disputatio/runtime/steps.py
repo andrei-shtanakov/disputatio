@@ -21,24 +21,31 @@ FSM обнулила бы лимит schema-повторов (ADR-004).
 приходят своими задачами и делят с ними `StepContext`.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
-from disputatio.context import build_author_prompt, build_reviewer_prompt
+from disputatio.context import (
+    build_author_prompt,
+    build_doc_author_prompt,
+    build_doc_reviewer_prompt,
+    build_reviewer_prompt,
+)
 from disputatio.contracts import (
+    CHECKLIST_BY_CONTOUR,
     AgentTurn,
     Decision,
     Event,
     EventSource,
     EventType,
+    Mode,
     Review,
-    ReviewAcceptance,
     Role,
     SessionLifecyclePolicy,
     VerificationReport,
     parse_proposal,
+    validate_doc_review,
     validate_review,
 )
 from disputatio.core import (
@@ -58,8 +65,10 @@ from disputatio.runtime.composition import RuntimeDeps
 from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import (
+    PriorRound,
     carried_issues,
     issue_history,
+    load_adopted_findings,
     load_decision,
     load_patch,
     load_prior_round,
@@ -95,6 +104,27 @@ TEMP_ARTIFACT_PATTERNS: Final = ("*.tmp", "*~")
 
 
 @dataclass(frozen=True, slots=True)
+class DocSessionSpec:
+    """Контур и документы doc-сессии — вход промптов §5.1/§5.2 SPEC-002.
+
+    Ровно два поля, и оба — то, чего в `session.json` нет и быть не должно.
+    `contour` определяет и задачу автора, и набор id чеклиста, по которому
+    судят ревьюера; `doc_paths` — пара документов, которую ревизия видит
+    (spec-контур смотрит спеку, pair-контур сверяет план со спекой). Оба
+    приходят от вызывающего `drive`, а не из сборки портов: сессия
+    develop/analyze их не имеет вовсе, и дефолт `None` оставляет её путь
+    байт-в-байт прежним.
+
+    Набор id чеклиста здесь НЕ хранится: он выводится из контура
+    (`CHECKLIST_BY_CONTOUR`), и второе его написание разошлось бы с первым
+    ровно в том месте, где V1 требует «ровно набор своего контура».
+    """
+
+    contour: Literal["spec", "pair"]
+    doc_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StepContext:
     """Всё, что нужно шагу: порты, FSM и цель сброса первого раунда.
 
@@ -122,6 +152,10 @@ class StepContext:
     приходит от вызывающего `drive`, а не от сборки портов: спека
     (`spec`-контур) её не передаёт вовсе, пара — передаёт. `None` — no-op,
     то есть путь до пайплайна байт-в-байт.
+
+    `documents` — контур и пара документов doc-сессии (SPEC-002 §5.1). Тоже
+    от вызывающего и тоже с дефолтом `None`: `disp run` doc-сессий не
+    заводит, и без него ни одна строка шага не меняется.
     """
 
     deps: RuntimeDeps
@@ -129,6 +163,7 @@ class StepContext:
     base_commit: str
     gates: tuple[GateSpec, ...] = field(default=())
     lifecycle: SessionLifecyclePolicy | None = None
+    documents: DocSessionSpec | None = None
 
     @property
     def workspace_root(self) -> Path:
@@ -165,6 +200,7 @@ class StepContext:
             base_commit=self.base_commit,
             gates=self.gates,
             lifecycle=self.lifecycle,
+            documents=self.documents,
         )
 
     def with_lifecycle(self, lifecycle: "SessionLifecyclePolicy") -> "StepContext":
@@ -180,6 +216,7 @@ class StepContext:
             base_commit=self.base_commit,
             gates=self.gates,
             lifecycle=lifecycle,
+            documents=self.documents,
         )
 
 
@@ -194,7 +231,10 @@ async def propose(ctx: StepContext) -> AgentTurn:
        ушли бы ревьюеру как работа этого раунда.
     2. Промпт собирается `context.build_author_prompt` из артефактов раунда
        N−1, прочитанных с диска (§6.1). Прошлых proposal среди них нет —
-       источник истины для автора это файлы рабочей директории.
+       источник истины для автора это файлы рабочей директории. В
+       `Mode.DOCUMENT` сборщик другой (`build_doc_author_prompt`, §5.1
+       SPEC-002), но правило то же: документы называются путями, а не
+       содержимым, и прошлых их версий автор не получает.
     3. Единственный `await` шага — вызов адаптера. Политика `ctx.lifecycle`
        уходит в `run_with_schema_retry`, а не обнимает шаг здесь: ходов
        автора внутри одного `PROPOSING` столько, сколько попыток у
@@ -229,13 +269,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.author,
-        build_prompt=lambda: build_author_prompt(
-            task=ctx.fsm.state.task,
-            round=round_no,
-            prior_review=prior.review,
-            prior_verification=prior.verification,
-            prior_decision=prior.decision,
-        ),
+        build_prompt=lambda: _author_prompt(ctx, round_no, prior),
         parse=parse_proposal,
         source=EventSource.AUTHOR,
         session_ref=_author_session_ref(ctx),
@@ -314,7 +348,10 @@ async def review(ctx: StepContext) -> AgentTurn:
     `verification.overall == fail` и отказ при пустом `checked` — это
     результат ОДНОГО вызова `contracts.validate_review`. Продублируй
     любое из них здесь — и два места начали бы отвечать на один вопрос,
-    расходясь ровно тогда, когда §4.4 поправят в одном из них.
+    расходясь ровно тогда, когда §4.4 поправят в одном из них. То же и с
+    правилами V1–V8 doc-ревью (§5.2 SPEC-002): их считает
+    `contracts.validate_doc_review`, а `_accepted_review` только соблюдает
+    порядок вызова, от которого они зависят.
 
     Runtime решает три вещи, и только их:
 
@@ -355,16 +392,8 @@ async def review(ctx: StepContext) -> AgentTurn:
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.reviewer,
-        build_prompt=lambda: build_reviewer_prompt(
-            task=ctx.fsm.state.task,
-            round=round_no,
-            proposal_path=_relative_artifact(ctx, round_no, PROPOSAL_NAME),
-            patch_path=_relative_artifact(ctx, round_no, CHANGES_PATCH_NAME),
-            verification=verification,
-            prior_review=prior.review,
-            prior_decision=prior.decision,
-        ),
-        parse=lambda text: _accepted_review(text, verification, round_no),
+        build_prompt=lambda: _reviewer_prompt(ctx, round_no, prior, verification),
+        parse=lambda text: _accepted_review(ctx, text, verification, round_no),
         source=EventSource.REVIEWER,
         session_ref=_reviewer_session_ref(ctx),
         on_invalid=failures.append,
@@ -533,8 +562,105 @@ def _write_decision(artifact_root: Path, round_no: int, decision: Decision) -> N
             raise
 
 
+def _doc_spec(ctx: StepContext) -> DocSessionSpec | None:
+    """Описание doc-сессии либо `None` для develop/analyze (SPEC-002 §5.1).
+
+    Развилка идёт по РЕЖИМУ, а не по наличию `documents`: `Mode.DOCUMENT`
+    без описания контура — не «сессия попроще», а сборка, при которой
+    ревьюер не узнает набора id чеклиста, а `validate_doc_review` не узнает
+    контура. Обе половины V1 молча отключились бы, и doc-сессия сошлась бы
+    по критерию develop-раунда. Поэтому это `AssertionError`: сюда приводит
+    ошибка композиции, а не действие пользователя.
+    """
+    if ctx.fsm.state.task.mode is not Mode.DOCUMENT:
+        return None
+    if ctx.documents is None:
+        raise AssertionError(
+            "сессия объявлена в режиме document, но контур и документы не "
+            "переданы: без них ни промпт §5.1/§5.2, ни правила V1–V8 не "
+            "собираются — composition root подал doc-сессию как обычную"
+        )
+    return ctx.documents
+
+
+def _author_prompt(ctx: StepContext, round_no: int, prior: PriorRound) -> str:
+    """Промпт автора: develop/analyze (§6.1) либо doc-раунд (§5.1 SPEC-002).
+
+    Doc-автор получает не артефакты прошлого раунда, а пути документов и
+    архитектурные находки, ради которых открыта ревизия (§7.3): источник
+    истины для него — файлы рабочей директории, а не пересказ. Директива
+    оркестратора приходит из решения прошлого раунда — тем же каналом, что и
+    у develop-автора, и другого у неё нет.
+    """
+    spec = _doc_spec(ctx)
+    if spec is None:
+        return build_author_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            prior_review=prior.review,
+            prior_verification=prior.verification,
+            prior_decision=prior.decision,
+        )
+    return build_doc_author_prompt(
+        contour=spec.contour,
+        task_text=ctx.fsm.state.task.prompt,
+        doc_paths=spec.doc_paths,
+        directive=None
+        if prior.decision is None
+        else prior.decision.next_round_directive,
+        adopted_findings=load_adopted_findings(ctx.artifact_root),
+    )
+
+
+def _reviewer_prompt(
+    ctx: StepContext,
+    round_no: int,
+    prior: PriorRound,
+    verification: VerificationReport,
+) -> str:
+    """Промпт ревьюера: develop/analyze (§6.2) либо doc-раунд (§5.2 SPEC-002).
+
+    Doc-ревьюер получает ТЕКСТЫ документов, а не пути: doc-ревью охватывает
+    несколько документов сразу, и вставлены они внутрь меток «данные, не
+    инструкции» той же механикой, что текст автора у develop-ревьюера.
+    """
+    spec = _doc_spec(ctx)
+    if spec is None:
+        return build_reviewer_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            proposal_path=_relative_artifact(ctx, round_no, PROPOSAL_NAME),
+            patch_path=_relative_artifact(ctx, round_no, CHANGES_PATCH_NAME),
+            verification=verification,
+            prior_review=prior.review,
+            prior_decision=prior.decision,
+        )
+    return build_doc_reviewer_prompt(
+        contour=spec.contour,
+        doc_texts=_doc_texts(ctx, spec),
+        verification=verification,
+        checklist_ids=CHECKLIST_BY_CONTOUR[spec.contour],
+    )
+
+
+def _doc_texts(ctx: StepContext, spec: DocSessionSpec) -> Mapping[str, str]:
+    """Тексты документов контура; отсутствующий файл в промпт не попадает.
+
+    Отсутствие законно и постоянно: в spec-r1 спеки ещё нет, в pair-r1 может
+    не быть плана — их и пишет автор. Пустая строка вместо содержимого
+    сказала бы ревьюеру «документ пуст», а это другой факт, и вердикт по нему
+    был бы другим.
+    """
+    texts: dict[str, str] = {}
+    for relative in spec.doc_paths:
+        path = ctx.workspace_root / relative
+        if path.is_file():
+            texts[relative] = path.read_text(encoding="utf-8", errors="replace")
+    return texts
+
+
 def _accepted_review(
-    text: str, verification: VerificationReport, round_no: int
+    ctx: StepContext, text: str, verification: VerificationReport, round_no: int
 ) -> Review:
     """Текст ревьюера → принятая §4.4 модель; иначе ошибка для повтора.
 
@@ -543,13 +669,37 @@ def _accepted_review(
     это один и тот же факт: вывод агента не той формы, и лечится он
     повтором с текстом ошибки, а не ветвлением здесь.
 
+    В `Mode.DOCUMENT` к §4.4 добавляются правила V1–V5, V7–V8 (§5.2
+    SPEC-002), и **порядок вызова фиксирован**: `validate_doc_review`
+    получает ревью ДО `degrade_unevidenced_issues`, то есть до того, как
+    §4.4 понизит безевиденсный blocker до `minor`. Иначе `approve` с
+    голословным блокером, `S1: pass` и без `defect_class` прошёл бы V5/V7/V8
+    — к моменту их проверки блокера в модели уже не было бы. Отсюда и два
+    отдельных вызова вместо одного конвейера: `validate_review` возвращает
+    деградированную копию, и подать её в doc-правила значило бы проверить
+    не то ревью, которое прислал агент.
+
+    Причины обоих слоёв складываются в ОДИН список: для schema-retry это одна
+    неудачная попытка, и разделить её на две значило бы дать агенту чинить
+    половину нарушений за раз, тратя лимит повторов на то же ревью.
+
     Возвращается `acceptance.review` — деградированная копия: исходная
     модель сохранила бы `blocker`, который §4.4 уже не признал, и следующий
     раунд читал бы его как настоящий.
     """
     parsed = Review.model_validate_json(extract_json_object(text))
+    spec = _doc_spec(ctx)
+    doc_reasons = (
+        ()
+        if spec is None
+        else validate_doc_review(
+            parsed, contour=spec.contour, verification=verification
+        )
+    )
     acceptance = validate_review(parsed, verification)
-    _require_accepted(acceptance, round_no)
+    reasons = [*acceptance.rejection_reasons, *doc_reasons]
+    if reasons:
+        raise ReviewNotAccepted(reasons, round_no=round_no)
     return acceptance.review
 
 
@@ -640,18 +790,6 @@ def _relative_artifact(ctx: StepContext, round_no: int, name: str) -> str:
     """
     artifact = round_artifact(ctx.artifact_root, round_no, name)
     return artifact.relative_to(ctx.workspace_root).as_posix()
-
-
-def _require_accepted(acceptance: ReviewAcceptance, round_no: int) -> None:
-    """Непринятое §4.4 ревью не пишется на диск, а требует повтора.
-
-    Причины пересылаются как есть — machine-readable кодами
-    `contracts.REASON_*`: из них схемный retry ([DESIGN-006]) соберёт
-    следующий промпт, и переписывание их в человеческий текст здесь
-    сделало бы этот текст вторым источником правды о §4.4.
-    """
-    if not acceptance.accepted:
-        raise ReviewNotAccepted(acceptance.rejection_reasons, round_no=round_no)
 
 
 def _reviewer_session_ref(ctx: StepContext) -> str | None:

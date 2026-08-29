@@ -27,6 +27,7 @@ from typing import Final
 SESSION_DIR_NAME: Final = ".disputatio"
 ROUNDS_DIR_NAME: Final = "rounds"
 CONFIG_TOML_NAME: Final = "config.toml"
+ADOPTED_FINDINGS_NAME: Final = "adopted_findings.json"
 
 PROPOSAL_NAME: Final = "proposal.md"
 CHANGES_PATCH_NAME: Final = "changes.patch"
@@ -48,6 +49,18 @@ def config_toml(artifact_root: Path) -> Path:
     прочитать — и прочитать оттуда же, куда он записан ([REQ-014]).
     """
     return session_dir(artifact_root) / CONFIG_TOML_NAME
+
+
+def adopted_findings_json(artifact_root: Path) -> Path:
+    """Архитектурные находки, с которыми открыта spec-ревизия (§7.3 SPEC-002).
+
+    Файл уровня сессии, а не раунда: находки принадлежат всей ревизии и
+    доезжают до автора КАЖДОГО её раунда. Durable, потому что вычисляются
+    один раз при создании ревизии, а читаются в другом процессе — после
+    краха `advance` поднимает пайплайн без интента `create_session` на руках
+    (он уже исполнен), и восстановить находки из манифеста было бы нечем.
+    """
+    return session_dir(artifact_root) / ADOPTED_FINDINGS_NAME
 
 
 def rounds_dir(artifact_root: Path) -> Path:

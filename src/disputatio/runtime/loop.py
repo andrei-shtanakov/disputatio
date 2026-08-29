@@ -52,7 +52,7 @@ from disputatio.runtime.budget import charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
-from disputatio.runtime.steps import StepContext
+from disputatio.runtime.steps import DocSessionSpec, StepContext
 
 StepFn = Callable[[StepContext], Awaitable[AgentTurn | None] | AgentTurn | None]
 """Тело шага: синхронное (`verify`, `decide_step`) либо ожидаемое.
@@ -100,6 +100,7 @@ async def resume_session(
     artifact_root: Path | None = None,
     round_boundary: RoundBoundaryPolicy | None = None,
     lifecycle: SessionLifecyclePolicy | None = None,
+    documents: DocSessionSpec | None = None,
     **overrides: Any,
 ) -> SessionState:
     """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
@@ -141,6 +142,11 @@ async def resume_session(
     `overrides` попасть не должны — `build_runtime` их не знает. Дефолт
     `None` оставляет resume ровно тем, чем он был.
 
+    `documents` — контур и пара документов doc-сессии (§5.1 SPEC-002). В
+    отличие от политик, до `drive` оно НЕ едет: цикл о режиме сессии ничего
+    не знает и знать не должен, а нужен контур шагу — здесь `StepContext` и
+    собирается. Дефолт `None` — путь develop/analyze байт-в-байт.
+
     Остальные `overrides` передаются в `build_runtime` как есть: подмена
     любого порта фейком не требует ни отдельного пути, ни правок цикла
     ([REQ-001]).
@@ -164,6 +170,7 @@ async def resume_session(
             fsm=fsm,
             base_commit=config.base_commit,
             gates=config.gates,
+            documents=documents,
         ),
         round_boundary=round_boundary,
         lifecycle=lifecycle,

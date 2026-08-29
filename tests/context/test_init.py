@@ -5,12 +5,19 @@
 на отсутствующем атрибуте, а не `ImportError` на коллекте. Отсюда же
 `importlib` + `getattr` вместо `from ... import ...` на уровне модуля.
 
-Публичных имён ровно два ([DESIGN-001]): `build_author_prompt` и
-`build_reviewer_prompt`. Всё остальное — `tags`, `sections`,
-`schema_rules` и их функции — деталь реализации: оркестратор завязывается
-на две точки входа, а не на внутреннюю раскладку модулей (NFR-003).
-Поэтому «ровно два» пиньется с обеих сторон: имена присутствуют и
-тождественны оригиналам, и ничего сверх них наружу не выходит.
+Публичных имён ровно четыре: пара develop/analyze-раунда
+(`build_author_prompt`, `build_reviewer_prompt`, [DESIGN-001]) и пара
+doc-раунда пайплайна (`build_doc_author_prompt`,
+`build_doc_reviewer_prompt`, §5.1–§5.2 SPEC-002). Doc-пара стала публичной
+вместе с интеграцией пайплайна (задача 17): шаг цикла выбирает сборщик по
+режиму сессии, а импорт подмодуля из `runtime` обходил бы ту же границу,
+которая закрыта для develop-пары.
+
+Всё остальное — `tags`, `sections`, `schema_rules` и их функции — деталь
+реализации: оркестратор завязывается на четыре точки входа, а не на
+внутреннюю раскладку модулей (NFR-003). Поэтому «ровно четыре» пинится с
+обеих сторон: имена присутствуют и тождественны оригиналам, и ничего сверх
+них наружу не выходит.
 """
 
 import importlib
@@ -22,6 +29,8 @@ PACKAGE: Final = "disputatio.context"
 # быть тем же объектом, а не копией или тенью.
 PUBLIC_API: Final[dict[str, str]] = {
     "build_author_prompt": "disputatio.context.author",
+    "build_doc_author_prompt": "disputatio.context.doc_author",
+    "build_doc_reviewer_prompt": "disputatio.context.doc_reviewer",
     "build_reviewer_prompt": "disputatio.context.reviewer",
 }
 
@@ -31,9 +40,15 @@ PUBLIC_API: Final[dict[str, str]] = {
 # реализации».
 INTERNAL_NAMES: Final[tuple[str, ...]] = (
     "REVIEW_SCHEMA_REQUIREMENTS",
+    "CHECKLIST_TITLE",
+    "DOCUMENTS_TITLE",
+    "DOC_PATHS_TITLE",
+    "ADOPTED_FINDINGS_TITLE",
     "MATERIALS_TITLE",
     "TASK_TITLE",
     "author",
+    "doc_author",
+    "doc_reviewer",
     "reviewer",
     "schema_rules",
     "sections",

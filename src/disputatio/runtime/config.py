@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Final
 
 from disputatio.contracts import (
+    SCHEMA_V1,
+    SCHEMA_V2,
     AgentRef,
     BudgetUsed,
     Limits,
@@ -203,8 +205,16 @@ class RuntimeConfig:
         `created_at` передаётся, а не берётся у `datetime.now`: часы сессии
         инжектируются в `RuntimeDeps.now`, и второй источник времени сделал
         бы `session.json` недетерминированным в тестах ([REQ-001]).
+
+        Тег схемы выбирается режимом, а не константой: `Mode.DOCUMENT` —
+        расширение `disputatio/v2` (SPEC-002 §5.1), и `SessionState` его под
+        тегом v1 попросту не принимает. Развилка стоит здесь, а не у
+        вызывающего, ровно потому, что вызывающих двое — `disp run` и фабрика
+        ревизии пайплайна, — и разойдись они, doc-сессия рождалась бы
+        валидной у одного и невозможной у другого.
         """
         return SessionState(
+            schema=SCHEMA_V2 if self.mode is Mode.DOCUMENT else SCHEMA_V1,
             session_id=self.session_id,
             created_at=created_at,
             state=SessionPhase.IDLE,

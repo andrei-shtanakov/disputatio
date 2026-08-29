@@ -369,7 +369,7 @@ class PipelineResume:
             state = self._store.load(slug)
         except KeyError as exc:
             raise PipelineNotResumable(
-                _missing_manifest_message(self._workspace_root, slug, anchor)
+                missing_manifest_message(self._workspace_root, slug, anchor)
             ) from exc
         if state.phase in _TERMINAL_PHASES:
             raise PipelineNotResumable(
@@ -470,10 +470,15 @@ def _recorded_patch(state: PipelineState, workspace_root: Path) -> bytes | None:
     return patch.read_bytes() if patch.is_file() else None
 
 
-def _missing_manifest_message(
+def missing_manifest_message(
     workspace_root: Path, slug: str, anchor: IntegrityAnchor
 ) -> str:
     """Инструкция для окна «каталог создан, манифеста ещё нет».
+
+    Публичная, потому что читателей двое: `resume`, для которого это отказ
+    возобновления, и `disp pipeline status`, для которого это единственный
+    честный ответ на вопрос «что с пайплайном». Второй текст об одном и том
+    же состоянии разошёлся бы с первым ровно в перечне ручных шагов.
 
     Окно между созданием каталога пайплайна и первой записью манифеста
     невосстановимо автоматически: `resume` не находит манифеста, `run`

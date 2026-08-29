@@ -15,6 +15,7 @@
 `None` превратил бы повреждённую историю в «замечаний не было».
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from disputatio.runtime.layout import (
     DECISION_NAME,
     REVIEW_NAME,
     VERIFICATION_NAME,
+    adopted_findings_json,
     round_artifact,
 )
 
@@ -138,6 +140,23 @@ def carried_issues(artifact_root: Path, round_no: int) -> tuple[Issue, ...]:
         return ()
     open_ids = set(prior.decision.open_issues_carried)
     return tuple(issue for issue in prior.review.issues if issue.id in open_ids)
+
+
+def load_adopted_findings(artifact_root: Path) -> tuple[Issue, ...]:
+    """Находки, с которыми открыта ревизия (§7.3 SPEC-002); нет файла — пусто.
+
+    Отсутствие файла — законный вход и означает ровно «ревизия открыта не
+    возвратом»: так стартуют spec-r1 и КАЖДАЯ pair-ревизия (P5 — пара
+    перепроверяется целиком, без унаследованного). Битый файл, наоборот,
+    поднимает `ValidationError`: молча подставленный пустой набор превратил
+    бы потерянные архитектурные находки в «их не было», то есть отправил бы
+    автора переписывать спеку вслепую.
+    """
+    path = adopted_findings_json(artifact_root)
+    if not path.is_file():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return tuple(Issue.model_validate(item) for item in payload)
 
 
 def issue_history(artifact_root: Path, round_no: int) -> dict[int, tuple[Issue, ...]]:
