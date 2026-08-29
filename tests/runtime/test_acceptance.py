@@ -120,6 +120,9 @@ PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("SPEC-002 §3.1", "runtime/test_pipeline_config.py"),
     ("SPEC-002 §8.2", "runtime/test_pipeline_export.py"),
     ("SPEC-002 §4.3", "runtime/test_pipeline_runner.py"),
+    ("SPEC-002 §8.1", "runtime/test_pipeline_resume.py"),
+    ("SPEC-002 §2 P9", "runtime/test_pipeline_integrity.py"),
+    ("SPEC-002 §3.1", "runtime/test_pipeline_adopt.py"),
 )
 
 #: Полная матрица.

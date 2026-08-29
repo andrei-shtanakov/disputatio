@@ -165,10 +165,10 @@ def check_run_preconditions(
     _check_clean_tree(git)
     _check_branch(git, config, slug)
     _check_pipeline_dir_absent(workspace_root, slug)
-    validate_anchor_path(config.anchor_path, _toplevel_root(git, workspace_root))
+    validate_anchor_path(config.anchor_path, toplevel_root(git, workspace_root))
 
 
-def _toplevel_root(git: GitOps, workspace_root: Path) -> Path:
+def toplevel_root(git: GitOps, workspace_root: Path) -> Path:
     """Абсолютный путь toplevel репозитория — `workspace_root` минус префикс.
 
     `GitOps.toplevel_prefix()` отдаёт ОТНОСИТЕЛЬНЫЙ путь `workspace_root` от

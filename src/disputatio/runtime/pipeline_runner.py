@@ -137,6 +137,12 @@ class SessionCreation:
     `findings` непуст ровно у spec-ревизии, открытой возвратом: это
     архитектурные находки pair-ревью, которые §7.3 требует донести до автора
     новой спеки **как недоверенные данные**. У всех остальных ревизий — пусто.
+
+    `base_commit` заполняет ровно один вызывающий — операторский adoption
+    (§3.1): новая ревизия обязана стартовать от чекпоинта, которым принята
+    внешняя правка, иначе первый же `PROPOSING` сбросил бы дерево к
+    состоянию ДО правки и стёр её. `None` означает «как обычно» — база
+    ревизии определяется фабрикой, а не решением оператора.
     """
 
     artifact_root: Path
@@ -145,6 +151,7 @@ class SessionCreation:
     revision: int
     task_text: str
     findings: tuple[Issue, ...] = ()
+    base_commit: str | None = None
 
 
 SessionDriver = Callable[[Path, str, RoundBoundaryPolicy | None], SessionState]
@@ -197,6 +204,67 @@ def architectural_findings(review: Review) -> tuple[Issue, ...]:
 def revision_id(contour: str, revision: int) -> str:
     """Детерминированное имя ревизии: `spec-r2`, `pair-r1` (§4.1, §7.3)."""
     return f"{contour}-r{revision}"
+
+
+def pipeline_dir_of(workspace_root: Path, slug: str) -> Path:
+    """`.disputatio/pipelines/<slug>` (§4.1) — раскладка, а не метод runner'а.
+
+    Модульная функция, потому что путь нужен и операторским решениям (§3.1),
+    и resume (§8.1), а собирать его там заново значило бы завести третью
+    копию знания о раскладке.
+    """
+    return workspace_root / SESSION_DIR_NAME / PIPELINES_DIR_NAME / slug
+
+
+def artifact_root_of(workspace_root: Path, slug: str, session_id: str) -> Path:
+    """`artifact_root` одной ревизии: `sessions/<revision>` (§4.1)."""
+    return pipeline_dir_of(workspace_root, slug) / SESSIONS_DIR_NAME / session_id
+
+
+def load_session_state(artifact_root: Path, session_id: str) -> SessionState | None:
+    """`session.json` ревизии либо `None`, если её ещё нет на диске."""
+    try:
+        return FileStateStore(artifact_root).load(session_id)
+    except KeyError:
+        return None
+
+
+def active_session(state: PipelineState) -> SessionRecord | None:
+    """Единственная незакрытая ревизия манифеста либо `None` (§4.2, §8.1).
+
+    Закрытой считается ревизия с записанным `outcome` ЛИБО с
+    `superseded_by`: §8.1 запрещает возобновлять и ту, и другую, а
+    перекрытая ревизия исход получает не всегда (сошедшаяся spec-rN
+    сохраняет `converged`, P3).
+    """
+    live = [
+        record
+        for record in (*state.spec_sessions, *state.pair_sessions)
+        if record.outcome is None and record.superseded_by is None
+    ]
+    return live[-1] if live else None
+
+
+def recompute_budget(pipeline_dir: Path, state: PipelineState) -> BudgetUsed:
+    """Сумма расхода по `session.json` ВСЕХ сессий манифеста (§4.2).
+
+    Пересчёт, а не инкремент: повторное исполнение интента после краха не
+    даёт двойного начисления по построению. Припаркованные ревизии входят
+    наравне — их расход тоже потрачен; ревизия без `session.json` (интент
+    создания ещё не исполнен) вносит ноль — её расхода нет, а не
+    «неизвестен».
+    """
+    tokens = 0
+    wall_seconds = 0.0
+    cost = 0.0
+    for record in (*state.spec_sessions, *state.pair_sessions):
+        session = load_session_state(pipeline_dir / record.path, record.session_id)
+        if session is None:
+            continue
+        tokens += session.budget_used.tokens
+        wall_seconds += session.budget_used.wall_seconds
+        cost += session.budget_used.cost_usd_est
+    return BudgetUsed(tokens=tokens, wall_seconds=wall_seconds, cost_usd_est=cost)
 
 
 def split_revision(session_id: str) -> tuple[str, int]:
@@ -400,6 +468,26 @@ class PipelineRunner:
         """
         return self._fail(self._store.load(slug), reason, evidence)
 
+    def detect_parked(self, state: PipelineState) -> tuple[str, int] | None:
+        """Активная ревизия, припаркованная дефектом, и её раунд (§8.1 шаг 2).
+
+        Read-only по построению: только чтение `session.json` и `review.json`
+        плюс вердикт той же политики, которой опрашивался `drive()`. Ни
+        манифест, ни рабочее дерево не трогаются — §8.1 требует, чтобы
+        обнаружение предшествовало сверке worktree, а значит не имело права
+        мутировать ничего.
+        """
+        record = active_session(state)
+        if record is None:
+            return None
+        contour, _ = split_revision(record.session_id)
+        artifact_root = self._artifact_root(state.pipeline_id, record.session_id)
+        session = self._session_state(artifact_root, record.session_id)
+        if session is None:
+            return None
+        parked = self._parked_round(artifact_root, session, contour)
+        return None if parked is None else (record.session_id, parked)
+
     # ------------------------------------------------------------------
     # Интенты §4.3
     # ------------------------------------------------------------------
@@ -427,6 +515,7 @@ class PipelineRunner:
         artifact_root = self._artifact_root(state.pipeline_id, session_id)
         artifact_root.mkdir(parents=True, exist_ok=True)
         if self._session_state(artifact_root, session_id) is None:
+            base_commit = action.args.get("base_commit")
             self._session_factory(
                 SessionCreation(
                     artifact_root=artifact_root,
@@ -435,6 +524,7 @@ class PipelineRunner:
                     revision=revision,
                     task_text=self._task_text(state),
                     findings=self._carried_findings(state, action.args),
+                    base_commit=base_commit if isinstance(base_commit, str) else None,
                 )
             )
 
@@ -523,7 +613,7 @@ class PipelineRunner:
                 verdict.reason or TransitionReason.SESSION_FAILED,
                 updates=self._records_update(
                     contour,
-                    _with_fields(
+                    with_session_fields(
                         self._records(state, contour),
                         session_id,
                         outcome=SessionOutcome.FAILED,
@@ -546,7 +636,7 @@ class PipelineRunner:
                 verdict.reason,
                 updates=self._records_update(
                     contour,
-                    _with_fields(
+                    with_session_fields(
                         self._records(state, contour),
                         session_id,
                         outcome=SessionOutcome.ESCALATED,
@@ -557,7 +647,7 @@ class PipelineRunner:
 
         records_update = self._records_update(
             contour,
-            _with_fields(
+            with_session_fields(
                 self._records(state, contour),
                 session_id,
                 outcome=SessionOutcome.CONVERGED,
@@ -618,12 +708,12 @@ class PipelineRunner:
                 update={
                     "phase": PipelinePhase.SPEC_LOOP,
                     "transitions": [*state.transitions, transition],
-                    "spec_sessions": _with_fields(
+                    "spec_sessions": with_session_fields(
                         state.spec_sessions,
                         revision_id(CONTOUR_SPEC, revision),
                         superseded_by=successor_id,
                     ),
-                    "pair_sessions": _with_fields(
+                    "pair_sessions": with_session_fields(
                         state.pair_sessions,
                         session_id,
                         outcome=SessionOutcome.ARCHITECTURAL_DEFECT,
@@ -795,7 +885,7 @@ class PipelineRunner:
                 TransitionReason.MAX_ARCHITECTURAL_RETURNS,
                 updates=self._records_update(
                     CONTOUR_PAIR,
-                    _with_fields(
+                    with_session_fields(
                         state.pair_sessions,
                         session_id,
                         outcome=SessionOutcome.ARCHITECTURAL_DEFECT,
@@ -1028,26 +1118,8 @@ class PipelineRunner:
         return persisted
 
     def _recompute_budget(self, state: PipelineState) -> BudgetUsed:
-        """Сумма расхода по `session.json` ВСЕХ сессий манифеста (§4.2).
-
-        Припаркованные входят наравне — их расход тоже потрачен. Сессия без
-        `session.json` (интент создания ещё не исполнен) вносит ноль: её
-        расхода нет, а не «неизвестен».
-        """
-        tokens = 0
-        wall_seconds = 0.0
-        cost = 0.0
-        for record in (*state.spec_sessions, *state.pair_sessions):
-            session = self._session_state(
-                self._pipeline_dir(state.pipeline_id) / record.path,
-                record.session_id,
-            )
-            if session is None:
-                continue
-            tokens += session.budget_used.tokens
-            wall_seconds += session.budget_used.wall_seconds
-            cost += session.budget_used.cost_usd_est
-        return BudgetUsed(tokens=tokens, wall_seconds=wall_seconds, cost_usd_est=cost)
+        """Пересчёт бюджета по диску (§4.2) — общий с операторскими решениями."""
+        return recompute_budget(self._pipeline_dir(state.pipeline_id), state)
 
     def _soft_limit_hit(self, budget: BudgetUsed) -> bool:
         """Достигнут ли soft-лимит пайплайна; ноль означает «лимита нет» (§3.2)."""
@@ -1079,16 +1151,16 @@ class PipelineRunner:
     def _pipeline_dir(self, slug: str) -> Path:
         """`.disputatio/pipelines/<slug>` (§4.1).
 
-        Считается здесь, а не импортируется из `events.pipeline_paths`: тот
-        модуль — внутренняя деталь раскладки и наружу пакетом не
+        Считается в `runtime`, а не импортируется из `events.pipeline_paths`:
+        тот модуль — внутренняя деталь раскладки и наружу пакетом не
         экспортируется, а оба сегмента пути `runtime` уже знает (тот же приём
         применён в `pipeline_export._result_dir`).
         """
-        return self._workspace_root / SESSION_DIR_NAME / PIPELINES_DIR_NAME / slug
+        return pipeline_dir_of(self._workspace_root, slug)
 
     def _artifact_root(self, slug: str, session_id: str) -> Path:
         """`artifact_root` одной ревизии: `sessions/<revision>` (§4.1)."""
-        return self._pipeline_dir(slug) / SESSIONS_DIR_NAME / session_id
+        return artifact_root_of(self._workspace_root, slug, session_id)
 
     def _snapshot(self, directory: Path, name: str, text: str) -> FileRef:
         """Пишет снапшот и возвращает ссылку на него для манифеста (§4.2)."""
@@ -1245,10 +1317,7 @@ class PipelineRunner:
         self, artifact_root: Path, session_id: str
     ) -> SessionState | None:
         """`session.json` ревизии либо `None`, если её ещё нет на диске."""
-        try:
-            return FileStateStore(artifact_root).load(session_id)
-        except KeyError:
-            return None
+        return load_session_state(artifact_root, session_id)
 
     @staticmethod
     def _records(state: PipelineState, contour: str) -> Sequence[SessionRecord]:
@@ -1276,7 +1345,7 @@ def _broken(what: str) -> _Interpretation:
     )
 
 
-def _with_fields(
+def with_session_fields(
     records: Iterable[SessionRecord], session_id: str, **fields: Any
 ) -> list[SessionRecord]:
     """Заполняет поля одной записи сессии, остальные оставляя как есть.
