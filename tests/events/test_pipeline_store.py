@@ -152,11 +152,25 @@ def test_load_missing_manifest_raises_key_error(store: Any) -> None:
         store.load(_SLUG)
 
 
-def test_load_foreign_pipeline_id_raises_key_error(store: Any) -> None:
-    """Чужой `pipeline_id` в файле — `KeyError`, как и отсутствие файла."""
-    store.save(make_pipeline_state())
+def test_load_foreign_pipeline_id_raises_key_error(
+    store: Any, session_root: Path
+) -> None:
+    """Манифест с чужим `pipeline_id` по нашему пути — `KeyError`, а не чужое состояние.
+
+    Чужой манифест кладётся по пути `_SLUG` и запрашивается ТОТ ЖЕ `_SLUG`:
+    иначе путь выводился бы из самого аргумента, вызов уходил бы в ветку
+    «файла нет» и дублировал предыдущий тест, а сверку `pipeline_id` не
+    трогал вовсе.
+    """
+    from disputatio.events.pipeline_paths import manifest_path
+
+    foreign = make_pipeline_state(pipeline_id="pipe-чужой")
+    manifest_path(session_root, _SLUG).write_text(
+        foreign.model_dump_json(by_alias=True), encoding="utf-8"
+    )
+
     with pytest.raises(KeyError):
-        store.load("pipe-other")
+        store.load(_SLUG)
 
 
 def test_save_failure_at_rename_leaves_manifest_intact(
