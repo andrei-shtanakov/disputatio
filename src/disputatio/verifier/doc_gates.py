@@ -1,9 +1,13 @@
-"""Doc-гейты 1-3: `doc-paths`/`doc-links`/`doc-anchors` (SPEC-002 §6).
+"""Doc-гейты baseline `document`-режима (SPEC-002 §6): `doc-paths`,
+`doc-links`, `doc-anchors`, `doc-line-refs`, `doc-scope`.
 
-Три детерминированных гейта поверх `parse_doc_refs` (`doc_refs.py`), без
-запуска внешних процессов — статус вычисляется напрямую из файловой
-системы. `doc-line-refs` и `doc-scope` (два оставшихся гейта baseline §6)
-— другие задачи, здесь не реализуются.
+Первые три и `doc-line-refs` — детерминированные гейты поверх
+`parse_doc_refs` (`doc_refs.py`), без запуска внешних процессов: статус
+вычисляется напрямую из файловой системы. `doc-scope` — единственный гейт
+без документа на входе: он разбирает пути из текста патча раунда
+(`changes.patch`) и роняет раунд на любом пути вне `allowed` — контурная
+граница (spec-контур пускает только `spec_path`, pair-контур — только
+`plan_path`), а не хук для расширения.
 
 **Утверждение о существовании отличается от объявления намерения** (§6):
 `gate_doc_paths` роняет раунд только на формах, которые утверждают
@@ -27,6 +31,7 @@ CommonMark/GitHub они резолвятся относительно **кат�
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from disputatio.contracts.verification import GateResult, GateStatus
@@ -40,6 +45,8 @@ from disputatio.verifier.doc_refs import (
 CODE_MISSING = "missing"
 CODE_ESCAPE = "escape"
 CODE_WARNING = "warning"
+CODE_LINE_DRIFT = "line_drift"
+CODE_SCOPE_ESCAPE = "scope_escape"
 
 _WARN_ONLY_IF_MISSING = {"code_path"}
 _DOC_RELATIVE_KINDS = {"md_link", "autolink"}
@@ -98,7 +105,7 @@ def gate_doc_paths(doc: Path, repo_root: Path) -> GateResult:
         return text
     refs = parse_doc_refs(text)
     status, entries = _check_paths(refs, doc, repo_root)
-    return _build_result("doc-paths", doc, status, entries)
+    return _build_result("doc-paths", f"internal:doc-paths:{doc}", status, entries)
 
 
 def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
@@ -108,7 +115,7 @@ def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
         return text
     refs = [ref for ref in parse_doc_refs(text) if ref.kind == "md_link"]
     status, entries = _check_paths(refs, doc, repo_root)
-    return _build_result("doc-links", doc, status, entries)
+    return _build_result("doc-links", f"internal:doc-links:{doc}", status, entries)
 
 
 def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
@@ -152,7 +159,102 @@ def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
             entries.append(_entry(CODE_MISSING, target, ref.line))
 
     status = GateStatus.FAIL if has_fail else GateStatus.PASS
-    return _build_result("doc-anchors", doc, status, entries)
+    return _build_result("doc-anchors", f"internal:doc-anchors:{doc}", status, entries)
+
+
+def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
+    """Корректность ссылок `file:line`: путь существует, строка есть.
+
+    При наличии `expected_text` (форма ``` `f.py:42` («текст») ```,
+    см. `doc_refs`) содержимое целевой строки обязано совпасть (после
+    `strip()` — терпимо к случайным хвостовым пробелам в самой цитате, не к
+    расхождению текста); дрейф → `fail` с кодом `line_drift`. Отсутствие
+    файла или номер строки за пределами файла — `missing`, выход цели за
+    `repo_root` — `escape` (тот же словарь кодов, что и у прочих
+    path-гейтов baseline).
+    """
+    text = _read_document("doc-line-refs", doc)
+    if isinstance(text, GateResult):
+        return text
+    refs = [ref for ref in parse_doc_refs(text) if ref.kind == "code_line_ref"]
+    entries: list[dict[str, object]] = []
+    has_fail = False
+    for ref in refs:
+        path_text, _, line_str = ref.target.rpartition(":")
+        line_no = int(line_str)
+        resolved = resolve_inside(repo_root, path_text)
+        if resolved is None:
+            has_fail = True
+            entries.append(_entry(CODE_ESCAPE, ref.target, ref.line))
+            continue
+        try:
+            target_lines = resolved.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            has_fail = True
+            entries.append(_entry(CODE_MISSING, path_text, ref.line))
+            continue
+        if line_no < 1 or line_no > len(target_lines):
+            has_fail = True
+            entries.append(_entry(CODE_MISSING, ref.target, ref.line))
+            continue
+        if ref.expected_text is None:
+            continue
+        actual = target_lines[line_no - 1]
+        if actual.strip() != ref.expected_text.strip():
+            has_fail = True
+            entries.append(_entry(CODE_LINE_DRIFT, ref.target, ref.line))
+    status = GateStatus.FAIL if has_fail else GateStatus.PASS
+    return _build_result(
+        "doc-line-refs", f"internal:doc-line-refs:{doc}", status, entries
+    )
+
+
+_DIFF_MINUS_RE = re.compile(r"^--- (?:a/(?P<path>.+)|/dev/null)$")
+_DIFF_PLUS_RE = re.compile(r"^\+\+\+ (?:b/(?P<path>.+)|/dev/null)$")
+
+
+def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
+    """Диф раунда трогает только пути из `allowed` (§6, doc-scope).
+
+    Пути читаются из парных заголовков unified diff — `--- a/<path>`
+    сразу за ней `+++ b/<path>` (`/dev/null` на любой стороне — сторона
+    создания/удаления файла, не путь): эта форма однозначна и не требует
+    разбора неоднозначной `diff --git a/… b/…` строки с пробелом-
+    разделителем, который в общем случае не отличим от пробела в самом
+    имени файла. Обычная правка называет один и тот же путь в обеих строках
+    заголовка — он даёт ровно одну запись, не две; переименование называет
+    разные пути на `---`/`+++` — проверяются оба, каждый в `allowed` или нет
+    сам по себе. Каждый непустой путь вне `allowed` даёт `scope_escape` —
+    граница контура, а не список для галочки.
+    """
+    allowed_set = set(allowed)
+    entries: list[dict[str, object]] = []
+    lines = patch.splitlines()
+    index = 0
+    total = len(lines)
+    while index < total:
+        minus_match = _DIFF_MINUS_RE.match(lines[index])
+        if minus_match is None:
+            index += 1
+            continue
+        plus_match = (
+            _DIFF_PLUS_RE.match(lines[index + 1]) if index + 1 < total else None
+        )
+        lineno = index + 2  # 1-based номер строки `+++` (или следующей за `---`)
+        paths = {
+            path
+            for path in (
+                minus_match.group("path"),
+                plus_match.group("path") if plus_match else None,
+            )
+            if path is not None
+        }
+        for path in sorted(paths):
+            if path not in allowed_set:
+                entries.append(_entry(CODE_SCOPE_ESCAPE, path, lineno))
+        index += 2 if plus_match else 1
+    status = GateStatus.FAIL if entries else GateStatus.PASS
+    return _build_result("doc-scope", "internal:doc-scope", status, entries)
 
 
 def _slug_set(headings: list[tuple[int, str]]) -> set[str]:
@@ -226,7 +328,7 @@ def _check_paths(
 
 
 def _build_result(
-    name: str, doc: Path, status: GateStatus, entries: list[dict[str, object]]
+    name: str, cmd: str, status: GateStatus, entries: list[dict[str, object]]
 ) -> GateResult:
     tail = "\n".join(json.dumps(entry, ensure_ascii=False) for entry in entries)
     fails = sum(1 for entry in entries if entry["code"] != CODE_WARNING)
@@ -239,7 +341,7 @@ def _build_result(
     reason = ", ".join(parts) if parts else None
     return GateResult(
         name=name,
-        cmd=f"internal:{name}:{doc}",
+        cmd=cmd,
         status=status,
         exit_code=0 if status is GateStatus.PASS else 1,
         tail=tail,

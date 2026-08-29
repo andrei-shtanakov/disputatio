@@ -21,6 +21,13 @@
   содержит `/` или `.` (иначе неотличимо от HTML-тега вроде ``<br>``).
 - Путь и ``file.py:42`` в inline-code (одинарные обратные кавычки):
   признак пути — не «похоже на путь», а наличие `/` и расширения.
+  ``file.py:42`` может нести якорный текст строки — ровно в форме
+  ``` `file.py:42` («текст строки») ``` (кавычки-«ёлочки», сразу после
+  code-спана, без иного текста между ними): `expected_text` DocRef'а
+  заполняется этим текстом, проверка дрейфа — забота `doc_gates`
+  (`doc-line-refs`, задача 8). Форма без хвостовых кавычек оставляет
+  `expected_text` пустым — гейт тогда проверяет только существование
+  строки.
 - Декларация файла задачи — bullet, начинающийся с ``Modify:``/``Test:``/
   ``Create:`` (может продолжаться на следующих строках — этот же файл
   оформлен так же). Пути внутри — inline-code. ``Modify``/``Test`` →
@@ -77,6 +84,7 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s*(Modify|Test|Create):\s*(.*)$")
 _BULLET_START_RE = re.compile(r"^\s*[-*]\s")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+_TRAILING_QUOTE_RE = re.compile(r"^\s*\(«([^»]*)»\)")
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -94,8 +102,8 @@ def parse_doc_refs(text: str) -> list[DocRef]:
             # backtick-пути не считаются повторно как обычный code_path.
             continue
         masked, code_spans = _mask_inline_code(raw_line)
-        for content in code_spans:
-            ref = _match_code_span(content, lineno)
+        for content, expected_text in code_spans:
+            ref = _match_code_span(content, lineno, expected_text)
             if ref is not None:
                 refs.append(ref)
         refs.extend(_match_md_links(masked, lineno, definitions))
@@ -132,20 +140,35 @@ def iter_headings(text: str) -> list[tuple[int, str]]:
     return headings
 
 
-def _mask_inline_code(line: str) -> tuple[str, list[str]]:
-    """Заменяет inline-code спаны пробелами; возвращает (строку, содержимое)."""
-    contents: list[str] = []
+def _mask_inline_code(line: str) -> tuple[str, list[tuple[str, str | None]]]:
+    """Заменяет inline-code спаны пробелами; возвращает (строку, спаны).
+
+    Каждый спан — пара `(content, expected_text)`: `expected_text` — текст
+    из кавычек-«ёлочек» сразу после спана (форма ``` `f.py:42` («текст») ```,
+    см. модуль), иначе `None`. `match.end()` берётся из исходной `line` —
+    позиции спанов в ней не сдвигаются заменой на пробелы той же длины.
+    """
+    spans: list[tuple[str, str | None]] = []
 
     def _replace(match: re.Match[str]) -> str:
-        contents.append(match.group(1))
+        tail = line[match.end() :]
+        quote = _TRAILING_QUOTE_RE.match(tail)
+        spans.append((match.group(1), quote.group(1) if quote else None))
         return " " * len(match.group(0))
 
-    return _INLINE_CODE_RE.sub(_replace, line), contents
+    return _INLINE_CODE_RE.sub(_replace, line), spans
 
 
-def _match_code_span(content: str, lineno: int) -> DocRef | None:
+def _match_code_span(
+    content: str, lineno: int, expected_text: str | None
+) -> DocRef | None:
     if _CODE_LINE_REF_RE.match(content):
-        return DocRef(kind="code_line_ref", target=content, line=lineno)
+        return DocRef(
+            kind="code_line_ref",
+            target=content,
+            line=lineno,
+            expected_text=expected_text,
+        )
     if _CODE_PATH_RE.match(content):
         return DocRef(kind="code_path", target=content, line=lineno)
     return None
