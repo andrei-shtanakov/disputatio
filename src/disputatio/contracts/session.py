@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from disputatio.contracts.base import ArtifactBase, ArtifactChild, Role
+from disputatio.contracts.base import SCHEMA_V1, ArtifactBase, ArtifactChild, Role
 
 
 class SessionPhase(StrEnum):
@@ -34,10 +34,15 @@ class SessionPhase(StrEnum):
 
 
 class Mode(StrEnum):
-    """Режим задачи: develop меняет код, analyze — только анализ."""
+    """Режим задачи: develop меняет код, analyze — только анализ.
+
+    `DOCUMENT` (SPEC-002 §5.1) — doc-сессия пайплайна полировки спеки/плана;
+    допустим только под тегом `disputatio/v2` (см. `SessionState`).
+    """
 
     DEVELOP = "develop"
     ANALYZE = "analyze"
+    DOCUMENT = "document"
 
 
 class TaskSpec(ArtifactChild):
@@ -93,5 +98,16 @@ class SessionState(ArtifactBase):
         if missing:
             raise ValueError(
                 f"agents обязан содержать ключи author и reviewer; нет: {missing}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_document_mode_in_v1(self) -> "SessionState":
+        # Mode.DOCUMENT — расширение v2 (SPEC-002 §5.1); набор допустимых
+        # значений привязан к тегу схемы, а не только к типу Mode.
+        if self.schema_ == SCHEMA_V1 and self.task.mode == Mode.DOCUMENT:
+            raise ValueError(
+                "task.mode == document недопустим в disputatio/v1: "
+                "режим относится к disputatio/v2 (SPEC-002 §5.1)"
             )
         return self

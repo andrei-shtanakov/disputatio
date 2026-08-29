@@ -16,7 +16,13 @@ from disputatio import contracts
 
 # Публичные имена по подмодулям — источник ожиданий для всех тестов ниже.
 EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
-    "base": ("SCHEMA_V1", "ArtifactBase", "ArtifactChild", "Role"),
+    "base": ("SCHEMA_V1", "SCHEMA_V2", "ArtifactBase", "ArtifactChild", "Role"),
+    "checklist": (
+        "ArtifactEvidence",
+        "GateEvidence",
+        "EvidenceRef",
+        "ChecklistItem",
+    ),
     "session": (
         "SessionPhase",
         "Mode",

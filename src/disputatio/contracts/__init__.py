@@ -1,11 +1,23 @@
-"""Контракты артефактов disputatio/v1: pydantic-модели и чистые валидаторы.
+"""Контракты артефактов disputatio/v1|v2: pydantic-модели и чистые валидаторы.
 
 Публичный API волны 1 ([DESIGN-010]): потребители импортируют модели,
 enum'ы, функции валидации, порты и константы причин только отсюда,
 не из подмодулей.
 """
 
-from disputatio.contracts.base import SCHEMA_V1, ArtifactBase, ArtifactChild, Role
+from disputatio.contracts.base import (
+    SCHEMA_V1,
+    SCHEMA_V2,
+    ArtifactBase,
+    ArtifactChild,
+    Role,
+)
+from disputatio.contracts.checklist import (
+    ArtifactEvidence,
+    ChecklistItem,
+    EvidenceRef,
+    GateEvidence,
+)
 from disputatio.contracts.decision import Decision, Outcome
 from disputatio.contracts.events import Event, EventSource, EventType
 from disputatio.contracts.ports import (
@@ -55,18 +67,23 @@ __all__ = [
     "REASON_EMPTY_CHECKED",
     "REASON_NO_SUBSTANTIVE_ISSUES",
     "SCHEMA_V1",
+    "SCHEMA_V2",
     "AgentAdapter",
     "AgentRef",
     "AgentTurn",
     "ArtifactBase",
     "ArtifactChild",
+    "ArtifactEvidence",
     "BudgetUsed",
+    "ChecklistItem",
     "Decision",
     "DiffStats",
     "Event",
     "EventSink",
     "EventSource",
     "EventType",
+    "EvidenceRef",
+    "GateEvidence",
     "GateResult",
     "GateStatus",
     "Issue",

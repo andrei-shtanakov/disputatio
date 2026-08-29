@@ -34,7 +34,18 @@ def test_foreign_schema_value_rejected() -> None:
         value: int
 
     with pytest.raises(ValidationError):
-        Sample.model_validate({"schema": "disputatio/v2", "value": 1})
+        Sample.model_validate({"schema": "disputatio/v3", "value": 1})
+
+
+def test_schema_v2_value_accepted() -> None:
+    """`disputatio/v2` — не чужое значение: ArtifactBase поддерживает обе версии."""
+    from disputatio.contracts.base import SCHEMA_V2, ArtifactBase
+
+    class Sample(ArtifactBase):
+        value: int
+
+    sample = Sample.model_validate({"schema": "disputatio/v2", "value": 1})
+    assert sample.schema_ == SCHEMA_V2
 
 
 def test_round_trip_by_alias() -> None:
