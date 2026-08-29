@@ -111,40 +111,49 @@ def build_runtime(
     уходит `workspace_root`. Перепутай эти две строки — сессия писала бы
     состояние туда, где его никто не ищет, а гейты гонялись бы по журналу.
 
-    Вложенность корней проверяется до разбора имён адаптеров: негодная пара
-    корней — отказ сборки, и приходить он обязан раньше любого другого.
+    Оба корня нормализуются здесь, один раз, и в `RuntimeDeps` уходят уже
+    `resolve()`-нутыми: проверка вложенности и шаг `review`, считающий путь
+    артефакта от рабочего корня, обязаны говорить об ОДНИХ путях. Оставь
+    корни как переданы — и пара «абсолютный `workspace_root` + относительный
+    `artifact_root`» прошла бы гейт (он сравнивает после `resolve`) и упала
+    бы в `relative_to` уже на шаге `review`, то есть ровно там, откуда гейт
+    её и уводит. Заодно нормализация уравнивает пути через симлинк.
+
+    Вложенность проверяется до разбора имён адаптеров: негодная пара корней —
+    отказ сборки, и приходить он обязан раньше любого другого.
 
     Порядок сборки значим: sink создаётся ПЕРЕД адаптерами, потому что
     попадает в их конструкторы. Соберись адаптеры первыми — они получили бы
     `event_sink=None`, и поток §8 молча исчез бы: адаптер без sink'а
     работает, просто ничего не транслирует.
     """
-    journal_root = artifact_root if artifact_root is not None else workspace_root
-    _check_roots(workspace_root, journal_root)
-    event_sink = sink if sink is not None else JsonlEventSink(journal_root)
+    workspace, journal = _normalized_roots(
+        workspace_root, artifact_root if artifact_root is not None else workspace_root
+    )
+    event_sink = sink if sink is not None else JsonlEventSink(journal)
     return RuntimeDeps(
-        workspace_root=workspace_root,
-        artifact_root=journal_root,
-        store=store if store is not None else FileStateStore(journal_root),
+        workspace_root=workspace,
+        artifact_root=journal,
+        store=store if store is not None else FileStateStore(journal),
         sink=event_sink,
         author=_build_adapter(
             config.author.adapter,
             role=Role.AUTHOR,
-            workspace_root=workspace_root,
+            workspace_root=workspace,
             sink=event_sink,
             session_id=config.session_id,
         ),
         reviewer=_build_adapter(
             config.reviewer.adapter,
             role=Role.REVIEWER,
-            workspace_root=workspace_root,
+            workspace_root=workspace,
             sink=event_sink,
             session_id=config.session_id,
         ),
         verifier=(
             verifier
             if verifier is not None
-            else VerifierRunner(list(config.gates), workspace_root)
+            else VerifierRunner(list(config.gates), workspace)
         ),
         git=git,
         now=now,
@@ -152,15 +161,22 @@ def build_runtime(
     )
 
 
-def _check_roots(workspace_root: Path, artifact_root: Path) -> None:
-    """Отвергает `artifact_root` вне рабочего репозитория (SPEC-002 §4.1).
+def _normalized_roots(workspace_root: Path, artifact_root: Path) -> tuple[Path, Path]:
+    """Нормализует пару корней и отвергает журнал вне репо (SPEC-002 §4.1).
 
-    Требование приходит от шага `review`: путь артефакта в промпте ревьюера
-    считается ОТ рабочего корня, потому что ревьюер запущен оттуда. Журнал
-    снаружи репозитория назвать таким путём нечем — `relative_to` откажет.
-    Отказ этот пришёлся бы на середину раунда, то есть уже после
-    `reset --hard`, работы автора и прогона гейтов; здесь он стоит одного
-    сравнения путей и не стоит ни одного вызова агента.
+    Проверка и нормализация — одна операция, а не две: разъедься они, вход,
+    прошедший проверку в одной форме, потребитель получил бы в другой. Ровно
+    так и было, пока функция только проверяла: `resolve()` внутри неё делал
+    смесь форм законной, а `_relative_artifact` звал `relative_to` по путям
+    как переданы — и падал на шаге `review`. Поэтому нормализованная пара не
+    вычисляется где-то ещё, а **возвращается** отсюда.
+
+    Само требование вложенности приходит от того же шага `review`: путь
+    артефакта в промпте ревьюера считается ОТ рабочего корня, потому что
+    ревьюер запущен оттуда. Журнал снаружи репозитория назвать таким путём
+    нечем. Отказ пришёлся бы на середину раунда — уже после `reset --hard`,
+    работы автора и прогона гейтов; здесь он стоит одного сравнения путей и
+    не стоит ни одного вызова агента.
 
     `ValueError`, а не доменная ошибка [DESIGN-020]: это не отказ во вводе
     пользователя, а негодный аргумент вызывающего кода — CLI второго корня
@@ -168,20 +184,19 @@ def _check_roots(workspace_root: Path, artifact_root: Path) -> None:
     артефакта, уводящее запись мимо раунда: вопрос один и тот же — форма
     пути, а не конфигурация сессии.
 
-    Сравниваются абсолютные пути: относительный `artifact_root` рядом с
-    абсолютным `workspace_root` (и наоборот) — законный вход вызывающего, а
-    `is_relative_to` на смеси форм ответил бы «нет» по различию форм, а не
-    по расположению.
+    `resolve()` решает обе половины формы сразу: относительный корень рядом
+    с абсолютным (законный вход вызывающего) и путь через симлинк, который
+    `is_relative_to` посчитал бы лежащим снаружи.
     """
     workspace = workspace_root.resolve()
     journal = artifact_root.resolve()
-    if journal.is_relative_to(workspace):
-        return
-    raise ValueError(
-        f"artifact_root {artifact_root} лежит вне рабочего репозитория "
-        f"{workspace_root}: путь артефакта в промпте ревьюера считается от "
-        "рабочего корня, и журнал снаружи него назвать нечем"
-    )
+    if not journal.is_relative_to(workspace):
+        raise ValueError(
+            f"artifact_root {artifact_root} лежит вне рабочего репозитория "
+            f"{workspace_root}: путь артефакта в промпте ревьюера считается от "
+            "рабочего корня, и журнал снаружи него назвать нечем"
+        )
+    return workspace, journal
 
 
 def _build_adapter(

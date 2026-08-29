@@ -67,6 +67,7 @@ from disputatio.runtime import (
     GitCli,
     LimitsConfig,
     RuntimeConfig,
+    RuntimeDeps,
     base_rev,
     build_runtime,
 )
@@ -424,6 +425,49 @@ def test_artifact_root_outside_workspace_is_refused_at_build(git_repo: Path) -> 
     assert str(root) in message
 
 
+def test_relative_artifact_root_survives_the_review_step(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Относительный `artifact_root` доезжает до `review`, а не взрывается там.
+
+    Валидатор сборки объявляет смесь форм законной — он сравнивает корни
+    после `resolve()`. Значит и потребитель обязан говорить о тех же путях:
+    храни `RuntimeDeps` корни как переданы, вход, прошедший гейт, падал бы
+    в `_relative_artifact` на `relative_to` — то есть в середине раунда,
+    после `reset --hard`, работы автора и прогона гейтов. Ровно от этого
+    валидатор и заводился.
+
+    Относительный путь считается от рабочей директории процесса, поэтому
+    `chdir` в рабочий репозиторий — часть сценария, а не подпорка.
+    """
+    root = git_repo
+    revision = "spec-rel"
+    monkeypatch.chdir(root)
+
+    run = _run_session(
+        root,
+        revision,
+        session_id="20260829-110000-rel",
+        marker="rel",
+        monkeypatch=monkeypatch,
+        artifact_root=Path(*_PIPELINE_SESSIONS, revision),
+    )
+
+    assert run.final.state is SessionPhase.DONE
+
+    # Корни в контейнере нормализованы — тем же ответом, что дал валидатор.
+    assert run.deps.artifact_root.is_absolute()
+    assert run.deps.workspace_root.is_absolute()
+    assert run.deps.artifact_root == _session_root(root, revision).resolve()
+
+    # Путь в промпте ревьюера тот же, что и у абсолютного корня.
+    assert (
+        f"proposal: {_prompt_path(revision, 1, PROPOSAL_NAME)}"
+        in (run.reviewer.prompts[0])
+    )
+    assert round_artifact(run.artifact_root, 1, PROPOSAL_NAME).is_file()
+
+
 def test_resume_reads_from_artifact_root(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -477,6 +521,7 @@ class SessionRun:
     author: ScriptedAgent
     reviewer: ScriptedAgent
     final: SessionState
+    deps: RuntimeDeps
 
 
 def _run_session(
@@ -486,6 +531,7 @@ def _run_session(
     session_id: str,
     marker: str,
     monkeypatch: pytest.MonkeyPatch,
+    artifact_root: Path | None = None,
 ) -> SessionRun:
     """Крутит сессию от `IDLE` до `DONE` в своём `artifact_root`.
 
@@ -493,8 +539,12 @@ def _run_session(
     `approve` при зелёных гейтах. Меньше нельзя — §4.4 не принимает
     `approve` в первом раунде develop-сессии, а без второго раунда шаг
     `propose` не читал бы историю вовсе.
+
+    `artifact_root` можно подать в любой форме — этим пользуется тест
+    относительного корня; по умолчанию берётся абсолютный путь ревизии.
     """
-    artifact_root = _session_root(root, revision)
+    if artifact_root is None:
+        artifact_root = _session_root(root, revision)
     config = _config(session_id, base_commit=_base(root))
     author, reviewer = _register_agents(
         monkeypatch,
@@ -533,11 +583,12 @@ def _run_session(
     final = anyio.run(drive, ctx)
     return SessionRun(
         revision=revision,
-        artifact_root=artifact_root,
+        artifact_root=_session_root(root, revision),
         session_id=session_id,
         author=author,
         reviewer=reviewer,
         final=final,
+        deps=deps,
     )
 
 

@@ -595,9 +595,14 @@ def _relative_artifact(ctx: StepContext, round_no: int, name: str) -> str:
 
     Отсюда предусловие разведённых корней: `artifact_root` обязан лежать
     ВНУТРИ `workspace_root` — так его и размещает §4.1
-    (`pipelines/<slug>/sessions/<revision>/`). Журнал снаружи репозитория
-    назвать ревьюеру относительным путём нечем, и `relative_to` откажет
-    здесь, громко, а не подсунет ему путь в чужое дерево.
+    (`pipelines/<slug>/sessions/<revision>/`). Держит его не `relative_to`
+    здесь, а `composition._normalized_roots`: он отвергает журнал снаружи
+    репозитория на СБОРКЕ и там же приводит оба корня к одной форме. Сюда
+    приходят уже нормализованные пути, поэтому `relative_to` отвечает по
+    расположению, а не по тому, в какой форме корни подали вызывающему.
+    Проверка на сборке, а не тут, потому что этот шаг идёт после
+    `reset --hard`, работы автора и прогона гейтов: отказ на этой строке
+    стоил бы полного раунда.
     """
     artifact = round_artifact(ctx.artifact_root, round_no, name)
     return artifact.relative_to(ctx.workspace_root).as_posix()
