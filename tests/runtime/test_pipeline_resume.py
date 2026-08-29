@@ -188,7 +188,11 @@ def test_resume_stops_on_a_commit_the_pipeline_did_not_make(tmp_path: Path) -> N
     with pytest.raises(ExternalEditError) as excinfo:
         stand.resume.resume(SLUG)
 
-    assert "HEAD" in str(excinfo.value)
+    # Именно SHA чужого коммита, а не слово «HEAD»: оно есть и в шаблонной
+    # прозе отказа, и утверждение по нему прошло бы, даже перестань отказ
+    # называть расхождение вовсе.
+    assert head_before in str(excinfo.value)
+    assert "не совпадает ни с одним ожидаемым коммитом" in str(excinfo.value)
     assert stand.git.head_sha() == head_before
     assert len(stand.driver.calls) == calls_before
 

@@ -274,10 +274,12 @@ class PipelineResume:
         elif decision == "adopt_external":
             self._intents.adopt(state, diff=diff, parked=parked)
         elif decision == "discard_round":
-            self._intents.discard(state, diff=diff, reset_to=self._reset_to(anchorage))
+            self._intents.discard(
+                state, diff=diff, reset_to=self._reset_to(state, anchorage)
+            )
         return self._runner.advance(slug)
 
-    def _reset_to(self, anchorage: WorktreeAnchorage) -> str:
+    def _reset_to(self, state: PipelineState, anchorage: WorktreeAnchorage) -> str:
         """Цель сброса `--discard-round`: куда обязан вернуться раунд (§3.1).
 
         Именно `reset_target` привязки, а не текущий `HEAD`: санкция
@@ -286,11 +288,31 @@ class PipelineResume:
         и посторонний коммит, из-за которого resume и остановился, — сброс на
         самого себя сохранил бы ровно то, что оператор велел выбросить.
 
-        `HEAD` остаётся запасным вариантом ровно для случая «вычислить
-        нечем»: между сессиями (§8.1) ожидаемое состояние и есть последний
-        принятый коммит, а незакоммиченное снимет `clean`.
+        `HEAD` — не запасной вариант «на всякий случай», а ответ ровно для
+        одного состояния: **между сессиями** активной ревизии нет, и §8.1
+        прямо называет ожидаемым состоянием последний принятый коммит, то
+        есть текущий `HEAD`; незакоммиченное снимет `clean`.
+
+        Активная ревизия при невычислимой привязке (снапшота конфига нет,
+        историю переписали) — **отказ**, а не сброс на `HEAD`. «Мы не знаем,
+        куда раунд обязан вернуться» — ровно то состояние, в котором
+        destructive reset не обоснован: он оставил бы в истории чужой коммит
+        и выдал бы это за исполненную санкцию.
         """
-        return anchorage.reset_target or self._git.head_sha()
+        if anchorage.reset_target is not None:
+            return anchorage.reset_target
+        record = active_session(state)
+        if record is None:
+            return self._git.head_sha()
+        raise PipelineNotResumable(
+            f"цель сброса ревизии {record.session_id!r} не "
+            "вычисляется: нет снапшота конфига ревизии либо история под ней "
+            "переписана, и «куда обязан вернуться раунд» неизвестно. "
+            "`--discard-round` в этом состоянии сбросил бы дерево на текущий "
+            "HEAD — то есть сохранил бы ровно то, что решение оператора "
+            "велит выбросить. Восстановите снапшот конфига ревизии либо "
+            "разберите историю вручную"
+        )
 
     # ------------------------------------------------------------------
     # Шаг 0: целостность control plane

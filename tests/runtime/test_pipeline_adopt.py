@@ -547,7 +547,38 @@ def test_a_created_revision_expects_its_base_commit_as_head(tmp_path: Path) -> N
 
     with pytest.raises(ExternalEditError) as excinfo:
         stand.resume.resume(SLUG)
-    assert "HEAD" in str(excinfo.value)
+    # SHA чужого коммита, а не слово «HEAD»: оно встречается и в шаблонной
+    # прозе отказа, и такое утверждение прошло бы, даже перестань отказ
+    # называть расхождение.
+    assert stand.git.head_sha() in str(excinfo.value)
+    assert "не совпадает ни с одним ожидаемым коммитом" in str(excinfo.value)
+
+
+def test_discard_refuses_when_the_reset_target_is_unknown(tmp_path: Path) -> None:
+    """Активная ревизия без снапшота конфига: `--discard-round` отказывает.
+
+    Привязку вычислить нечем — значит неизвестно, куда обязан вернуться
+    раунд. Сброс на текущий `HEAD` оставил бы в истории чужой коммит и выдал
+    бы это за исполненную санкцию: тот же half-measure, что и сброс «на
+    самого себя», просто в узком окне.
+    """
+    stand = _adopt_stand(tmp_path)
+    snapshot = stand.artifact_root("pair-r1") / ".disputatio" / "config.toml"
+    snapshot.unlink()
+    (stand.workspace / PLAN_PATH).write_text(ADOPTED_PLAN, encoding="utf-8")
+    head_before = stand.git.head_sha()
+
+    with pytest.raises(PipelineNotResumable) as excinfo:
+        stand.resume.resume(SLUG, decision="discard_round")
+
+    assert "pair-r1" in str(excinfo.value)
+    assert stand.git.head_sha() == head_before
+    assert (stand.workspace / PLAN_PATH).read_text(encoding="utf-8") == ADOPTED_PLAN, (
+        "отказ обязан застать дерево нетронутым"
+    )
+    assert not stand.manifest().operator_decisions, (
+        "решение не исполнено — provenance записывать нечего"
+    )
 
 
 def test_discard_in_a_created_revision_returns_to_the_base_commit(
