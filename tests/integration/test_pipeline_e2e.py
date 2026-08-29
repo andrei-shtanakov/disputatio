@@ -959,3 +959,216 @@ def test_architectural_defect_returns_to_spec_and_replays_the_pair(
     assert stand.decision("pair-r2", 1).outcome is not Outcome.CONVERGED
     assert stand.decision("pair-r2", 2).outcome is Outcome.CONVERGED
     assert len(stand.script.prompts_of("pair-r2", "reviewer")) == 2
+
+
+def test_escalated_pipeline_exits_nonzero_with_an_honest_partial_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Эскалация — не сходимость: ненулевой код и `converged: false` (§3.1, P7).
+
+    `max_rounds = 1` не даёт спеке ни одного шанса сойтись: раунд 1 approve
+    не принимает (анти-сикофантия), а следующего раунда лимит не разрешает —
+    `decide()` отвечает `DEADLOCK`. Пайплайн уходит в `ESCALATED` и оттуда в
+    ЧЕСТНЫЙ частичный экспорт: `DONE` он достигает, но нулём такой прогон
+    отвечать не вправе — скрипт вокруг CLI счёл бы эскалацию успехом.
+    """
+    turns = happy_path_turns()
+    stand = build_stand(tmp_path, monkeypatch, turns, max_rounds=1)
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    assert code == EXIT_FAILED
+    manifest = stand.manifest()
+    assert manifest["phase"] == PipelinePhase.DONE.value
+    assert [transition["to"] for transition in manifest["transitions"]].count(
+        PipelinePhase.ESCALATED.value
+    ) == 1
+    result = stand.result()
+    assert result["converged"] is False
+    assert result["escalation_reason"] == "session_deadlock"
+    # Пара не сошлась — pair-контур не открывался вовсе.
+    assert manifest["pair_sessions"] == []
+
+
+def test_external_edit_stops_resume_until_discard_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Неатрибутируемое дерево останавливает `resume`; `--discard-round` снимает.
+
+    Обе половины §8.1 проверяются через argv, а не через порты: без флага
+    resume отказывает и НИЧЕГО не сбрасывает (правка на месте), с флагом —
+    сбрасывает и доигрывает пайплайн до конца. Санкция человека входит в
+    систему ровно здесь, и её плетение до `OperatorIntents` иначе никем не
+    проверено.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "author")] = [
+        Turn(text="", boom=True),
+        *converging("spec-r1", "spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+    stray = stand.workspace / SPEC_PATH
+    stray.write_text(spec_text("правка мимо пайплайна"), encoding="utf-8")
+    capsys.readouterr()
+
+    refused = run_cli(stand, "resume")
+
+    assert refused == EXIT_ERROR
+    assert "--discard-round" in capsys.readouterr().err
+    # Отказ ничего не сбросил: правка человека на месте.
+    assert "правка мимо пайплайна" in stray.read_text(encoding="utf-8")
+
+    assert run_cli(stand, "resume", "--discard-round") == EXIT_OK
+    assert stand.manifest()["phase"] == PipelinePhase.DONE.value
+    decisions = stand.manifest()["operator_decisions"]
+    assert [decision["kind"] for decision in decisions] == ["discard_round"]
+    assert "правка мимо пайплайна" not in stray.read_text(encoding="utf-8")
+
+
+def test_adopt_external_checkpoints_the_edit_and_opens_a_new_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--adopt-external` принимает правку и уводит в новую ревизию (§3.1).
+
+    Принятие durable в git: правка коммитится операторским чекпоинтом, и
+    первый `PROPOSING` новой ревизии сбрасывает дерево к нему — то есть
+    принятая правка сброс переживает. Это и проверяется: текст человека
+    доживает до конца пайплайна, хотя между adoption'ом и экспортом прошло
+    два раунда автора со сбросами.
+    """
+    # Номер ревизии-преемника наследуется обоими контурами: adoption в
+    # spec-r1 открывает spec-r2, а сошедшаяся spec-r2 открывает pair-r2 (не
+    # pair-r1) — `_start_pair` называет пару номером своей спеки.
+    turns = {
+        ("spec-r1", "author"): [Turn(text="", boom=True)],
+        ("spec-r2", "author"): converging("spec-r2", "spec"),
+        ("spec-r2", "reviewer"): converging_reviews("spec"),
+        ("pair-r2", "author"): converging("pair-r2", "pair"),
+        ("pair-r2", "reviewer"): converging_reviews("pair"),
+    }
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+    adopted = "# Спека\n\n## Требования\n\nПравка человека.\n"
+    (stand.workspace / SPEC_PATH).write_text(adopted, encoding="utf-8")
+
+    assert run_cli(stand, "resume", "--adopt-external") == EXIT_OK
+
+    manifest = stand.manifest()
+    assert manifest["phase"] == PipelinePhase.DONE.value
+    spec_records = {
+        record["session_id"]: record for record in manifest["spec_sessions"]
+    }
+    assert spec_records["spec-r1"]["outcome"] == "abandoned"
+    assert spec_records["spec-r1"]["superseded_by"] == "spec-r2"
+    assert [item["kind"] for item in manifest["operator_decisions"]] == [
+        "adopt_external"
+    ]
+    # Чекпоинт в истории: принятая правка закоммичена, а не потеряна сбросом.
+    subjects = git(stand.workspace, "log", "--format=%s").splitlines()
+    assert f"disputatio: operator adopt {SLUG}" in subjects
+    patches = sorted((stand.pipeline_dir() / "adoptions").glob("*.patch"))
+    assert len(patches) == 1
+    assert "Правка человека" in patches[0].read_text(encoding="utf-8")
+
+
+def test_export_command_rebuilds_result_and_clears_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`disp pipeline export` идемпотентен и убирает чужие файлы (§8.2).
+
+    Байты сравниваются между ДВУМЯ прогонами команды, а не с набором,
+    который написал сам цикл: цикл экспортирует из фазы `EXPORTING`, а
+    команда — из `DONE`, и манифест результата честно несёт разные истории
+    переходов. Идемпотентность §8.2 — про повтор ОДНОГО и того же вызова, и
+    сравнение с чужим набором доказывало бы не её.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    result_dir = stand.pipeline_dir() / "result"
+    stale = result_dir / "pr_body.md.orig"
+    stale.write_text("обрубок прошлого экспорта\n", encoding="utf-8")
+    (result_dir / "manifest.json").unlink()
+
+    assert run_cli(stand, "export") == EXIT_OK
+    first = {path.name: path.read_bytes() for path in sorted(result_dir.iterdir())}
+    assert run_cli(stand, "export") == EXIT_OK
+    second = {path.name: path.read_bytes() for path in sorted(result_dir.iterdir())}
+
+    assert not stale.exists()
+    assert second == first
+    assert sorted(first) == [
+        "manifest.json",
+        "pr_body.md",
+        "pr_title.txt",
+        "publish.txt",
+    ]
+    assert json.loads(first["manifest.json"])["converged"] is True
+
+
+def test_task_argument_may_name_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--task` принимает и файл, и строку (§3.1); снапшот несёт содержимое."""
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    task_file = tmp_path / "task.md"
+    task_file.write_text("Задача из файла\nвторая строка\n", encoding="utf-8")
+
+    assert run_cli(stand, "run", "--task", str(task_file)) == EXIT_OK
+
+    snapshot = (stand.pipeline_dir() / "task.md").read_text(encoding="utf-8")
+    assert snapshot == "Задача из файла\nвторая строка\n"
+    assert "Задача из файла" in stand.script.prompts_of("spec-r1", "author")[0]
+
+
+def test_bad_slug_is_a_domain_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Слаг вне грамматики §4.1 — строка в stderr и код 2, не traceback (NFR-003).
+
+    Слаг попадает прямо в путь, поэтому его отвергает построитель путей — и
+    отвечает голым `ValueError`. Проверяются обе команды, читающие манифест
+    без сборки портов: у них своя ветка перевода, и молча разойтись она может
+    только здесь.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+
+    for command in ("status", "export"):
+        code = main(
+            [
+                "pipeline",
+                command,
+                "--slug",
+                "../побег",
+                "--root",
+                str(stand.workspace),
+                "--config",
+                str(stand.config_path),
+            ],
+            now=clock(),
+        )
+        assert code == EXIT_ERROR, command
+        assert "слаг" in capsys.readouterr().err, command
+
+
+def test_operator_flags_are_mutually_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--discard-round` и `--adopt-external` вместе не принимаются (§3.1).
+
+    Две противоположные санкции в одной команде — не «уточнение», а
+    неопределённость: одна выбрасывает правку человека, другая коммитит её.
+    Отвергает их argparse, то есть до любой работы с диском, и `SystemExit`
+    здесь означает ровно это.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+
+    with pytest.raises(SystemExit) as raised:
+        run_cli(stand, "resume", "--discard-round", "--adopt-external")
+
+    assert raised.value.code == EXIT_ERROR
+    assert not stand.pipeline_dir().exists()

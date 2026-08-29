@@ -35,8 +35,8 @@ create`) — внешний эффект, который исполняет че
 Манифест — честная сводка §4.2 плюс три вычисленных здесь ключа:
 `converged` (= `not partial`, простое значение параметра, а не отдельная
 ветка поведения), `escalation_reason`/`open_issues` (из последнего перехода
-`state.transitions`, когда `partial=True`) и `files` (sha256 трёх
-содержательных файлов). Ключевой набор манифеста один и тот же независимо
+`state.transitions`, ПРИВЕДШЕГО в `ESCALATED`/`FAILED`, когда `partial=True`)
+и `files` (sha256 трёх содержательных файлов). Ключевой набор манифеста один и тот же независимо
 от `partial` — различаются только значения честности (P7).
 """
 
@@ -47,7 +47,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from disputatio.contracts import PipelineState
+from disputatio.contracts import PipelinePhase, PipelineState
 from disputatio.events import atomic_write
 from disputatio.runtime.git import SESSION_DIR_NAME
 from disputatio.runtime.pipeline_config import PIPELINES_DIR_NAME
@@ -70,6 +70,10 @@ _ALL_RESULT_NAMES: Final = (*_CONTENT_FILE_NAMES, MANIFEST_NAME)
 
 #: Имя каталога экспорта внутри `pipelines/<slug>/` (§4.1, §8.2).
 _RESULT_DIR_NAME: Final = "result"
+
+#: Фазы, приход в которые и есть остановка пайплайна (§2): их переход несёт
+#: причину, ради которой пишется честный частичный результат.
+_STOPPED_PHASES: Final = (PipelinePhase.ESCALATED, PipelinePhase.FAILED)
 
 
 def _result_dir(workspace_root: Path, pipeline_id: str) -> Path:
@@ -164,18 +168,31 @@ def _clear_stale(directory: Path) -> None:
 def _escalation_summary(
     state: PipelineState,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Причина эскалации и открытые находки — из ПОСЛЕДНЕГО перехода манифеста.
+    """Причина эскалации и открытые находки — из перехода В `ESCALATED`/`FAILED`.
 
-    Ровно тот переход, которым вызывающая сторона довела `state` до
-    `ESCALATED`/`FAILED` перед вызовом с `partial=True`: `transitions` —
-    append-only (§4.2), поэтому последний элемент и есть переход, ради
-    которого честный частичный результат вообще пишется.
+    Ищется последний переход, ПРИВЕДШИЙ в остановку, а не последний вообще, и
+    разница здесь не теоретическая. Runner кладёт эскалацию двумя переходами
+    одной атомарной записью (`ESCALATED`, следом `ESCALATED → EXPORTING`,
+    `runtime/pipeline_runner.py::_escalate`): `ESCALATED` без немедленного
+    интента экспорта был бы состоянием, из которого пайплайн сам не выходит.
+    Поэтому «последний элемент» — это всегда `export_partial`, то есть ответ
+    «почему пишется частичный результат» вместо «почему пайплайн
+    остановился», а честность манифеста (P7) требует второго. Сквозной
+    прогон эскалации показал это `escalation_reason: "export_partial"` в
+    `result/manifest.json`; на скриптованном `state` одной задачи разойтись
+    было негде — переход туда клали руками.
+
+    Отсутствие такого перехода — `None` и пустой список, а не выдуманная
+    причина: `--partial` вправе назвать человек (§3.1) и на пайплайне,
+    который никуда не эскалировал.
     """
-    if not state.transitions:
-        return None, []
-    last = state.transitions[-1]
-    issues = [evidence.model_dump(mode="json") for evidence in last.evidence]
-    return last.reason.value, issues
+    for transition in reversed(state.transitions):
+        if transition.to in _STOPPED_PHASES:
+            issues = [
+                evidence.model_dump(mode="json") for evidence in transition.evidence
+            ]
+            return transition.reason.value, issues
+    return None, []
 
 
 def _manifest(

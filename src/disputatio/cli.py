@@ -3,10 +3,16 @@
 Один модуль на весь CLI, stdlib `argparse` и ни одной новой зависимости, а
 `main(argv) -> int` делает вход обычной функцией — тест вызывает её
 напрямую, не порождая процесса и не завися от того, установлен ли пакет.
-Подкоманд две: `run` заводит сессию, `resume` продолжает прерванную
-([REQ-020], [DESIGN-020]). Обе выбираются `set_defaults(handler=…)`, и обе
-объявляют `--root` сами: глобальный флаг заставлял бы пользователя помнить,
-что часть аргументов идёт до имени команды, а часть после.
+Команд верхнего уровня три: `run` заводит сессию, `resume` продолжает
+прерванную ([REQ-020], [DESIGN-020]), а группа `pipeline` несёт четыре
+команды пайплайна полировки пары (SPEC-002 §3.1). Каждая выбирается
+`set_defaults(handler=…)`, и каждая объявляет `--root` сама: глобальный флаг
+заставлял бы пользователя помнить, что часть аргументов идёт до имени
+команды, а часть после.
+
+Пайплайн — отдельная группа, а не четыре имени в общем списке: предмет у
+него другой (`--slug` против `session_id`), и плоский список заставлял бы
+читателя `--help` угадывать, к какому объекту относится команда.
 
 Единственное, что этот модуль решает сам, — **порядок** и **коды возврата**.
 Ни одного правила сессии здесь нет: pre-flight принадлежит `runtime.git`,
@@ -76,8 +82,10 @@ from disputatio.events import (
     write_config_snapshot,
 )
 from disputatio.runtime import (
+    ConfigError,
     DisputatioError,
     GitCli,
+    PipelineConfig,
     PipelineNotResumable,
     base_rev,
     build_runtime,
@@ -326,14 +334,8 @@ def cmd_pipeline_status(
     """
     root = Path(args.root)
     config = load_pipeline_config(_config_path(args, root))
-    anchor = IntegrityAnchor(config.anchor_path, root, args.slug)
-    try:
-        state = FilePipelineStateStore(root).load(args.slug)
-    except KeyError as exc:
-        raise PipelineNotResumable(
-            missing_manifest_message(root, args.slug, anchor)
-        ) from exc
-    print(render_status(state, anchor.path))
+    anchor = _pipeline_anchor(config, root, args.slug)
+    print(render_status(_manifest(root, args.slug, anchor), anchor.path))
     return EXIT_OK
 
 
@@ -354,15 +356,9 @@ def cmd_pipeline_export(
     """
     root = Path(args.root)
     config = load_pipeline_config(_config_path(args, root))
-    anchor = IntegrityAnchor(config.anchor_path, root, args.slug)
-    try:
-        state = FilePipelineStateStore(root).load(args.slug)
-    except KeyError as exc:
-        raise PipelineNotResumable(
-            missing_manifest_message(root, args.slug, anchor)
-        ) from exc
+    anchor = _pipeline_anchor(config, root, args.slug)
     manifest = export_pipeline(
-        state,
+        _manifest(root, args.slug, anchor),
         workspace_root=root,
         remote_url=None,
         branch=GitCli(root).current_branch(),
@@ -416,6 +412,38 @@ def _render_action(state: PipelineState) -> str:
     if action is None:
         return "нет — пайплайн остановлен"
     return f"{action.kind} ({action.operation_id})"
+
+
+def _pipeline_anchor(config: PipelineConfig, root: Path, slug: str) -> IntegrityAnchor:
+    """Журнал целостности пайплайна; негодный слаг — доменная ошибка (§4.1).
+
+    Слаг попадает прямо в путь, поэтому его грамматику проверяет тот, кто
+    путь строит (`events.pipeline_paths.validate_slug`) — и отвечает голым
+    `ValueError`. Здесь он переводится в иерархию [DESIGN-020]: опечатка в
+    `--slug` это ошибка пользователя, и traceback за неё запрещён (NFR-003).
+    Перевод стоит на КОНСТРУКЦИИ анкера, а не на чтении манифеста, потому что
+    анкер строится первым — и хранилище с тем же негодным слагом до вызова
+    уже не доходит.
+    """
+    try:
+        return IntegrityAnchor(config.anchor_path, root, slug)
+    except ValueError as exc:
+        raise ConfigError(f"негодный слаг пайплайна: {exc}") from exc
+
+
+def _manifest(root: Path, slug: str, anchor: IntegrityAnchor) -> PipelineState:
+    """Манифест пайплайна; его отсутствие — инструкция человеку, не `KeyError`.
+
+    Тот же текст, что у `resume` (§8.1): окно «каталог создан, манифеста
+    нет» невосстановимо автоматически, и второй рассказ о нём разошёлся бы с
+    первым ровно в перечне ручных шагов.
+    """
+    try:
+        return FilePipelineStateStore(root).load(slug)
+    except KeyError as exc:
+        raise PipelineNotResumable(
+            missing_manifest_message(root, slug, anchor)
+        ) from exc
 
 
 def _pipeline_deps(
