@@ -45,6 +45,17 @@ FINGERPRINT_LENGTH: Final = 16
 AnchorKind = Literal["pre_turn", "turn_completed"]
 
 
+class AnchorCorrupted(Exception):
+    """Строка журнала не читается, и это не оборванный хвост (P9).
+
+    Собственный класс пакета `events` — как `RoundImmutableError`: зависеть
+    от `runtime.errors` файловому writer'у нельзя, слои идут в другую
+    сторону. Перевод в диагноз пользователя — забота `runtime`
+    (`pipeline_resume`), а на живой сессии отказ хука политики и так
+    закрывает сессию fail-closed (`retry._run_lifecycle_hook`).
+    """
+
+
 class AnchorRecord(ArtifactChild):
     """Одна строка анкера: вид записи + полная identity хода (P9).
 
@@ -174,20 +185,40 @@ class IntegrityAnchor:
             os.fsync(handle.fileno())
 
     def _read(self) -> list[AnchorRecord]:
-        """Все целые записи журнала; оборванный хвост пропускается.
+        """Все записи журнала; терпим ровно один случай — оборванный хвост.
 
-        Пропуск нечитаемого хвоста здесь — не послабление: незавершённая
-        строка означает крах во время `_append`, то есть ход, о котором
-        снапшот не дописан. Строки перед ней — по-прежнему доверенные, и
-        `FileNotFoundError` наружу не гасится (см. `last_record`).
+        Пропуск незавершённой ПОСЛЕДНЕЙ строки — не послабление: строка без
+        завершающего `\\n` означает крах во время `_append`, то есть ход, о
+        котором снапшот не дописан. Строки перед ней — по-прежнему
+        доверенные, и `FileNotFoundError` наружу не гасится (см.
+        `last_record`).
+
+        Всякая ДРУГАЯ нечитаемая строка — `AnchorCorrupted`, и это
+        обязательно. Пропуск испорченной полной записи выглядел бы для
+        `last_record()` не поломкой, а фактом: испорти последнюю `pre_turn`
+        — и ответом станет предыдущая `turn_completed` либо `None`, то есть
+        «незавершённого хода не было», то есть resume не сверит control
+        plane вовсе (§8.1 шаг 0). Один байт в записи, которая ловит подмену,
+        отключал бы саму проверку — поэтому «не разобрал» здесь останавливает
+        пайплайн, а не превращается в чистый журнал.
         """
         raw = self._path.read_text(encoding="utf-8")
+        lines = raw.splitlines()
+        # Индекс единственной терпимой строки: доказательство обрыва —
+        # отсутствие завершающего `\n` у файла, а не негодность её текста.
+        truncated_tail = len(lines) - 1 if lines and not raw.endswith("\n") else -1
         records: list[AnchorRecord] = []
-        for line in raw.splitlines():
-            if not line.strip():
-                continue
+        for index, line in enumerate(lines):
             try:
                 records.append(AnchorRecord.model_validate(json.loads(line)))
-            except ValueError:
-                continue
+            except ValueError as exc:
+                if index == truncated_tail:
+                    break
+                raise AnchorCorrupted(
+                    f"журнал целостности {self._path} повреждён в строке "
+                    f"{index + 1}: запись дописана целиком, но не читается "
+                    f"({exc}). Пропустить её значило бы отменить сверку P9 "
+                    "того хода, который она описывает; разберите журнал "
+                    "вручную"
+                ) from exc
         return records

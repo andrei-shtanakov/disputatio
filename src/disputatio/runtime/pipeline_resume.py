@@ -45,7 +45,7 @@ from disputatio.contracts import (
     SessionRecord,
     TransitionReason,
 )
-from disputatio.events import IntegrityAnchor
+from disputatio.events import AnchorCorrupted, IntegrityAnchor
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import (
     BaseRevisionNotFound,
@@ -334,6 +334,16 @@ class PipelineResume:
                 "чтобы `anchor_path` совпал. Пропустить сверку P9 resume не "
                 "вправе: молча она проверяла бы чужой журнал"
             ) from exc
+        except AnchorCorrupted as exc:
+            # Порча анкера — нарушение control plane, а не сбой чтения:
+            # журнал вынесен из дерева автора именно затем, чтобы его
+            # содержимое никто мимо оркестратора не менял. Диагноз и исход
+            # те же, что у любого расхождения P9, — иначе повреждение одной
+            # строки давало бы более мягкий ответ, чем подмена файла,
+            # который эта строка описывает.
+            tampered = ControlPlaneTampered(str(exc))
+            self._close_tampered(slug, tampered)
+            raise tampered from exc
         if record is None or record.kind != "pre_turn":
             # Пустой журнал и `turn_completed` означают, что ход не прерван:
             # штатные записи runtime после успешного хода подменой не являются.

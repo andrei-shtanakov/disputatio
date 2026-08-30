@@ -21,7 +21,11 @@ from disputatio.events.atomic import atomic_write
 from disputatio.events.bootstrap import bootstrap_session, write_config_snapshot
 from disputatio.events.event_sink import JsonlEventSink
 from disputatio.events.export import write_result
-from disputatio.events.integrity_anchor import AnchorRecord, IntegrityAnchor
+from disputatio.events.integrity_anchor import (
+    AnchorCorrupted,
+    AnchorRecord,
+    IntegrityAnchor,
+)
 from disputatio.events.pipeline_events import (
     PipelineEvent,
     PipelineEventSink,
@@ -37,6 +41,7 @@ from disputatio.events.rounds import (
 from disputatio.events.state_store import FileStateStore
 
 __all__ = [
+    "AnchorCorrupted",
     "AnchorRecord",
     "FilePipelineStateStore",
     "FileStateStore",

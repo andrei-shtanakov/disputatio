@@ -416,6 +416,38 @@ def test_resume_skips_verification_after_a_completed_turn(tmp_path: Path) -> Non
     assert state.phase is not PipelinePhase.FAILED
 
 
+def test_corrupted_anchor_record_does_not_disable_the_p9_check(tmp_path: Path) -> None:
+    """A3: порча записи `pre_turn` не смеет читаться как «хода не было».
+
+    Ход прерван, control plane подменён — и та самая запись, которая ловит
+    подмену, испорчена одним байтом. Читатель, гасивший ошибку разбора,
+    отдавал бы `None`, resume заключал бы, что незавершённого хода нет, и
+    сверку не делал вовсе: подмена проходила бы под видом чистого resume.
+
+    Утверждается не только отказ, но и то, что пайплайн не поехал дальше:
+    «упало» и «остановилось до продолжения» — разные утверждения.
+    """
+    stand = build_stand(tmp_path, parked_pair())
+    start(stand)
+    _seed_pre_turn(stand, "pair-r1")
+    review = round_dir(stand.artifact_root("pair-r1"), 1) / "review.json"
+    review.write_text('{"verdict": "approve"}', encoding="utf-8")
+    path = stand.anchor().path
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[-1] = lines[-1].replace('"kind"', '"kin', 1)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    calls_before = len(stand.driver.calls)
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        stand.resume.resume(SLUG)
+
+    assert "повреждён" in str(excinfo.value)
+    assert len(stand.driver.calls) == calls_before, "resume продолжил пайплайн"
+    # Отказ держится: второй resume приходит к тому же, а не «доедает» журнал.
+    with pytest.raises(ControlPlaneTampered):
+        stand.rebuild().resume.resume(SLUG)
+
+
 def test_resume_without_the_anchor_file_refuses(tmp_path: Path) -> None:
     """Файла анкера нет — отказ с требованием указать `--config`, не пропуск."""
     stand = build_stand(tmp_path, parked_pair())

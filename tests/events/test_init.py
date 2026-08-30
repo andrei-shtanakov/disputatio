@@ -50,6 +50,7 @@ PIPELINE_PUBLIC_NAMES = (
     "read_pipeline_events",
     "IntegrityAnchor",
     "AnchorRecord",
+    "AnchorCorrupted",
 )
 """Имена, добавленные слоем пайплайна SPEC-002 (§4.1, §4.2, P8, P9).
 
@@ -80,6 +81,7 @@ ORIGINS = {
     "read_pipeline_events": pipeline_events.read_pipeline_events,
     "IntegrityAnchor": integrity_anchor.IntegrityAnchor,
     "AnchorRecord": integrity_anchor.AnchorRecord,
+    "AnchorCorrupted": integrity_anchor.AnchorCorrupted,
 }
 
 MISSING = object()
