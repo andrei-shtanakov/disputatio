@@ -468,6 +468,105 @@ def test_code_line_ref_to_missing_target_fails(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fenced code: примеры разметки не проверяются как настоящие формы
+# ---------------------------------------------------------------------------
+
+
+def test_gate_doc_paths_ignores_forms_inside_fenced_code(tmp_path: Path) -> None:
+    """B1: документ, показывающий разметку, обязан сходиться.
+
+    Пайплайн полирует спеки и планы, а те состоят из примеров в оградах —
+    ровно как §3.2 SPEC-002. Цель примера намеренно вымышлена, а
+    `doc-paths` — обязательный baseline-гейт: красный пример означал бы,
+    что корректный документ не сойдётся никогда.
+    """
+    doc_gates = _import_doc_gates()
+    doc = _write(
+        tmp_path / "spec.md",
+        "Блок файлов задачи и ссылка пишутся так:\n"
+        "\n"
+        "```markdown\n"
+        "- Modify: `src/disputatio/missing.py`\n"
+        "\n"
+        "См. [пример](docs/missing.md) и `src/missing.py:42`.\n"
+        "```\n",
+    )
+
+    result = doc_gates.gate_doc_paths(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_gate_doc_links_ignores_forms_inside_fenced_code(tmp_path: Path) -> None:
+    """B1 для `doc-links`: ни `fail` по цели, ни `unresolved_ref` по метке."""
+    doc_gates = _import_doc_gates()
+    doc = _write(
+        tmp_path / "spec.md",
+        "Ссылки пишутся так:\n"
+        "\n"
+        "```markdown\n"
+        "См. [пример](docs/missing.md) или [пример][no-such-ref].\n"
+        "```\n",
+    )
+
+    result = doc_gates.gate_doc_links(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_gate_doc_anchors_fails_on_anchor_backed_only_by_fenced_heading(
+    tmp_path: Path,
+) -> None:
+    """A4: fail-open — якорь подтверждён строкой примера, а не заголовком.
+
+    В отрендеренном документе секции `#example` нет: единственная строка
+    `## Example` лежит внутри ограды и рендерится как код. Гейт обязан
+    покраснеть, а не подтвердить якорь, ведущий в никуда.
+    """
+    doc_gates = _import_doc_gates()
+    doc = _write(
+        tmp_path / "spec.md",
+        "# Спека\n"
+        "\n"
+        "```markdown\n"
+        "## Example\n"
+        "```\n"
+        "\n"
+        "Ссылка на секцию: [пример](#example).\n",
+    )
+
+    result = doc_gates.gate_doc_anchors(doc, tmp_path)
+
+    assert result.status is GateStatus.FAIL
+    assert _tail_entries(result.tail) == [
+        {"code": "missing", "target": "#example", "line": 7}
+    ]
+
+
+def test_gate_doc_anchors_fails_on_cross_document_fenced_heading(
+    tmp_path: Path,
+) -> None:
+    """Тот же fail-open через целевой документ: там заголовок тоже в ограде.
+
+    Набор заголовков цели собирается тем же `iter_headings`; почини
+    состояние ограды только для документа под гейтом, и кросс-документная
+    половина продолжила бы подтверждать несуществующие якоря.
+    """
+    doc_gates = _import_doc_gates()
+    _write(tmp_path / "other.md", "# Другой\n\n```toml\n## Example\n```\n")
+    doc = _write(tmp_path / "spec.md", "[раздел](other.md#example)\n")
+
+    result = doc_gates.gate_doc_anchors(doc, tmp_path)
+
+    assert result.status is GateStatus.FAIL
+    assert _tail_entries(result.tail) == [
+        {"code": "missing", "target": "other.md#example", "line": 1}
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Отсутствующий/нечитаемый документ — skip гейта, не исключение наружу
 # (фикс-раунд 1, Important; конвенция — runner.run_gate).
 # ---------------------------------------------------------------------------

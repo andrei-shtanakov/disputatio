@@ -419,6 +419,190 @@ def test_escaped_backslash_leaves_the_link_alone() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fenced code: содержимое блока — показ формы, а не пользование ею
+# ---------------------------------------------------------------------------
+
+#: Дословный фрагмент §3.2 SPEC-002 — материал, а не выдумка теста.
+#: Строки TOML-комментария внутри блока начинаются с `#` и совпадают с
+#: шаблоном ATX-заголовка; в отрендеренном документе секции с такими
+#: именами нет.
+_SPEC_002_CONFIG_SECTION = (
+    "## 3.2 Конфиг: секция `[pipeline]`\n"
+    "\n"
+    "```toml\n"
+    "[pipeline]\n"
+    'spec_path = "docs/specs/2026-08-28-foo-design.md"\n'
+    'protected_branches = ["master", "main"]\n'
+    "# anchor_path — КАТАЛОГ журналов целостности P9 (`anchor_root`); внутри\n"
+    "# него анкер зовётся <anchor_id>.jsonl. ОБЯЗАН резолвиться вне\n"
+    "# gates — дополнительные doc-гейты сверх обязательного baseline (§6)\n"
+    "```\n"
+)
+
+
+def test_markdown_link_inside_fenced_code_is_not_a_ref() -> None:
+    """Ссылка в примере кода — показ разметки, а не ссылка (B1).
+
+    Документ, объясняющий, КАК пишется ссылка, обязан сходиться: цель в
+    примере намеренно вымышлена, и `doc-paths`/`doc-links` — обязательные
+    гейты, то есть красный пример не даёт документу сойтись никогда.
+    """
+    doc_refs = _import_doc_refs()
+    text = (
+        "Ссылка на соседний документ пишется так:\n"
+        "\n"
+        "```markdown\n"
+        "См. [пример](docs/missing.md) и `src/missing.py` рядом.\n"
+        "```\n"
+    )
+
+    parsed = doc_refs.parse_document(text)
+
+    assert parsed.refs == []
+    assert parsed.unresolved == []
+
+
+def test_line_ref_inside_fenced_code_is_not_a_ref() -> None:
+    """`file.py:42` в примере — тоже показ формы (B1, второй вид)."""
+    doc_refs = _import_doc_refs()
+    text = "```markdown\nСсылка на строку: `src/missing.py:42`.\n```\n"
+
+    assert doc_refs.parse_doc_refs(text) == []
+
+
+def test_reference_definition_inside_fenced_code_is_not_collected() -> None:
+    """Определение в примере не разрешает ссылку вне примера (B1, симметрия).
+
+    Сбор определений — отдельный проход по строкам; оставь его без
+    состояния fence, и пример научил бы парсер целям, которых в документе
+    нет: `[план][plan]` снаружи стал бы `DocRef` на `docs/missing.md`.
+    """
+    doc_refs = _import_doc_refs()
+    text = (
+        "Определение пишется так:\n"
+        "\n"
+        "```markdown\n"
+        "[plan]: docs/missing.md\n"
+        "```\n"
+        "\n"
+        "А ссылка — [план][plan].\n"
+    )
+
+    parsed = doc_refs.parse_document(text)
+
+    assert parsed.refs == []
+    assert [(item.label, item.line) for item in parsed.unresolved] == [("plan", 7)]
+
+
+def test_declaration_bullet_inside_fenced_code_is_not_a_declaration() -> None:
+    """Блок файлов задачи в примере — тоже разметка (B1, симметрия).
+
+    `Modify:` утверждает существование: пропусти fence здесь, и шаблон
+    плана в документации уронил бы `doc-paths` в `fail`.
+    """
+    doc_refs = _import_doc_refs()
+    text = (
+        "Блок файлов задачи оформляется так:\n"
+        "\n"
+        "```markdown\n"
+        "- Modify: `src/missing.py`\n"
+        "- Create: `tests/missing.py`\n"
+        "```\n"
+    )
+
+    assert doc_refs.parse_doc_refs(text) == []
+
+
+def test_declaration_bullet_does_not_swallow_a_following_fence() -> None:
+    """Продолжение bullet'а обрывается на ограде, а не съедает пример."""
+    doc_refs = _import_doc_refs()
+    text = "- Modify: `src/real.py`\n```markdown\n- Modify: `src/missing.py`\n```\n"
+
+    refs = doc_refs.parse_doc_refs(text)
+
+    assert [(ref.kind, ref.target, ref.line) for ref in refs] == [
+        ("declared_existing", "src/real.py", 1)
+    ]
+
+
+def test_heading_inside_fenced_code_is_not_a_heading() -> None:
+    """Комментарий TOML — не заголовок (A4), материал — §3.2 SPEC-002.
+
+    Каждая такая строка даёт `github_slug` секции, которой в
+    отрендеренном документе нет: `doc-anchors` подтверждает якорь,
+    ведущий в никуда, — fail-open в обязательном гейте.
+    """
+    doc_refs = _import_doc_refs()
+
+    headings = doc_refs.iter_headings(_SPEC_002_CONFIG_SECTION)
+
+    assert headings == [(1, "3.2 Конфиг: секция `[pipeline]`")]
+
+
+def test_tilde_fence_encloses_code_the_same_way() -> None:
+    """Ограда `~~~` — такая же ограда (CommonMark), не только бэктики."""
+    doc_refs = _import_doc_refs()
+    text = "~~~markdown\n## Example\nСм. [пример](docs/missing.md).\n~~~\n"
+
+    assert doc_refs.iter_headings(text) == []
+    assert doc_refs.parse_doc_refs(text) == []
+
+
+def test_longer_fence_holds_a_shorter_one_as_content() -> None:
+    """Ограда закрывается оградой НЕ КОРОЧЕ своей и того же символа.
+
+    Документация про markdown показывает блок кода внутри блока кода
+    ровно так — четырьмя бэктиками снаружи; посчитай ограду по факту
+    трёх, и внутренняя закрыла бы внешнюю, а «после» примера парсер
+    считал бы прозой его вторую половину.
+    """
+    doc_refs = _import_doc_refs()
+    text = (
+        "````markdown\n"
+        "```python\n"
+        "## Example\n"
+        "```\n"
+        "См. [пример](docs/missing.md).\n"
+        "````\n"
+        "После примера: [план](docs/plan.md).\n"
+    )
+
+    assert doc_refs.iter_headings(text) == []
+    assert [(ref.target, ref.line) for ref in doc_refs.parse_doc_refs(text)] == [
+        ("docs/plan.md", 7)
+    ]
+
+
+def test_indented_fence_is_recognized_and_closed() -> None:
+    """До трёх пробелов отступа — та же ограда; после неё разбор продолжается."""
+    doc_refs = _import_doc_refs()
+    text = (
+        "   ```markdown\n"
+        "   См. [пример](docs/missing.md).\n"
+        "   ```\n"
+        "Дальше обычный текст: [план](docs/plan.md).\n"
+    )
+
+    assert [(ref.target, ref.line) for ref in doc_refs.parse_doc_refs(text)] == [
+        ("docs/plan.md", 4)
+    ]
+
+
+def test_backtick_info_string_with_a_backtick_does_not_open_a_fence() -> None:
+    """Инфо-строка backtick-ограды не может содержать бэктик (CommonMark).
+
+    Такая строка — обычный абзац со спанами, а не открытие блока. Прими её
+    за ограду, и весь остаток документа ушёл бы под неё непроверенным.
+    """
+    doc_refs = _import_doc_refs()
+    text = "``` тут `спан` и снова ```\nСсылка: [план](docs/plan.md).\n"
+
+    assert [(ref.target, ref.line) for ref in doc_refs.parse_doc_refs(text)] == [
+        ("docs/plan.md", 2)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # github_slug — нормализация якорей
 # ---------------------------------------------------------------------------
 

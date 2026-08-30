@@ -50,6 +50,26 @@ inline-code — уже `fail` гейта `doc-paths`. Дальше этой то
 markdown не гонится: пересчёта пар бэктиков за экранированным спаном он не
 делает — он распознаватель замкнутого набора форм, а не renderer.
 
+**Fenced code block снимает ВСЕ формы разом, и это не эвристика, а
+рендеринг.** Строки внутри ограды (``` ``` ``` ```/``` ~~~ ```, CommonMark)
+документ показывает, а не использует: в отрендеренном виде это буквальный
+текст. Правило одно на весь модуль — на inline-формы, на определения
+reference-ссылок, на bullet'ы деклараций и на заголовки (`iter_headings`), —
+потому что цена промаха разная лишь по направлению. У ссылок это ложный
+`fail` обязательного `doc-paths` на вымышленной цели примера, то есть
+корректный документ не сходится никогда; у заголовков — наоборот, ложный
+`pass` `doc-anchors` на якорь, ведущий в секцию, которой в документе нет.
+Пайплайн полирует спеки и планы, а те состоят из примеров в оградах: §3.2
+самой SPEC-002 — TOML-блок, каждая строка комментария в котором совпадает
+с шаблоном ATX-заголовка. Ограда, не закрытая до конца документа, держит
+остаток под собой — так его рендерит CommonMark, и «дочитать до конца как
+прозу» означало бы проверять не тот документ, который увидит человек.
+Дальше этого парсер за блочной структурой markdown по-прежнему не гонится:
+indented code block (четыре пробела) он не распознаёт — отличить его от
+продолжения элемента списка можно только полным блочным разбором, а
+ошибка в эту сторону вернула бы ложные `fail` на обычных вложенных
+списках.
+
 **`DocRef` — не единственный результат разбора.** `parse_document` возвращает
 пару: распознанные ссылки и `unresolved` — reference-ссылки правильной формы
 ``[text][ref]``, для которых определения в документе нет. Ссылка без цели —
@@ -128,6 +148,7 @@ _BULLET_RE = re.compile(r"^\s*[-*]\s*(Modify|Test|Create):\s*(.*)$")
 _BULLET_START_RE = re.compile(r"^\s*[-*]\s")
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 _TRAILING_QUOTE_RE = re.compile(r"^\s*\(«([^»]*)»\)")
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s-]", re.UNICODE)
@@ -150,6 +171,49 @@ def _is_escaped(line: str, start: int) -> bool:
     return backslashes % 2 == 1
 
 
+def _fenced_flags(lines: list[str]) -> list[bool]:
+    """Для каждой строки — лежит ли она в fenced code block'е (CommonMark).
+
+    Ограждающие строки помечены наравне с содержимым: инфо-строка открытия
+    (``` ```markdown ```) — тоже не проза. Ограда закрывается оградой ТОГО
+    ЖЕ символа, ДЛИНОЙ НЕ МЕНЬШЕ открывающей и без инфо-строки: документация
+    про markdown показывает блок внутри блока ровно этим приёмом, и
+    закрытие по факту трёх символов разорвало бы внешний пример пополам.
+    Инфо-строка backtick-ограды не может содержать бэктик (иначе абзац с
+    двумя спанами открывал бы блок и глушил остаток документа); у
+    tilde-ограды такого ограничения нет.
+
+    Незакрытая ограда держит остаток документа — так его рендерит
+    CommonMark. Это единственное место, где парсер знает про блочную
+    структуру markdown, и знает он ровно столько, сколько нужно, чтобы не
+    считать показ формы её использованием.
+    """
+    flags = [False] * len(lines)
+    opening: str | None = None
+    for index, line in enumerate(lines):
+        match = _FENCE_RE.match(line)
+        if opening is None:
+            if match is None:
+                continue
+            marker = match.group("fence")
+            if marker[0] == "`" and "`" in match.group("info"):
+                continue
+            opening = marker
+            flags[index] = True
+            continue
+        flags[index] = True
+        if match is None:
+            continue
+        closing = match.group("fence")
+        if (
+            closing[0] == opening[0]
+            and len(closing) >= len(opening)
+            and not match.group("info").strip()
+        ):
+            opening = None
+    return flags
+
+
 def parse_doc_refs(text: str) -> list[DocRef]:
     """Разбирает `text` на `DocRef` по замкнутому набору форм (см. модуль)."""
     return parse_document(text).refs
@@ -159,17 +223,21 @@ def parse_document(text: str) -> ParsedDocument:
     """Полный разбор: `DocRef`-ы и неразрешённые reference-ссылки.
 
     Один проход на оба результата намеренно: маскирование inline-code,
-    список определений и строки, съеденные декларациями `Modify:`/`Create:`,
-    обязаны быть одними и теми же для обеих половин. Второй проход по своей
-    копии этих правил разошёлся бы с первым — и разошёлся бы именно там, где
-    расхождение выглядит как отсутствие находки.
+    список определений, состояние ограды и строки, съеденные декларациями
+    `Modify:`/`Create:`, обязаны быть одними и теми же для обеих половин.
+    Второй проход по своей копии этих правил разошёлся бы с первым — и
+    разошёлся бы именно там, где расхождение выглядит как отсутствие находки.
     """
     lines = text.splitlines()
-    definitions = _collect_link_definitions(lines)
-    declared_refs, consumed_lines = _parse_declared_paths(lines)
+    fenced = _fenced_flags(lines)
+    definitions = _collect_link_definitions(lines, fenced)
+    declared_refs, consumed_lines = _parse_declared_paths(lines, fenced)
     refs: list[DocRef] = list(declared_refs)
     unresolved: list[UnresolvedRef] = []
     for lineno, raw_line in enumerate(lines, start=1):
+        if fenced[lineno - 1]:
+            # Содержимое ограды — показ формы, а не форма (см. модуль).
+            continue
         if lineno in consumed_lines:
             # Строка уже разобрана как Modify:/Test:/Create: — те же
             # backtick-пути не считаются повторно как обычный code_path.
@@ -206,9 +274,19 @@ def github_slug(heading: str, seen: dict[str, int]) -> str:
 
 
 def iter_headings(text: str) -> list[tuple[int, str]]:
-    """Возвращает `(line, heading_text)` для ATX-заголовков документа."""
+    """Возвращает `(line, heading_text)` для ATX-заголовков документа.
+
+    Строки внутри fenced code block'а заголовков не дают: `# comment` в
+    TOML-примере совпадает с шаблоном ATX, но секции в отрендеренном
+    документе не создаёт. Разница здесь направлена в fail-open: лишний
+    slug — это `pass` `doc-anchors` на якорь, ведущий в никуда.
+    """
+    lines = text.splitlines()
+    fenced = _fenced_flags(lines)
     headings: list[tuple[int, str]] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno, line in enumerate(lines, start=1):
+        if fenced[lineno - 1]:
+            continue
         match = _ATX_HEADING_RE.match(line)
         if match:
             headings.append((lineno, match.group(2)))
@@ -258,9 +336,16 @@ def _split_target_anchor(raw: str) -> tuple[str, str | None]:
     return path, (anchor if sep else None)
 
 
-def _collect_link_definitions(lines: list[str]) -> dict[str, str]:
+def _collect_link_definitions(lines: list[str], fenced: list[bool]) -> dict[str, str]:
+    """Определения reference-ссылок; строки внутри ограды не определяют ничего.
+
+    Определение в примере — не определение: собери его, и ссылка ВНЕ
+    примера получила бы цель, которой документ не называл.
+    """
     definitions: dict[str, str] = {}
-    for line in lines:
+    for index, line in enumerate(lines):
+        if fenced[index]:
+            continue
         match = _MD_REF_DEF_RE.match(line)
         if match:
             definitions[match.group("label").casefold()] = match.group("target")
@@ -307,12 +392,22 @@ def _match_autolinks(line: str, lineno: int) -> list[DocRef]:
     return refs
 
 
-def _parse_declared_paths(lines: list[str]) -> tuple[list[DocRef], set[int]]:
+def _parse_declared_paths(
+    lines: list[str], fenced: list[bool]
+) -> tuple[list[DocRef], set[int]]:
+    """Декларации `Modify:`/`Test:`/`Create:`; ограда — не место для них.
+
+    Ограда обрывает и продолжение bullet'а: пример, стоящий сразу за
+    декларацией, — соседний блок, а не её хвост.
+    """
     refs: list[DocRef] = []
     consumed: set[int] = set()
     index = 0
     total = len(lines)
     while index < total:
+        if fenced[index]:
+            index += 1
+            continue
         match = _BULLET_RE.match(lines[index])
         if match is None:
             index += 1
@@ -324,7 +419,7 @@ def _parse_declared_paths(lines: list[str]) -> tuple[list[DocRef], set[int]]:
         cursor = index + 1
         while cursor < total:
             candidate = lines[cursor]
-            if not candidate.strip():
+            if fenced[cursor] or not candidate.strip():
                 break
             if _BULLET_RE.match(candidate) or _BULLET_START_RE.match(candidate):
                 break

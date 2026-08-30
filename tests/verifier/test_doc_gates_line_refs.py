@@ -130,6 +130,30 @@ def test_gate_doc_line_refs_ignores_non_line_ref_kinds(tmp_path: Path) -> None:
     assert _tail_entries(result.tail) == []
 
 
+def test_line_ref_inside_fenced_code_is_not_checked(tmp_path: Path) -> None:
+    """B1 для `doc-line-refs`: `file:line` в примере — показ формы.
+
+    Пример намеренно называет несуществующие файл и строку; гейт
+    обязательный, и красная запись не дала бы сойтись документу, который
+    всего лишь объясняет синтаксис.
+    """
+    _write(tmp_path / "src" / "mod.py", "a = 1\n")
+    doc = _write(
+        tmp_path / "spec.md",
+        "Ссылка на строку пишется так:\n"
+        "\n"
+        "```markdown\n"
+        "См. `src/missing.py:42` («какой-то текст»).\n"
+        "См. `src/mod.py:99` («строки нет»).\n"
+        "```\n",
+    )
+
+    result = doc_gates.gate_doc_line_refs(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
 # ---------------------------------------------------------------------------
 # gate_doc_scope — граница контура: диф раунда трогает только allowed
 # ---------------------------------------------------------------------------
@@ -211,6 +235,131 @@ def test_scope_pure_rename_within_allowed_passes() -> None:
     )
 
     result = doc_gates.gate_doc_scope(patch, ("spec.md", "spec.md.bak"))
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_scope_hunk_content_looking_like_a_file_header_is_not_a_path() -> None:
+    """B2: строка содержимого — не заголовок файла.
+
+    Документ этого пайплайна законно показывает unified diff: строка
+    `-- a/other.py` под удалением превращается в `--- a/other.py`, а
+    `++ b/other.py` под добавлением — в `+++ b/other.py`. Разбор без
+    состояния секции читает их как метаданные и роняет весь отчёт
+    `scope_escape`'ом на файл, которого патч не трогал.
+    """
+    patch = (
+        "diff --git a/spec.md b/spec.md\n"
+        "--- a/spec.md\n"
+        "+++ b/spec.md\n"
+        "@@ -1,2 +1,2 @@\n"
+        " Пример unified diff внутри спеки:\n"
+        "--- a/other.py\n"
+        "+++ b/other.py\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_scope_hunk_content_looking_like_a_rename_is_not_a_path() -> None:
+    """Та же болезнь у форм переименования — и в тексте документа они бывают.
+
+    `rename to other.py` в hunk'е — это добавленная/удалённая строка с
+    префиксом, а не метаданные git'а.
+    """
+    patch = (
+        "diff --git a/spec.md b/spec.md\n"
+        "--- a/spec.md\n"
+        "+++ b/spec.md\n"
+        "@@ -1,2 +1,2 @@\n"
+        " Чистое переименование печатает:\n"
+        "-rename from other.py\n"
+        "+rename to other.py\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+
+
+def test_scope_sees_the_next_file_header_after_a_hunk_with_diff_content() -> None:
+    """Не-вакуумность B2: пропуск hunk'а не должен ослепить гейт дальше.
+
+    Тот же патч с примером внутри спеки продолжается настоящим заголовком
+    файла вне `allowed` — граница контура обязана остаться зрячей.
+    """
+    patch = (
+        "diff --git a/spec.md b/spec.md\n"
+        "--- a/spec.md\n"
+        "+++ b/spec.md\n"
+        "@@ -1,2 +1,2 @@\n"
+        " Пример unified diff внутри спеки:\n"
+        "--- a/other.py\n"
+        "+++ b/other.py\n"
+        "diff --git a/real.py b/real.py\n"
+        "--- a/real.py\n"
+        "+++ b/real.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
+
+    assert result.status is GateStatus.FAIL
+    assert _tail_entries(result.tail) == [
+        {"code": "scope_escape", "target": "real.py", "line": 9}
+    ]
+
+
+def test_scope_hunk_without_counts_consumes_exactly_one_line_each_side() -> None:
+    """`@@ -1 +1 @@` — счётчик по умолчанию 1, а не «до конца патча»."""
+    patch = (
+        "diff --git a/spec.md b/spec.md\n"
+        "--- a/spec.md\n"
+        "+++ b/spec.md\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/other.py b/other.py\n"
+        "--- a/other.py\n"
+        "+++ b/other.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
+
+    assert result.status is GateStatus.FAIL
+    assert _tail_entries(result.tail) == [
+        {"code": "scope_escape", "target": "other.py", "line": 8}
+    ]
+
+
+def test_scope_no_newline_marker_does_not_consume_a_hunk_line() -> None:
+    """`\\ No newline at end of file` — примечание, не строка содержимого.
+
+    Посчитай его строкой hunk'а, и счётчик закончился бы на строку раньше:
+    последняя настоящая строка содержимого ушла бы в разбор заголовков.
+    """
+    patch = (
+        "diff --git a/spec.md b/spec.md\n"
+        "--- a/spec.md\n"
+        "+++ b/spec.md\n"
+        "@@ -1,2 +1,2 @@\n"
+        " Пример:\n"
+        "-old\n"
+        "\\ No newline at end of file\n"
+        "+++ b/other.py\n"
+    )
+
+    result = doc_gates.gate_doc_scope(patch, ("spec.md",))
 
     assert result.status is GateStatus.PASS
     assert _tail_entries(result.tail) == []

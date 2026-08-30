@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from disputatio.contracts.verification import GateResult, GateStatus
@@ -248,6 +249,53 @@ _DIFF_PATH_PATTERNS = (
     _RENAME_FROM_RE,
     _RENAME_TO_RE,
 )
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+
+
+def _iter_file_metadata_lines(patch: str) -> Iterator[tuple[int, str]]:
+    """Строки МЕТАДАННЫХ файлов unified diff — всё, что вне hunk'ов.
+
+    Патч — не плоский список строк, и разбор regex'ом по всем подряд
+    путает содержимое с заголовками: строка документа ``-- a/other.py``
+    под удалением печатается как ``--- a/other.py``, а ``++ b/other.py``
+    под добавлением — как ``+++ b/other.py``. Обе неотличимы от
+    заголовка файла ИМЕННО В ОТРЫВЕ от структуры, а в структуре
+    неоднозначности нет: заголовок файла может стоять только до первого
+    ``@@``, а внутри hunk'а каждая строка несёт префикс и посчитана в его
+    заголовке. Документы этого пайплайна показывают unified diff в
+    примерах — то есть форма не экзотическая, а штатная.
+
+    Счётчик строк hunk'а ведётся по обеим сторонам: ``@@ -a,N +b,M @@``
+    (без числа — 1, как в git'е). ``\\ No newline at end of file`` —
+    примечание, а не строка содержимого, и в счёт не идёт. Строка, не
+    несущая ни одного из префиксов ``' '``/``'-'``/``'+'``/``'\\'`` при
+    незакрытом счётчике, обрывает hunk и разбирается как метаданные:
+    оборванный патч не должен уводить остаток разбора в слепоту.
+    """
+    remaining_old = 0
+    remaining_new = 0
+    for lineno, raw_line in enumerate(patch.splitlines(), start=1):
+        if remaining_old > 0 or remaining_new > 0:
+            marker = raw_line[:1]
+            if marker == "\\":
+                continue
+            if marker in (" ", ""):
+                remaining_old = max(0, remaining_old - 1)
+                remaining_new = max(0, remaining_new - 1)
+                continue
+            if marker == "-":
+                remaining_old = max(0, remaining_old - 1)
+                continue
+            if marker == "+":
+                remaining_new = max(0, remaining_new - 1)
+                continue
+            remaining_old = remaining_new = 0
+        hunk = _HUNK_HEADER_RE.match(raw_line)
+        if hunk is not None:
+            remaining_old = int(hunk.group("old") or 1)
+            remaining_new = int(hunk.group("new") or 1)
+            continue
+        yield lineno, raw_line
 
 
 def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
@@ -272,10 +320,21 @@ def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
     же двумя путями) — дедуп по пути на весь патч не даёт задвоения записи
     об одном и том же файле. Каждый непустой путь вне `allowed` даёт
     `scope_escape` — граница контура, а не список для галочки.
+
+    Заголовки берутся **только из метаданных файлов**
+    (`_iter_file_metadata_lines`): строки внутри hunk'ов — содержимое, и
+    строка документа, показывающая unified diff, под удалением/добавлением
+    выглядит как заголовок в точности. Разбор без состояния читал бы её
+    как метаданные и ронял весь `VerificationReport` на файле, которого
+    патч не трогал.
     """
     allowed_set = set(allowed)
     first_seen: dict[str, int] = {}
-    for lineno, raw_line in enumerate(patch.splitlines(), start=1):
+    # TODO(A1): непустой патч без единого распознанного пути (бинарное
+    # изменение — `Binary files … differ`, без `---`/`+++`) сейчас даёт
+    # PASS; фикс встраивается сюда — по пустому `first_seen` при непустом
+    # `patch`, метаданные для него уже отделены от содержимого hunk'ов.
+    for lineno, raw_line in _iter_file_metadata_lines(patch):
         for pattern in _DIFF_PATH_PATTERNS:
             match = pattern.match(raw_line)
             if match is None:
