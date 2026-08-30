@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Final
 
 from disputatio.contracts.base import SCHEMA_V2
-from disputatio.contracts.verification import VerificationReport
+from disputatio.contracts.verification import (
+    GateResult,
+    GateStatus,
+    OverallStatus,
+    VerificationReport,
+)
 from disputatio.verifier.aggregate import compute_overall
 from disputatio.verifier.config import GateSpec
 from disputatio.verifier.diffstats import collect_diff_stats
@@ -104,12 +109,14 @@ class DocVerifier:
         второй реализации той же статистики заводить незачем.
         """
         gates = []
+        baseline: list[GateResult] = []
         for doc in self._doc_paths:
-            gates.append(gate_doc_paths(doc, self._repo_root))
-            gates.append(gate_doc_links(doc, self._repo_root))
-            gates.append(gate_doc_anchors(doc, self._repo_root))
-            gates.append(gate_doc_line_refs(doc, self._repo_root))
-        gates.append(gate_doc_scope(self._patch_reader(round_no), self._allowed))
+            baseline.append(gate_doc_paths(doc, self._repo_root))
+            baseline.append(gate_doc_links(doc, self._repo_root))
+            baseline.append(gate_doc_anchors(doc, self._repo_root))
+            baseline.append(gate_doc_line_refs(doc, self._repo_root))
+        baseline.append(gate_doc_scope(self._patch_reader(round_no), self._allowed))
+        gates.extend(baseline)
         gates.extend(run_gate(spec, self._repo_root) for spec in self._extra)
         return VerificationReport(
             # `disputatio/v2` безусловно: этот верификатор существует только
@@ -120,6 +127,34 @@ class DocVerifier:
             schema=SCHEMA_V2,
             round=round_no,
             gates=gates,
-            overall=compute_overall(gates),
+            overall=_overall_with_baseline(gates, baseline),
             diff_stats=collect_diff_stats(self._repo_root),
         )
+
+
+def _overall_with_baseline(
+    gates: list[GateResult], baseline: list[GateResult]
+) -> OverallStatus:
+    """`compute_overall`, но невыполненный baseline-гейт — тоже провал.
+
+    Два верных решения давали вместе fail-open. `_read_document` отдаёт
+    `skip`, когда документ не существует или не читается, — сбой запуска
+    гейта не летит наружу исключением (конвенция `runner.run_gate`).
+    `compute_overall` считает `skip` не-провалом: отключённый гейт ничего
+    не опровергает ([DESIGN-009]). В doc-контуре второе к первому не
+    применимо: baseline §6 **неотключаем** — у конструктора нет и
+    параметра, которым его можно было бы выключить, — поэтому «гейт не
+    выполнился» здесь означает не «его отключили», а «проверено не было
+    ничего».
+
+    Без этой ветки автор spec-контура, удаливший спеку, получал зелёный
+    отчёт: `doc-scope` видит разрешённый путь и молчит, а четыре
+    content-гейта уходят в `skip`. Раунд, стерший предмет ревью, проходил
+    детерминированную половину критерия сходимости.
+
+    `extra`-гейты правилом не затронуты: они добавлены конфигом, их `skip`
+    — ровно тот случай, ради которого [DESIGN-009] и написан.
+    """
+    if any(gate.status == GateStatus.SKIP for gate in baseline):
+        return OverallStatus.FAIL
+    return compute_overall(gates)
