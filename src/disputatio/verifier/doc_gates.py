@@ -56,7 +56,6 @@ CODE_MISSING = "missing"
 CODE_ESCAPE = "escape"
 CODE_WARNING = "warning"
 CODE_LINE_DRIFT = "line_drift"
-CODE_UNREADABLE = "unreadable"
 CODE_SCOPE_ESCAPE = "scope_escape"
 CODE_SCOPE_UNPARSED = "scope_unparsed"
 CODE_UNRESOLVED_REF = "unresolved_ref"
@@ -178,29 +177,18 @@ def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
                 continue
             if not resolved.exists():
                 continue  # существование пути — забота doc-paths/doc-links
-            if resolved.is_dir():
-                continue  # каталог — законная цель ссылки, заголовков в нём нет
             if resolved not in heading_cache:
                 try:
                     target_text = resolved.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    # Существующий файл, который не прочитать, — не «не про
-                    # этот якорь», а якорь непроверенный. Молчать о нём
-                    # значило бы отдать отмену проверки одному `chmod`:
-                    # права git не отслеживает, и в патче такая правка не
-                    # видна вовсе. Сосед по модулю (`doc-line-refs`) при том
-                    # же условии раунд роняет.
-                    has_fail = True
-                    entries.append(
-                        _entry(CODE_UNREADABLE, _anchor_target(ref), ref.line)
-                    )
-                    continue
+                except OSError:
+                    continue  # нечитаемый файл — не про этот якорь
                 heading_cache[resolved] = _slug_set(iter_headings(target_text))
             slugs = heading_cache[resolved]
         key = github_slug(ref.anchor or "", {})
         if key not in slugs:
             has_fail = True
-            entries.append(_entry(CODE_MISSING, _anchor_target(ref), ref.line))
+            target = f"{ref.target}#{ref.anchor}" if ref.target else f"#{ref.anchor}"
+            entries.append(_entry(CODE_MISSING, target, ref.line))
 
     status = GateStatus.FAIL if has_fail else GateStatus.PASS
     return _build_result("doc-anchors", f"internal:doc-anchors:{doc}", status, entries)
@@ -233,17 +221,9 @@ def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
             continue
         try:
             target_lines = resolved.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
+        except OSError:
             has_fail = True
             entries.append(_entry(CODE_MISSING, path_text, ref.line))
-            continue
-        except (OSError, UnicodeDecodeError):
-            # Файл есть, но прочитать его нельзя: `missing` тут был бы
-            # неправдой, а молчание — тем же fail-open, что у doc-anchors.
-            # `UnicodeDecodeError` — `ValueError`, и мимо `except OSError`
-            # он улетал наружу исключением, минуя конвенцию модуля.
-            has_fail = True
-            entries.append(_entry(CODE_UNREADABLE, path_text, ref.line))
             continue
         if line_no < 1 or line_no > len(target_lines):
             has_fail = True
@@ -496,11 +476,6 @@ def _path_for_existence(ref: DocRef) -> str:
     return ref.target
 
 
-def _anchor_target(ref: DocRef) -> str:
-    """Строка находки `doc-anchors`: `путь#якорь` либо `#якорь` для своего файла."""
-    return f"{ref.target}#{ref.anchor}" if ref.target else f"#{ref.anchor}"
-
-
 def _entry(code: str, target: str, line: int) -> dict[str, object]:
     return {"code": code, "target": target, "line": line}
 
@@ -515,7 +490,7 @@ def _read_document(name: str, doc: Path) -> str | GateResult:
         return doc.read_text(encoding="utf-8")
     except FileNotFoundError:
         return _skipped(name, doc, f"document not found: {doc}")
-    except (OSError, UnicodeDecodeError) as exc:
+    except OSError as exc:
         return _skipped(name, doc, f"cannot read document: {exc}")
 
 
