@@ -308,6 +308,54 @@ def test_interrupted_export_leaves_no_manifest_and_repair_fixes_it(
         assert manifest["files"][name] == actual
 
 
+def test_interrupted_re_export_leaves_no_stale_commit_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обрыв ПОВТОРНОГО экспорта не оставляет манифест прошлого набора.
+
+    Отличие от предыдущего теста — старт: там `result/` пуст, и обрыв
+    оставляет набор без манифеста сам собой. Здесь экспорт уже отработал,
+    и рвётся перезапись поверх готового набора — случай, ради которого
+    `cli.py` и предлагает повторный экспорт как починку. Манифест —
+    commit marker (P8): пережив обрыв, он объявляет валидным набор, чьё
+    содержимое обновлено наполовину, а записанные в нём sha256 больше не
+    соответствуют файлам.
+    """
+    directory = result_dir(tmp_path, _PIPELINE_ID)
+    export_pipeline(
+        _converged_state(),
+        workspace_root=tmp_path,
+        remote_url="git@github.com:acme/repo.git",
+        branch="docs/foo",
+        partial=False,
+    )
+    first_title = (directory / PR_TITLE_NAME).read_bytes()
+    first_manifest = (directory / MANIFEST_NAME).read_bytes()
+
+    def _boom(path: Path, content: str | bytes, *, encoding: str = "utf-8") -> None:
+        if path.name == PUBLISH_NAME:
+            raise RuntimeError("симулированный обрыв посреди перезаписи набора")
+        real_atomic_write(path, content, encoding=encoding)
+
+    monkeypatch.setattr("disputatio.runtime.pipeline_export.atomic_write", _boom)
+    with pytest.raises(RuntimeError):
+        export_pipeline(
+            _escalated_state(),
+            workspace_root=tmp_path,
+            remote_url="git@github.com:acme/repo.git",
+            branch="docs/foo",
+            partial=True,
+        )
+
+    # Набор действительно обновлён наполовину — иначе тест был бы пустым.
+    assert (directory / PR_TITLE_NAME).read_bytes() != first_title
+    assert not (directory / MANIFEST_NAME).exists(), (
+        "манифест прошлого экспорта пережил обрыв повторного: commit marker "
+        f"объявляет валидным набор с чужими sha256 ({first_manifest[:32]!r}…)"
+    )
+
+
 def test_start_of_export_removes_stale_files_outside_the_new_set(
     tmp_path: Path,
 ) -> None:
