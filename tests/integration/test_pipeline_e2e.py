@@ -31,6 +31,7 @@
 """
 
 import json
+import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -693,6 +694,68 @@ def test_run_refuses_foreign_untracked_before_creating_anything(
 
     stray.unlink()
     assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+
+def _retype_adapter(stand: Stand, role: str, name: str) -> None:
+    """Переписывает имя адаптера роли в конфиге `--config` стенда."""
+    pattern = re.compile(rf'(\[agents\.{role}\]\nadapter = )"[^"]*"')
+    text = stand.config_path.read_text(encoding="utf-8")
+    patched, count = pattern.subn(rf'\g<1>"{name}"', text)
+    assert count == 1, f"шаблон конфига разошёлся со стендом: {role}"
+    stand.config_path.write_text(patched, encoding="utf-8")
+
+
+def test_unknown_author_adapter_refuses_run_before_creating_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Опечатка в имени адаптера — отказ до анкера, манифеста и сессии (§3.1).
+
+    Дефект жил ровно на стыке двух покрытых половин: `build_pipeline`
+    адаптеров не разрешал, а `build_runtime` натыкался на опечатку уже внутри
+    `session_driver` — то есть ПОСЛЕ анкера, каталога, снапшотов,
+    `pipeline.json` и doc-сессии. Восстановить запуск штатными командами
+    после такого отказа нельзя: повторный `run` упирается в существующий
+    анкер, а `resume` перечитывает снапшот с той же опечаткой. Поэтому
+    вторая половина утверждения — что исправленный конфиг ЗАПУСКАЕТСЯ, — не
+    вежливость, а суть находки.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    _retype_adapter(stand, "author", "опечатка")
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    assert code == EXIT_ERROR
+    assert "опечатка" in capsys.readouterr().err
+    assert not stand.pipeline_dir().exists()
+    assert not stand.anchor_root.exists()
+
+    _retype_adapter(stand, "author", "fake")
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+
+def test_unbuildable_reviewer_adapter_refuses_run_before_creating_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Проверяется конструктивность, а не только имя в реестре (§3.1).
+
+    `codex` — легальное значение `config.toml`, но ревьюером он требует
+    read-only worktree (ADR-004), которого composition root не передаёт, и
+    отказ приходит из конструктора. Сверка одних имён по словарю пропустила
+    бы этот конфиг дальше — и он оставил бы после себя ровно тот же
+    невосстановимый пайплайн. Заодно проверяется вторая роль: разрешение
+    адаптеров обязано доходить до ревьюера, а не останавливаться на авторе.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    _retype_adapter(stand, "reviewer", "codex")
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    assert code == EXIT_ERROR
+    refusal = capsys.readouterr().err
+    assert "codex" in refusal
+    assert "reviewer" in refusal
+    assert not stand.pipeline_dir().exists()
+    assert not stand.anchor_root.exists()
 
 
 def test_round_one_approve_does_not_converge_a_document_session(
