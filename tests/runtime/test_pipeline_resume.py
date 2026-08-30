@@ -354,6 +354,44 @@ def test_tampered_control_plane_fails_the_pipeline(tmp_path: Path) -> None:
     assert state.transitions[-1].reason is TransitionReason.INVARIANT_VIOLATION
 
 
+def test_forged_terminal_phase_does_not_swallow_the_tamper(tmp_path: Path) -> None:
+    """Подменённая фаза `DONE` не отменяет отказ P9 (§8.1 шаг 0).
+
+    Подделка, оставляющая манифест схемно валидным, но объявляющая пайплайн
+    завершённым, бьёт ровно в обработку, ради которой инвариант и заведён:
+    `_fail` отвергает переход из `DONE` (§2), и его отказ, выпущенный
+    наружу, унёс бы с собой диагноз подмены — то есть подделка терминальной
+    фазы отключала бы fail-closed обработку P9.
+
+    Утверждается пересечение границы, а не половинка: подмена делается через
+    штатное хранилище манифеста, а сверка вызывается настоящим
+    `PipelineResume.resume`, а не хуком политики напрямую.
+    """
+    stand = build_stand(tmp_path, parked_pair())
+    start(stand)
+    _seed_pre_turn(stand, "pair-r1")
+    # Схемно валиден — подделан ровно в одном поле, как и в модели атаки.
+    stand.store.save(stand.manifest().model_copy(update={"phase": PipelinePhase.DONE}))
+    calls_before = len(stand.driver.calls)
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        stand.resume.resume(SLUG)
+
+    # Именно по подменённому манифесту: сверка упала бы и от постороннего
+    # файла, и утверждение «упало» этих двух причин не различает.
+    assert f"pipelines/{SLUG}/pipeline.json: содержимое изменилось" in str(
+        excinfo.value
+    )
+    assert len(stand.driver.calls) == calls_before, "resume продолжил пайплайн"
+    # Отказ записи не потерян, а стал причиной: человеку нужны оба факта —
+    # что control plane подменён и что закрыть пайплайн не удалось.
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    # Fail-closed держится анкером, а не манифестом: записать `FAILED` поверх
+    # подделанного `DONE` нельзя (§2), и всё же второй resume отказывает так же.
+    with pytest.raises(ControlPlaneTampered):
+        stand.rebuild().resume.resume(SLUG)
+
+
 def test_resume_skips_verification_after_a_completed_turn(tmp_path: Path) -> None:
     """`turn_completed` — сверять нечего: штатные записи подменой не являются.
 

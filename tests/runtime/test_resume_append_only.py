@@ -126,8 +126,18 @@ _WRITING_PHASES = (
 # сессия (`FAILED`/`DONE` уже в `session.json`), всё остальное уходит выше
 # как есть. Поймай он I3 у нетерминальной сессии — сработал бы `raise`, то
 # есть тихой правки раунда этот обработчик не даёт ни в одной ветке.
+# Четвёртый — отметка `FAILED` по подмене control plane на resume (SPEC-002
+# §8.1 шаг 0). Он широкий, потому что пишется манифест, про который ровно
+# сейчас доказано, что верить ему нельзя: перечень причин, по которым запись
+# может не удаться, здесь и был дырой — подделанная фаза `DONE` давала
+# `ValueError` мимо перечня, и он вылетал ВМЕСТО `ControlPlaneTampered`.
+# Записи артефакта раунда под ним нет ни одной (в `try` — один вызов
+# `PipelineRunner.fail`), а `raise` безусловен: пойманное уходит наружу
+# причиной того же `ControlPlaneTampered`, то есть тихой правки этот
+# обработчик не даёт ни в одной ветке.
 _TOLERATED_HANDLERS = [
     ("composition.py", "session_driver", "Exception", True),
+    ("pipeline_resume.py", "_close_tampered", "Exception", True),
     ("retry.py", "_run_lifecycle_hook", "Exception", True),
     ("steps.py", "_write_decision", "RoundImmutableError", True),
 ]
