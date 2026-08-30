@@ -78,6 +78,8 @@ from disputatio.core import SessionFsm
 from disputatio.events import write_round_artifact
 from disputatio.runtime import RuntimeDeps
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 _ROUND = 3
 _SESSION_ID = "s-reviewing"
@@ -308,7 +310,7 @@ class NoVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: шаг REVIEWING git не трогает — любой вызов ошибка.
 
     Он же пин «вывод ревьюера не подставляется в argv»: единственный путь
@@ -576,7 +578,8 @@ def _make_harness(
     fsm = SessionFsm(_state(), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     reviewer = SpyReviewer(log=log, reply=reply)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),
@@ -700,7 +703,8 @@ def test_parsing_never_evaluates_the_agent_text() -> None:
 
     called = _called_names([tree])
     assert not (called & _EXECUTION_CALLS), (
-        f"runtime/parsing.py исполняет текст агента: {sorted(called & _EXECUTION_CALLS)}"
+        "runtime/parsing.py исполняет текст агента: "
+        f"{sorted(called & _EXECUTION_CALLS)}"
     )
     assert not (_imported_roots(tree) & _EXECUTION_MODULES), (
         "runtime/parsing.py импортирует модуль исполнения — текст агента "

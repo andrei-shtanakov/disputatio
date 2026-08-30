@@ -21,23 +21,32 @@ FSM обнулила бы лимит schema-повторов (ADR-004).
 приходят своими задачами и делят с ними `StepContext`.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
-from disputatio.context import build_author_prompt, build_reviewer_prompt
+from disputatio.context import (
+    build_author_prompt,
+    build_doc_author_prompt,
+    build_doc_reviewer_prompt,
+    build_reviewer_prompt,
+)
 from disputatio.contracts import (
+    SCHEMA_V1,
+    SCHEMA_V2,
     AgentTurn,
     Decision,
     Event,
     EventSource,
     EventType,
+    Mode,
     Review,
-    ReviewAcceptance,
     Role,
+    SessionLifecyclePolicy,
     VerificationReport,
     parse_proposal,
+    validate_doc_review,
     validate_review,
 )
 from disputatio.core import (
@@ -57,8 +66,10 @@ from disputatio.runtime.composition import RuntimeDeps
 from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import (
+    PriorRound,
     carried_issues,
     issue_history,
+    load_adopted_findings,
     load_decision,
     load_patch,
     load_prior_round,
@@ -94,6 +105,31 @@ TEMP_ARTIFACT_PATTERNS: Final = ("*.tmp", "*~")
 
 
 @dataclass(frozen=True, slots=True)
+class DocSessionSpec:
+    """Контур, документы и чеклист doc-сессии — вход промптов §5.1/§5.2.
+
+    Три поля, и ни одного из них нет в `session.json`. `contour` определяет
+    задачу автора и набор id, по которому судят ревьюера; `doc_paths` — пара
+    документов, которую ревизия видит (spec-контур смотрит спеку, pair-контур
+    сверяет план со спекой); `checklist` — ДЕЙСТВУЮЩИЕ формулировки условий
+    сходимости, id → текст. Все три приходят от вызывающего `drive`, а не из
+    сборки портов: сессия develop/analyze их не имеет вовсе, и дефолт `None`
+    оставляет её путь байт-в-байт прежним.
+
+    `checklist` несёт тексты, а не только id, потому что §5.3 разрешает
+    переопределить формулировки конфигом, и другого канала до ревьюера у
+    override'а нет. Набор ключей при этом остаётся производным от контура и
+    проверяется на равенство `CHECKLIST_BY_CONTOUR[contour]` там, где
+    собирается промпт (V1 §5.2): id закреплены за контуром, конфиг вправе
+    менять только формулировки.
+    """
+
+    contour: Literal["spec", "pair"]
+    doc_paths: tuple[str, ...]
+    checklist: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
 class StepContext:
     """Всё, что нужно шагу: порты, FSM и цель сброса первого раунда.
 
@@ -110,17 +146,40 @@ class StepContext:
     `EventSink` не зависит и `gate_started` эмитить не может, а событие
     «гейт пошёл» обязано уйти в журнал ДО прогона — то есть до того, как у
     оркестратора появится хоть один `GateResult` ([DESIGN-004]).
+
+    Корней у шага два, и берутся они порознь (SPEC-002 §4.1): git идёт по
+    `workspace_root`, артефакты и история — по `artifact_root`. Единого
+    `root` здесь нет намеренно: пока имя было одно, выбор корня не был
+    решением, и вызывающий не мог перепутать их иначе как молча.
+
+    `lifecycle` — политика P9 (SPEC-002 §7.1), которой `PROPOSING` обрамляет
+    ход автора. Живёт она в контексте, а не в `RuntimeDeps`, потому что
+    приходит от вызывающего `drive`, а не от сборки портов: спека
+    (`spec`-контур) её не передаёт вовсе, пара — передаёт. `None` — no-op,
+    то есть путь до пайплайна байт-в-байт.
+
+    `documents` — контур, документы и действующий чеклист doc-сессии
+    (SPEC-002 §5.1, §5.3). Тоже от вызывающего и тоже с дефолтом `None`:
+    `disp run` doc-сессий не заводит, и без него ни одна строка шага не
+    меняется.
     """
 
     deps: RuntimeDeps
     fsm: SessionFsm
     base_commit: str
     gates: tuple[GateSpec, ...] = field(default=())
+    lifecycle: SessionLifecyclePolicy | None = None
+    documents: DocSessionSpec | None = None
 
     @property
-    def root(self) -> Path:
-        """Рабочий git-репозиторий сессии."""
-        return self.deps.root
+    def workspace_root(self) -> Path:
+        """Рабочий git-репозиторий сессии: сброс, дифф, коммит раунда."""
+        return self.deps.workspace_root
+
+    @property
+    def artifact_root(self) -> Path:
+        """Журнал сессии: `.disputatio/` со состоянием, раундами, экспортом."""
+        return self.deps.artifact_root
 
     @property
     def round(self) -> int:
@@ -146,6 +205,24 @@ class StepContext:
             fsm=fsm,
             base_commit=self.base_commit,
             gates=self.gates,
+            lifecycle=self.lifecycle,
+            documents=self.documents,
+        )
+
+    def with_lifecycle(self, lifecycle: "SessionLifecyclePolicy") -> "StepContext":
+        """Тот же контекст с политикой жизненного цикла хода автора (§7.1).
+
+        Копия по тому же списку полей и по той же причине, что и
+        `with_fsm`: `StepContext` frozen, а политику подаёт вызывающий
+        `drive`, а не сборка портов.
+        """
+        return StepContext(
+            deps=self.deps,
+            fsm=self.fsm,
+            base_commit=self.base_commit,
+            gates=self.gates,
+            lifecycle=lifecycle,
+            documents=self.documents,
         )
 
 
@@ -160,8 +237,14 @@ async def propose(ctx: StepContext) -> AgentTurn:
        ушли бы ревьюеру как работа этого раунда.
     2. Промпт собирается `context.build_author_prompt` из артефактов раунда
        N−1, прочитанных с диска (§6.1). Прошлых proposal среди них нет —
-       источник истины для автора это файлы рабочей директории.
-    3. Единственный `await` шага — вызов адаптера.
+       источник истины для автора это файлы рабочей директории. В
+       `Mode.DOCUMENT` сборщик другой (`build_doc_author_prompt`, §5.1
+       SPEC-002), но правило то же: документы называются путями, а не
+       содержимым, и прошлых их версий автор не получает.
+    3. Единственный `await` шага — вызов адаптера. Политика `ctx.lifecycle`
+       уходит в `run_with_schema_retry`, а не обнимает шаг здесь: ходов
+       автора внутри одного `PROPOSING` столько, сколько попыток у
+       schema-retry, а P9 требует снапшот перед КАЖДЫМ (SPEC-002 §7.1).
     4. Ответ разбирается `parse_proposal` **до** записи: `proposal.md` с
        битым фронтматтером на диске означал бы, что следующий раунд читает
        как артефакт то, что артефактом не является. Разбор идёт внутри
@@ -180,36 +263,32 @@ async def propose(ctx: StepContext) -> AgentTurn:
     """
     _require_author(ctx)
     round_no = ctx.round
-    root = ctx.root
+    workspace = ctx.workspace_root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
-    ctx.deps.git.reset_hard(base_rev(root, round_no, base_commit=ctx.base_commit))
+    _purge_partial_artifacts(artifacts, round_no)
+    ctx.deps.git.reset_hard(base_rev(workspace, round_no, base_commit=ctx.base_commit))
     ctx.deps.git.clean()
 
-    prior = load_prior_round(root, round_no - 1)
+    prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.author,
-        build_prompt=lambda: build_author_prompt(
-            task=ctx.fsm.state.task,
-            round=round_no,
-            prior_review=prior.review,
-            prior_verification=prior.verification,
-            prior_decision=prior.decision,
-        ),
+        build_prompt=lambda: _author_prompt(ctx, round_no, prior),
         parse=parse_proposal,
         source=EventSource.AUTHOR,
         session_ref=_author_session_ref(ctx),
         on_invalid=failures.append,
+        lifecycle=ctx.lifecycle,
     )
     if outcome is None:
         raise _exhausted(failures)
     _, turn = outcome
 
-    write_round_artifact(root, round_no, PROPOSAL_NAME, turn.text)
+    write_round_artifact(artifacts, round_no, PROPOSAL_NAME, turn.text)
     diff = ctx.deps.git.diff_head()
-    write_round_artifact(root, round_no, CHANGES_PATCH_NAME, diff)
+    write_round_artifact(artifacts, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
     return turn
@@ -240,7 +319,7 @@ def verify(ctx: StepContext) -> None:
     """
     round_no = ctx.round
 
-    _purge_partial_artifacts(ctx.root, round_no)
+    _purge_partial_artifacts(ctx.artifact_root, round_no)
     for spec in ctx.gates:
         _emit_gate_event(
             ctx, EventType.GATE_STARTED, {"name": spec.name, "cmd": spec.cmd}
@@ -260,7 +339,7 @@ def verify(ctx: StepContext) -> None:
         )
 
     write_round_artifact(
-        ctx.root,
+        ctx.artifact_root,
         round_no,
         VERIFICATION_NAME,
         report.model_dump_json(by_alias=True),
@@ -275,7 +354,10 @@ async def review(ctx: StepContext) -> AgentTurn:
     `verification.overall == fail` и отказ при пустом `checked` — это
     результат ОДНОГО вызова `contracts.validate_review`. Продублируй
     любое из них здесь — и два места начали бы отвечать на один вопрос,
-    расходясь ровно тогда, когда §4.4 поправят в одном из них.
+    расходясь ровно тогда, когда §4.4 поправят в одном из них. То же и с
+    правилами V1–V8 doc-ревью (§5.2 SPEC-002): их считает
+    `contracts.validate_doc_review`, а `_accepted_review` только соблюдает
+    порядок вызова, от которого они зависят.
 
     Runtime решает три вещи, и только их:
 
@@ -307,25 +389,17 @@ async def review(ctx: StepContext) -> AgentTurn:
     начисление попало бы в retry-петлю и обнулило бы лимит I4 (ADR-004).
     """
     round_no = ctx.round
-    root = ctx.root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
-    verification = _round_verification(root, round_no)
-    prior = load_prior_round(root, round_no - 1)
+    _purge_partial_artifacts(artifacts, round_no)
+    verification = _round_verification(artifacts, round_no)
+    prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.reviewer,
-        build_prompt=lambda: build_reviewer_prompt(
-            task=ctx.fsm.state.task,
-            round=round_no,
-            proposal_path=_relative_artifact(root, round_no, PROPOSAL_NAME),
-            patch_path=_relative_artifact(root, round_no, CHANGES_PATCH_NAME),
-            verification=verification,
-            prior_review=prior.review,
-            prior_decision=prior.decision,
-        ),
-        parse=lambda text: _accepted_review(text, verification, round_no),
+        build_prompt=lambda: _reviewer_prompt(ctx, round_no, prior, verification),
+        parse=lambda text: _accepted_review(ctx, text, verification, round_no),
         source=EventSource.REVIEWER,
         session_ref=_reviewer_session_ref(ctx),
         on_invalid=failures.append,
@@ -335,7 +409,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     review_model, turn = outcome
 
     write_round_artifact(
-        root,
+        artifacts,
         round_no,
         REVIEW_NAME,
         review_model.model_dump_json(by_alias=True),
@@ -380,27 +454,33 @@ def decide_step(ctx: StepContext) -> None:
     тестом шага.
     """
     round_no = ctx.round
-    root = ctx.root
+    artifacts = ctx.artifact_root
 
-    _purge_partial_artifacts(root, round_no)
+    _purge_partial_artifacts(artifacts, round_no)
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
+        # Тег схемы выбирается режимом сессии: §5.1 SPEC-002 требует, чтобы
+        # артефакты doc-сессии несли `disputatio/v2`. `decision.json` своих
+        # v2-полей не имеет, но тег описывает семейство артефакта, а не
+        # набор заполненных полей — v1 в doc-раунде читался бы как «сессия
+        # develop», и sha-сверка версий разошлась бы с `session.json`.
+        schema=SCHEMA_V2 if ctx.fsm.state.task.mode is Mode.DOCUMENT else SCHEMA_V1,
         round=round_no,
         outcome=draft.outcome,
         reason=draft.reason,
         open_issues_carried=list(draft.open_issues_carried),
         next_round_directive=draft.next_round_directive,
     )
-    _write_decision(root, round_no, decision)
+    _write_decision(artifacts, round_no, decision)
 
     if not is_partial(draft.outcome):
-        finalize_round(root, round_no)
+        finalize_round(artifacts, round_no)
         ctx.deps.git.commit_round(round_no)
 
     ctx.fsm.apply_decision(draft)
 
 
-def _purge_partial_artifacts(root: Path, round_no: int) -> None:
+def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
     """Убирает огрызки прерванной записи из `rounds/NNN/` ([REQ-015]).
 
     `events.atomic_write` обещает атомарность ОДНОЙ записи, а не уборку
@@ -428,7 +508,7 @@ def _purge_partial_artifacts(root: Path, round_no: int) -> None:
     уборка обязана быть тотальной: у шага VERIFYING нет и не должно быть
     формы, способной отменить его собственный переход ([REQ-004]).
     """
-    directory = round_dir(root, round_no)
+    directory = round_dir(artifact_root, round_no)
     for pattern in TEMP_ARTIFACT_PATTERNS:
         leftovers = sorted(path for path in directory.glob(pattern) if path.is_file())
         for leftover in leftovers:
@@ -447,24 +527,24 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
     отсутствие сохраняет как `None` — для ядра «правок не было» и
     «сравнивать не с чем» это разные входы.
     """
-    root = ctx.root
+    artifacts = ctx.artifact_root
     round_no = ctx.round
     state = ctx.fsm.state
     return DecidingInputs(
         round=round_no,
         mode=state.task.mode,
-        review=_round_review(root, round_no),
-        verification=_round_verification(root, round_no),
-        carried_issues=carried_issues(root, round_no - 1),
-        patch_current=load_patch(root, round_no) or "",
-        patch_two_back=load_patch(root, round_no - 2),
-        issue_history=issue_history(root, round_no),
+        review=round_review(artifacts, round_no),
+        verification=_round_verification(artifacts, round_no),
+        carried_issues=carried_issues(artifacts, round_no - 1),
+        patch_current=load_patch(artifacts, round_no) or "",
+        patch_two_back=load_patch(artifacts, round_no - 2),
+        issue_history=issue_history(artifacts, round_no),
         budget_used=state.budget_used,
         limits=state.limits,
     )
 
 
-def _write_decision(root: Path, round_no: int, decision: Decision) -> None:
+def _write_decision(artifact_root: Path, round_no: int, decision: Decision) -> None:
     """Пишет `decision.json`; уже финализированный раунд — не ошибка шага.
 
     Маркер I3 ставит сам шаг, и ставит его ДО перехода — значит между ним и
@@ -484,15 +564,115 @@ def _write_decision(root: Path, round_no: int, decision: Decision) -> None:
     """
     try:
         write_round_artifact(
-            root, round_no, DECISION_NAME, decision.model_dump_json(by_alias=True)
+            artifact_root,
+            round_no,
+            DECISION_NAME,
+            decision.model_dump_json(by_alias=True),
         )
     except RoundImmutableError:
-        if load_decision(root, round_no) != decision:
+        if load_decision(artifact_root, round_no) != decision:
             raise
 
 
+def _doc_spec(ctx: StepContext) -> DocSessionSpec | None:
+    """Описание doc-сессии либо `None` для develop/analyze (SPEC-002 §5.1).
+
+    Развилка идёт по РЕЖИМУ, а не по наличию `documents`: `Mode.DOCUMENT`
+    без описания контура — не «сессия попроще», а сборка, при которой
+    ревьюер не узнает набора id чеклиста, а `validate_doc_review` не узнает
+    контура. Обе половины V1 молча отключились бы, и doc-сессия сошлась бы
+    по критерию develop-раунда. Поэтому это `AssertionError`: сюда приводит
+    ошибка композиции, а не действие пользователя.
+    """
+    if ctx.fsm.state.task.mode is not Mode.DOCUMENT:
+        return None
+    if ctx.documents is None:
+        raise AssertionError(
+            "сессия объявлена в режиме document, но контур и документы не "
+            "переданы: без них ни промпт §5.1/§5.2, ни правила V1–V8 не "
+            "собираются — composition root подал doc-сессию как обычную"
+        )
+    return ctx.documents
+
+
+def _author_prompt(ctx: StepContext, round_no: int, prior: PriorRound) -> str:
+    """Промпт автора: develop/analyze (§6.1) либо doc-раунд (§5.1 SPEC-002).
+
+    Doc-автор получает не артефакты прошлого раунда, а пути документов и
+    архитектурные находки, ради которых открыта ревизия (§7.3): источник
+    истины для него — файлы рабочей директории, а не пересказ. Директива
+    оркестратора приходит из решения прошлого раунда — тем же каналом, что и
+    у develop-автора, и другого у неё нет.
+    """
+    spec = _doc_spec(ctx)
+    if spec is None:
+        return build_author_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            prior_review=prior.review,
+            prior_verification=prior.verification,
+            prior_decision=prior.decision,
+        )
+    return build_doc_author_prompt(
+        contour=spec.contour,
+        task_text=ctx.fsm.state.task.prompt,
+        doc_paths=spec.doc_paths,
+        directive=None
+        if prior.decision is None
+        else prior.decision.next_round_directive,
+        adopted_findings=load_adopted_findings(ctx.artifact_root),
+    )
+
+
+def _reviewer_prompt(
+    ctx: StepContext,
+    round_no: int,
+    prior: PriorRound,
+    verification: VerificationReport,
+) -> str:
+    """Промпт ревьюера: develop/analyze (§6.2) либо doc-раунд (§5.2 SPEC-002).
+
+    Doc-ревьюер получает ТЕКСТЫ документов, а не пути: doc-ревью охватывает
+    несколько документов сразу, и вставлены они внутрь меток «данные, не
+    инструкции» той же механикой, что текст автора у develop-ревьюера.
+    """
+    spec = _doc_spec(ctx)
+    if spec is None:
+        return build_reviewer_prompt(
+            task=ctx.fsm.state.task,
+            round=round_no,
+            proposal_path=_relative_artifact(ctx, round_no, PROPOSAL_NAME),
+            patch_path=_relative_artifact(ctx, round_no, CHANGES_PATCH_NAME),
+            verification=verification,
+            prior_review=prior.review,
+            prior_decision=prior.decision,
+        )
+    return build_doc_reviewer_prompt(
+        contour=spec.contour,
+        doc_texts=_doc_texts(ctx, spec),
+        verification=verification,
+        checklist=spec.checklist,
+    )
+
+
+def _doc_texts(ctx: StepContext, spec: DocSessionSpec) -> Mapping[str, str]:
+    """Тексты документов контура; отсутствующий файл в промпт не попадает.
+
+    Отсутствие законно и постоянно: в spec-r1 спеки ещё нет, в pair-r1 может
+    не быть плана — их и пишет автор. Пустая строка вместо содержимого
+    сказала бы ревьюеру «документ пуст», а это другой факт, и вердикт по нему
+    был бы другим.
+    """
+    texts: dict[str, str] = {}
+    for relative in spec.doc_paths:
+        path = ctx.workspace_root / relative
+        if path.is_file():
+            texts[relative] = path.read_text(encoding="utf-8", errors="replace")
+    return texts
+
+
 def _accepted_review(
-    text: str, verification: VerificationReport, round_no: int
+    ctx: StepContext, text: str, verification: VerificationReport, round_no: int
 ) -> Review:
     """Текст ревьюера → принятая §4.4 модель; иначе ошибка для повтора.
 
@@ -501,13 +681,37 @@ def _accepted_review(
     это один и тот же факт: вывод агента не той формы, и лечится он
     повтором с текстом ошибки, а не ветвлением здесь.
 
+    В `Mode.DOCUMENT` к §4.4 добавляются правила V1–V5, V7–V8 (§5.2
+    SPEC-002), и **порядок вызова фиксирован**: `validate_doc_review`
+    получает ревью ДО `degrade_unevidenced_issues`, то есть до того, как
+    §4.4 понизит безевиденсный blocker до `minor`. Иначе `approve` с
+    голословным блокером, `S1: pass` и без `defect_class` прошёл бы V5/V7/V8
+    — к моменту их проверки блокера в модели уже не было бы. Отсюда и два
+    отдельных вызова вместо одного конвейера: `validate_review` возвращает
+    деградированную копию, и подать её в doc-правила значило бы проверить
+    не то ревью, которое прислал агент.
+
+    Причины обоих слоёв складываются в ОДИН список: для schema-retry это одна
+    неудачная попытка, и разделить её на две значило бы дать агенту чинить
+    половину нарушений за раз, тратя лимит повторов на то же ревью.
+
     Возвращается `acceptance.review` — деградированная копия: исходная
     модель сохранила бы `blocker`, который §4.4 уже не признал, и следующий
     раунд читал бы его как настоящий.
     """
     parsed = Review.model_validate_json(extract_json_object(text))
+    spec = _doc_spec(ctx)
+    doc_reasons = (
+        ()
+        if spec is None
+        else validate_doc_review(
+            parsed, contour=spec.contour, verification=verification
+        )
+    )
     acceptance = validate_review(parsed, verification)
-    _require_accepted(acceptance, round_no)
+    reasons = [*acceptance.rejection_reasons, *doc_reasons]
+    if reasons:
+        raise ReviewNotAccepted(reasons, round_no=round_no)
     return acceptance.review
 
 
@@ -531,15 +735,21 @@ def _exhausted(failures: Sequence[Exception]) -> Exception:
     return failures[-1]
 
 
-def _round_review(root: Path, round_no: int) -> Review:
+def round_review(artifact_root: Path, round_no: int) -> Review:
     """Ревью раунда `round_no`; его отсутствие — ошибка порядка.
 
     `AssertionError` по той же причине, что и у отчёта проверок: войти в
     DECIDING раньше, чем REVIEWING положил ревью на диск, write-ahead-
     переход не даёт. Значит пустое место здесь означает сломанную
     диспетчеризацию цикла, а не действие пользователя.
+
+    Публичная, потому что читателя двое: снимок `DECIDING` и опрос
+    `RoundBoundaryPolicy` на границе раунда (`runtime/loop.py`, SPEC-002
+    §7.1). Оба обязаны видеть ОДНО ревью — второй читатель с собственным
+    разбором артефакта разошёлся бы с ядром ровно тогда, когда политика
+    паркует сессию по находке, которой решение не видело.
     """
-    review_model = load_review(root, round_no)
+    review_model = load_review(artifact_root, round_no)
     if review_model is None:
         raise AssertionError(
             f"нет review.json раунда {round_no:03d}: шаг DECIDING вызван до "
@@ -549,7 +759,7 @@ def _round_review(root: Path, round_no: int) -> Review:
     return review_model
 
 
-def _round_verification(root: Path, round_no: int) -> VerificationReport:
+def _round_verification(artifact_root: Path, round_no: int) -> VerificationReport:
     """Отчёт проверок раунда `round_no`; его отсутствие — ошибка порядка.
 
     `AssertionError`, а не доменная ошибка: `VERIFYING` всегда
@@ -557,7 +767,7 @@ def _round_verification(root: Path, round_no: int) -> VerificationReport:
     раньше, чем отчёт лёг на диск. Значит пустое место здесь означает
     сломанную диспетчеризацию цикла, а не действие пользователя.
     """
-    report = load_verification(root, round_no)
+    report = load_verification(artifact_root, round_no)
     if report is None:
         raise AssertionError(
             f"нет verification.json раунда {round_no:03d}: шаг REVIEWING "
@@ -567,27 +777,31 @@ def _round_verification(root: Path, round_no: int) -> VerificationReport:
     return report
 
 
-def _relative_artifact(root: Path, round_no: int, name: str) -> str:
-    """Путь артефакта раунда относительно `root`, POSIX-разделителями.
+def _relative_artifact(ctx: StepContext, round_no: int, name: str) -> str:
+    """Путь артефакта раунда относительно рабочего корня, POSIX-разделителями.
+
+    Единственное место шага, где встречаются оба корня (SPEC-002 §4.1):
+    артефакт лежит под `artifact_root`, а читает его ревьюер, запущенный из
+    `workspace_root`, — значит и назван он должен быть от рабочего корня.
 
     Относительный — не косметика: абсолютный путь машины оркестратора
-    бесполезен ревьюеру, работающему из `root`, и заодно утёк бы в промпт
-    раскладкой файловой системы. `as_posix` фиксирует разделитель: промпт
-    обязан быть одинаковым на любой ОС (NFR-002).
+    бесполезен ревьюеру и заодно утёк бы в промпт раскладкой файловой
+    системы. `as_posix` фиксирует разделитель: промпт обязан быть одинаковым
+    на любой ОС (NFR-002).
+
+    Отсюда предусловие разведённых корней: `artifact_root` обязан лежать
+    ВНУТРИ `workspace_root` — так его и размещает §4.1
+    (`pipelines/<slug>/sessions/<revision>/`). Держит его не `relative_to`
+    здесь, а `composition._normalized_roots`: он отвергает журнал снаружи
+    репозитория на СБОРКЕ и там же приводит оба корня к одной форме. Сюда
+    приходят уже нормализованные пути, поэтому `relative_to` отвечает по
+    расположению, а не по тому, в какой форме корни подали вызывающему.
+    Проверка на сборке, а не тут, потому что этот шаг идёт после
+    `reset --hard`, работы автора и прогона гейтов: отказ на этой строке
+    стоил бы полного раунда.
     """
-    return round_artifact(root, round_no, name).relative_to(root).as_posix()
-
-
-def _require_accepted(acceptance: ReviewAcceptance, round_no: int) -> None:
-    """Непринятое §4.4 ревью не пишется на диск, а требует повтора.
-
-    Причины пересылаются как есть — machine-readable кодами
-    `contracts.REASON_*`: из них схемный retry ([DESIGN-006]) соберёт
-    следующий промпт, и переписывание их в человеческий текст здесь
-    сделало бы этот текст вторым источником правды о §4.4.
-    """
-    if not acceptance.accepted:
-        raise ReviewNotAccepted(acceptance.rejection_reasons, round_no=round_no)
+    artifact = round_artifact(ctx.artifact_root, round_no, name)
+    return artifact.relative_to(ctx.workspace_root).as_posix()
 
 
 def _reviewer_session_ref(ctx: StepContext) -> str | None:

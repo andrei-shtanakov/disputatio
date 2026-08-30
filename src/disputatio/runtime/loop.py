@@ -38,14 +38,21 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from disputatio.contracts import AgentTurn, SessionPhase, SessionState
+from disputatio.contracts import (
+    AgentTurn,
+    BoundaryVerdict,
+    RoundBoundaryPolicy,
+    SessionLifecyclePolicy,
+    SessionPhase,
+    SessionState,
+)
 from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import exporting, steps
 from disputatio.runtime.budget import charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
-from disputatio.runtime.steps import StepContext
+from disputatio.runtime.steps import DocSessionSpec, StepContext
 
 StepFn = Callable[[StepContext], Awaitable[AgentTurn | None] | AgentTurn | None]
 """Тело шага: синхронное (`verify`, `decide_step`) либо ожидаемое.
@@ -86,7 +93,16 @@ NEXT_PHASE: Mapping[SessionPhase, SessionPhase] = {
 """Безусловные рёбра раунда. `DECIDING`/`EXPORTING` отсутствуют намеренно."""
 
 
-async def resume_session(root: Path, session_id: str, **overrides: Any) -> SessionState:
+async def resume_session(
+    workspace_root: Path,
+    session_id: str,
+    *,
+    artifact_root: Path | None = None,
+    round_boundary: RoundBoundaryPolicy | None = None,
+    lifecycle: SessionLifecyclePolicy | None = None,
+    documents: DocSessionSpec | None = None,
+    **overrides: Any,
+) -> SessionState:
     """Поднимает сессию с последнего write-ahead перехода ([REQ-014]).
 
     Собственной «логики восстановления» здесь нет и быть не должно — есть
@@ -95,6 +111,14 @@ async def resume_session(root: Path, session_id: str, **overrides: Any) -> Sessi
     а не из `config.to_session_state`. Заведись у resume хоть один свой шаг
     («пропустить фазу», «переиграть раунд», «подтянуть конфиг»), и
     восстановленная сессия перестала бы быть той же самой сессией.
+
+    `artifact_root` — журнал сессии (SPEC-002 §4.1); `None` означает
+    «журнал в рабочем репозитории», то есть путь до разделения. Параметр
+    объявлен ЗДЕСЬ, а не только у `build_runtime`, потому что снапшот
+    читается ДО сборки портов: доедь `artifact_root` до сессии только через
+    `overrides`, и `load_config` всё равно смотрел бы в рабочий корень —
+    вложенная сессия падала бы `ConfigError` на чужом (или отсутствующем)
+    снапшоте, ещё не дойдя до собственного состояния.
 
     Порядок подготовки значим дважды:
 
@@ -113,17 +137,31 @@ async def resume_session(root: Path, session_id: str, **overrides: Any) -> Sessi
     repr'ом ключа в кавычках ([DESIGN-020]). Нечитаемый снапшот приходит
     `ConfigError` оттуда же, из `load_config`.
 
-    `overrides` передаются в `build_runtime` как есть: подмена любого порта
-    фейком не требует ни отдельного пути, ни правок цикла ([REQ-001]).
+    `round_boundary` и `lifecycle` — прокладка до `drive` (SPEC-002 §7.1):
+    политики принадлежат вызывающему циклу, а не сборке портов, и в
+    `overrides` попасть не должны — `build_runtime` их не знает. Дефолт
+    `None` оставляет resume ровно тем, чем он был.
+
+    `documents` — контур и пара документов doc-сессии (§5.1 SPEC-002). В
+    отличие от политик, до `drive` оно НЕ едет: цикл о режиме сессии ничего
+    не знает и знать не должен, а нужен контур шагу — здесь `StepContext` и
+    собирается. Дефолт `None` — путь develop/analyze байт-в-байт.
+
+    Остальные `overrides` передаются в `build_runtime` как есть: подмена
+    любого порта фейком не требует ни отдельного пути, ни правок цикла
+    ([REQ-001]).
     """
-    config = load_config(root)
-    deps = build_runtime(config, root, **overrides)
+    journal_root = artifact_root if artifact_root is not None else workspace_root
+    config = load_config(journal_root)
+    deps = build_runtime(
+        config, workspace_root, artifact_root=journal_root, **overrides
+    )
     try:
         state = deps.store.load(session_id)
     except KeyError as exc:
         raise SessionNotFound(
-            f"сессии {session_id!r} нет в {root}: session.json отсутствует "
-            "либо принадлежит другой сессии"
+            f"сессии {session_id!r} нет в {journal_root}: session.json "
+            "отсутствует либо принадлежит другой сессии"
         ) from exc
     fsm = SessionFsm(state, store=deps.store, sink=deps.sink, now=deps.now)
     return await drive(
@@ -132,12 +170,41 @@ async def resume_session(root: Path, session_id: str, **overrides: Any) -> Sessi
             fsm=fsm,
             base_commit=config.base_commit,
             gates=config.gates,
-        )
+            documents=documents,
+        ),
+        round_boundary=round_boundary,
+        lifecycle=lifecycle,
     )
 
 
-async def drive(ctx: StepContext) -> SessionState:
+async def drive(
+    ctx: StepContext,
+    *,
+    round_boundary: RoundBoundaryPolicy | None = None,
+    lifecycle: SessionLifecyclePolicy | None = None,
+) -> SessionState:
     """Крутит сессию от текущей фазы до терминальной ([REQ-008], [REQ-014]).
+
+    Обе политики (SPEC-002 §7.1) опциональны и по умолчанию отсутствуют:
+    без них цикл идёт тем же путём, что и до пайплайна, — ни одной лишней
+    ветки, ни одного лишнего чтения с диска. `spec`-контур гонит сессию до
+    её собственного терминала и не передаёт ни одной.
+
+    `round_boundary` опрашивается на границе раунда: после того, как
+    `REVIEWING` положил `review.json` на диск, и ДО `decide()`. Точка
+    выбрана так, а не после ветки `CONTINUE`: `decide()` идёт строго
+    top-down (`core/deciding.py`), и на последнем разрешённом раунде или
+    при исчерпанном бюджете он вернул бы `DEADLOCK`/`BUDGET_HIT` раньше
+    `CONTINUE` — политика не была бы опрошена вовсе, а архитектурная
+    находка ушла бы в эскалацию вместо обязательного возврата к спеке (P6).
+    `PARK` означает: `decide()` не вызывается, `decision.json` раунда не
+    пишется, `drive` возвращает управление с текущим нетерминальным
+    состоянием (`DECIDING`) — на отсутствии решения §8.1 и строит identity
+    припаркованного checkpoint'а.
+
+    `lifecycle` уезжает в контекст, потому что зовёт его не цикл, а шаг
+    автора — точнее, `run_with_schema_retry` вокруг каждого вызова адаптера
+    (P9). Цикл здесь только доставляет политику до шага.
 
     Итерация читается сверху вниз и вся состоит из порядка:
 
@@ -167,8 +234,14 @@ async def drive(ctx: StepContext) -> SessionState:
     именно программная — сюда приводит незарегистрированный шаг, а не
     действие пользователя.
     """
+    if lifecycle is not None:
+        ctx = ctx.with_lifecycle(lifecycle)
+
     while ctx.fsm.state.state not in TERMINAL_PHASES:
         phase = ctx.fsm.state.state
+
+        if phase is SessionPhase.DECIDING and _parks(round_boundary, ctx):
+            return ctx.fsm.state
 
         step = STEP_BY_PHASE.get(phase)
         if step is not None:
@@ -185,6 +258,31 @@ async def drive(ctx: StepContext) -> SessionState:
             )
 
     return ctx.fsm.state
+
+
+def _parks(policy: RoundBoundaryPolicy | None, ctx: StepContext) -> bool:
+    """Опрашивает политику границы раунда; `True` — цикл обязан вернуться.
+
+    Ревью читается тем же `steps.round_review`, которым его читает снимок
+    `DECIDING`: собственный разбор артефакта разошёлся бы с ядром ровно
+    тогда, когда политика паркует сессию по находке, которой решение не
+    видело. Отсутствие политики — ни чтения, ни вопроса: дефолтный путь
+    цикла не трогает диск ни на байт больше прежнего.
+
+    Отказ ЭТОЙ политики, в отличие от отказа `SessionLifecyclePolicy`, в
+    `FAILED` не переводит, и асимметрия сознательная. P9 — проверка
+    целостности control plane: не сошлась она — доверять нечему, и
+    молчаливый повтор недопустим, поэтому сессия закрывается fail-closed
+    (`retry._run_lifecycle_hook`). Граница раунда решает маршрут, а не
+    достоверность: исключение уходит наружу, сессия остаётся durable в
+    `DECIDING`, и resume переиграет фазу целиком — шаг идемпотентен
+    ([REQ-015]), а `_write_decision` терпит повтор. Закрывать сессию на
+    упавшем маршрутизаторе значило бы терять раунд, который цел.
+    """
+    if policy is None:
+        return False
+    review = steps.round_review(ctx.artifact_root, ctx.round)
+    return policy.after_deciding(review) is BoundaryVerdict.PARK
 
 
 async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:

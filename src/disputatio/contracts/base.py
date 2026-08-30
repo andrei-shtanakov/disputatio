@@ -1,15 +1,39 @@
-"""Базовый контракт схемы артефактов disputatio/v1 ([DESIGN-001], [REQ-001]).
+"""Базовый контракт схемы артефактов disputatio/v1|v2 ([DESIGN-001], [REQ-001]).
 
-Каждый корневой артефакт на диске несёт поле ``"schema": "disputatio/v1"``;
-вложенные модели версию не дублируют — она одна на артефакт-файл.
+Каждый корневой артефакт на диске несёт поле ``"schema"``; вложенные модели
+версию не дублируют — она одна на артефакт-файл. `disputatio/v2` (SPEC-002
+§5.1) — строгое надмножество v1: новые поля (`Mode.DOCUMENT`,
+`Review.checklist`, `Issue.defect_class`) допустимы только под тегом v2 —
+привязку проверяют `model_validator`'ы в `session.py` и `review.py`, не сам
+`Literal` версии.
 """
 
+import unicodedata
 from enum import StrEnum
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_V1: Final = "disputatio/v1"
+SCHEMA_V2: Final = "disputatio/v2"
+
+
+def semantic_text(text: str) -> str:
+    """Семантическое содержимое строки: без Cf-символов и краевых пробелов.
+
+    Удаляет все символы Unicode-категории Cf (U+200B, U+FEFF и др.) ДО
+    strip: строка из одних невидимых и/или пробельных символов
+    нормализуется в "".
+
+    Живёт в `base`, а не в `validation`: критерий «содержательно ли это
+    поле» нужен и схемному слою (`checklist.py`, evidence-ссылки), и
+    протокольному (`validation.py`, evidence issue и `checked`), а
+    `validation` импортирует `review`, который импортирует `checklist`, —
+    вторая копия критерия разошлась бы с первой ровно в том месте, где
+    расхождение никто не заметит.
+    """
+    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return visible.strip()
 
 
 class Role(StrEnum):
@@ -20,18 +44,21 @@ class Role(StrEnum):
 
 
 class ArtifactBase(BaseModel):
-    """Общий предок корневых артефактов disputatio/v1.
+    """Общий предок корневых артефактов disputatio/v1|v2.
 
     Имя атрибута ``schema_`` + alias ``"schema"``: голое ``schema`` в
     pydantic ``BaseModel`` — риск конфликта имён. Три гарантии контракта:
 
     1. Сериализация (``model_dump``/``model_dump_json`` без аргументов)
-       всегда содержит ключ ``"schema" == "disputatio/v1"``
-       (``serialize_by_alias=True``).
+       всегда содержит ключ ``"schema"`` со значением, с которым артефакт
+       был создан (``serialize_by_alias=True``).
     2. Десериализация требует ключ ``schema`` (или имя ``schema_`` при
        ``populate_by_name``): payload без него отклоняется как missing,
-       чужое значение отклоняется ``Literal`` — оба ``ValidationError``.
-    3. Конструктор подставляет версию по умолчанию (ADR-005).
+       значение вне ``{v1, v2}`` отклоняется ``Literal`` — оба
+       ``ValidationError``.
+    3. Конструктор подставляет версию по умолчанию — ``disputatio/v1``
+       (ADR-005): программный код develop/analyze-сессий не меняется,
+       v2 ставит явно только писатель doc-сессии.
     """
 
     model_config = ConfigDict(
@@ -41,7 +68,7 @@ class ArtifactBase(BaseModel):
         serialize_by_alias=True,
     )
 
-    schema_: Literal["disputatio/v1"] = Field(
+    schema_: Literal["disputatio/v1", "disputatio/v2"] = Field(
         alias="schema", serialization_alias="schema"
     )
 

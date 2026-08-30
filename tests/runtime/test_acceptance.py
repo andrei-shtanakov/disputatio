@@ -40,7 +40,10 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 TESTS_DIR: Final[Path] = REPO_ROOT / "tests"
 
 #: Каталоги, все тест-модули которых обязаны присутствовать в матрице.
-CHARTED_DIRS: Final[tuple[str, ...]] = ("runtime", "cli")
+#: `integration` добавлен вместе со сквозными сценариями пайплайна (SPEC-002
+#: §10): набор, не попавший ни в один детектор, не виден ничему — а именно он
+#: и доказывает, что собранные по кускам пакеты работают вместе.
+CHARTED_DIRS: Final[tuple[str, ...]] = ("runtime", "cli", "integration")
 
 #: База workstream'а — состояние репозитория до его первой задачи.
 BASE_REV: Final[str] = "pilot/wave-1"
@@ -107,9 +110,28 @@ ACCEPTANCE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("§5.4", "runtime/test_acceptance.py"),
 )
 
+#: Расширения цикла из SPEC-002: точки опроса политик границы раунда и
+#: жизненного цикла хода автора, операции порта под операторские решения.
+#: Отдельной парой, а не строкой в `REQUIREMENT_COVERAGE`: REQ-001…REQ-025 —
+#: требования SPEC-001, и приписать им чужое покрытие значило бы утверждать
+#: про требование то, чего оно не говорит. Трассировка — §7.1 и инварианты
+#: P4/P6/P9, для adoption/reconciliation — §3.1, §7.3 и §8.1.
+PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
+    ("SPEC-002 §7.1", "runtime/test_round_boundary.py"),
+    ("SPEC-002 §7.1", "runtime/test_lifecycle_policy.py"),
+    ("SPEC-002 §3.1", "runtime/test_git_adoption.py"),
+    ("SPEC-002 §3.1", "runtime/test_pipeline_config.py"),
+    ("SPEC-002 §8.2", "runtime/test_pipeline_export.py"),
+    ("SPEC-002 §4.3", "runtime/test_pipeline_runner.py"),
+    ("SPEC-002 §8.1", "runtime/test_pipeline_resume.py"),
+    ("SPEC-002 §2 P9", "runtime/test_pipeline_integrity.py"),
+    ("SPEC-002 §3.1", "runtime/test_pipeline_adopt.py"),
+    ("SPEC-002 §10", "integration/test_pipeline_e2e.py"),
+)
+
 #: Полная матрица.
 COVERAGE: Final[tuple[tuple[str, str], ...]] = (
-    REQUIREMENT_COVERAGE + ACCEPTANCE_COVERAGE
+    REQUIREMENT_COVERAGE + ACCEPTANCE_COVERAGE + PIPELINE_COVERAGE
 )
 
 #: Требования workstream'а по спецификации: REQ-001…REQ-025.

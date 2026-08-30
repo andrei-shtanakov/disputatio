@@ -5,14 +5,22 @@
 `verification.overall == fail`, «пустой checked ⇒ ревью не принято») живут
 в validation.py: схемная валидация (ретрай агента с текстом ошибки
 pydantic) и протокольная валидация (ретрай ревью) не смешиваются.
+
+`checklist` (Review) и `defect_class` (Issue) — расширения `disputatio/v2`
+(SPEC-002 §5.1, §5.2, doc-сессии). Они объявлены optional'ными аддитивно
+ко всем Review, но допустимы только под тегом v2: `_forbid_v2_fields_in_v1`
+ниже отвергает их под v1, иначе optional-поля тихо расширили бы принимаемый
+v1-payload мимо `extra="forbid"` (он ловит только неизвестные ключи, а эти
+стали бы известными).
 """
 
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from disputatio.contracts.base import ArtifactBase, ArtifactChild, Role
+from disputatio.contracts.base import SCHEMA_V1, ArtifactBase, ArtifactChild, Role
+from disputatio.contracts.checklist import ChecklistItem
 
 
 class Verdict(StrEnum):
@@ -46,6 +54,7 @@ class Issue(ArtifactChild):
     claim: str
     evidence: str = ""
     suggestion: str | None = None
+    defect_class: Literal["architectural", "execution"] | None = None
 
 
 class Review(ArtifactBase):
@@ -63,3 +72,20 @@ class Review(ArtifactBase):
     issues: list[Issue] = Field(default_factory=list)
     checked: list[str]
     summary: str
+    checklist: list[ChecklistItem] | None = None
+
+    @model_validator(mode="after")
+    def _forbid_v2_fields_in_v1(self) -> "Review":
+        if self.schema_ != SCHEMA_V1:
+            return self
+        if self.checklist is not None:
+            raise ValueError(
+                "checklist недопустим в disputatio/v1: поле относится "
+                "к disputatio/v2 (SPEC-002 §5.1)"
+            )
+        if any(issue.defect_class is not None for issue in self.issues):
+            raise ValueError(
+                "issues[].defect_class недопустим в disputatio/v1: поле "
+                "относится к disputatio/v2 (SPEC-002 §5.1)"
+            )
+        return self

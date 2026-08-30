@@ -1,0 +1,376 @@
+"""Экспорт готовой к публикации пары «спека + план» (SPEC-002 §8.2, P7).
+
+`export_pipeline` — тот самый «порт», который runner (задача 15) получает
+инъекцией как `exporter: ExportFn`; тип объявлен здесь же, рядом с функцией,
+которая ему удовлетворяет. Задача идёт до runner'а намеренно (см. бриф): без
+готового экспортёра runner либо импортировал бы несуществующий модуль, либо
+заводил незапланированную заглушку под intent `export`.
+
+Цель v1 — не «сам открывает draft-PR», а «выдаёт полностью готовую к
+публикации пару одним draft-PR» (§8.2): публикация (`git push`, `gh pr
+create`) — внешний эффект, который исполняет человек, а не эта функция.
+
+Четыре свойства, вокруг которых построен модуль:
+
+* **Идемпотентность, канонические байты.** Повтор без изменения `state`
+  даёт байт-в-байт тот же `result/`: JSON пишется с сортированными ключами
+  и без единого вызова часов — единственное время в байтах результата это
+  метки самого `state` (`created_at`, `transitions[].at`), уже
+  зафиксированные вызывающей стороной.
+* **`manifest.json` — commit marker.** Пишется последним и перечисляет
+  полный ожидаемый набор файлов `result/` с их sha256 (ключ `"files"`);
+  обрыв между записью содержимого и манифеста оставляет набор без
+  манифеста — валидным его считать нельзя, а повторный вызов чинит его же
+  кодовым путём, каким написал в первый раз.
+* **Старт экспорта снимает marker и убирает stale.** Любой файл в
+  `result/`, кроме трёх содержательных (`pr_title.txt`, `pr_body.md`,
+  `publish.txt`), удаляется до записи нового набора — и обрубок прежнего
+  экспорта, и `manifest.json` прошлого. Транзакции на четыре файла
+  файловая система не даёт, поэтому marker снимается ПЕРВЫМ: иначе обрыв
+  повторного экспорта оставил бы прежний манифест рядом с наполовину
+  обновлённым содержимым — набор, помеченный снаружи валидным, чьи sha256
+  файлам не соответствуют. Правило повтора целиком (SPEC-002 §8.2): уже
+  экспортированный отдельный файл остаётся целым; при прерванном повторном
+  экспорте commit marker удаляется; набор считается невалидным до
+  успешного нового marker.
+* **`publish.txt` не выдумывает команду.** Когда `remote_url`/`branch`
+  переданы, идёт настоящая пара `git push`/`gh pr create --draft` с
+  экранированием через `shlex.quote`; когда любой из них `None` —
+  параметризованный шаблон с явным предупреждением вместо придуманного
+  значения.
+
+Манифест — честная сводка §4.2 плюс три вычисленных здесь ключа:
+`converged`, `escalation_reason`/`open_issues` (из последнего перехода
+`state.transitions`, ПРИВЕДШЕГО в `ESCALATED`/`FAILED`) и `files` (sha256
+трёх содержательных файлов). Ключевой набор манифеста один и тот же
+независимо от исхода — различаются только значения честности (P7).
+
+**`converged` выводится из состояния, а `partial` его только сужает.**
+Флаг называет человек (§3.1), и забыть его — самый вероятный сценарий;
+пока `converged` был равен `not partial`, забытый флаг превращал
+`"phase": "failed"` в `"converged": true` и молча выдавал остановленный
+пайплайн за сошедшийся. Теперь сходимость решает `_is_converged` (фаза
+плюс отсутствие переходов в `ESCALATED`/`FAILED`), а `--partial` остаётся
+операторским уточнением: снять `converged` он может, поставить — нет.
+"""
+
+import hashlib
+import json
+import shlex
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any, Final
+
+from disputatio.contracts import PipelinePhase, PipelineState
+from disputatio.events import atomic_write
+from disputatio.runtime.git import SESSION_DIR_NAME
+from disputatio.runtime.pipeline_config import PIPELINES_DIR_NAME
+
+#: Сигнатура порта экспорта — ровно то, что runner (задача 15) получит
+#: инъекцией как `exporter`. Объявлен здесь, рядом с реализацией, которая
+#: ему удовлетворяет: другого места, где рождается контракт, нет.
+ExportFn = Callable[..., Path]
+
+MANIFEST_NAME: Final = "manifest.json"
+PR_TITLE_NAME: Final = "pr_title.txt"
+PR_BODY_NAME: Final = "pr_body.md"
+PUBLISH_NAME: Final = "publish.txt"
+
+#: Содержательные файлы результата (§8.2) — те, которым `export_pipeline`
+#: считает sha256, и единственные, что переживают уборку на старте: всё
+#: остальное в `result/`, включая прежний `manifest.json`, снимается до
+#: первой перезаписи (см. `_clear_stale`).
+_CONTENT_FILE_NAMES: Final = (PR_TITLE_NAME, PR_BODY_NAME, PUBLISH_NAME)
+
+#: Имя каталога экспорта внутри `pipelines/<slug>/` (§4.1, §8.2).
+_RESULT_DIR_NAME: Final = "result"
+
+#: Фазы, приход в которые и есть остановка пайплайна (§2): их переход несёт
+#: причину, ради которой пишется честный частичный результат.
+_STOPPED_PHASES: Final = (PipelinePhase.ESCALATED, PipelinePhase.FAILED)
+
+#: Фазы, в которых сходимость пары уже состоялась (§2): `EXPORTING` — вход
+#: в экспорт внутри цикла, `DONE` — после него. `DONE` достижим и через
+#: эскалацию, поэтому одной фазы для вывода `converged` мало.
+_CONVERGED_PHASES: Final = (PipelinePhase.EXPORTING, PipelinePhase.DONE)
+
+
+def _result_dir(workspace_root: Path, pipeline_id: str) -> Path:
+    """`pipelines/<pipeline_id>/result` (§4.1) — считается, не импортируется.
+
+    `events.pipeline_paths` — внутренняя деталь раскладки `.disputatio/` и
+    наружу пакетом `events` не экспортируется (см. докстринг
+    `events/__init__.py`); `runtime` уже знает оба сегмента пути —
+    `SESSION_DIR_NAME` (`runtime/git.py`) и `PIPELINES_DIR_NAME`
+    (`runtime/pipeline_config.py`, тот же приём, что там применён к
+    `SESSION_DIR_NAME`), и досчитывает путь сам, а не заново дублирует
+    константу третьей копией.
+    """
+    return (
+        workspace_root
+        / SESSION_DIR_NAME
+        / PIPELINES_DIR_NAME
+        / pipeline_id
+        / _RESULT_DIR_NAME
+    )
+
+
+def _result_dir_relative(pipeline_id: str) -> str:
+    """`result/` относительно `workspace_root`, POSIX-строкой для `publish.txt`.
+
+    `git push`/`gh pr create` из `publish.txt` обязаны выполняться из корня
+    рабочего дерева (иначе `gh` не опознает репозиторий, а `git push` — не
+    ту ветку), а `pr_title.txt`/`pr_body.md` лежат внутри `result/` — без
+    этого префикса `--body-file pr_body.md` не находил бы файл, если человек
+    запускает скрипт, как и остальные git-команды, из корня. Строка, а не
+    `Path`: содержимое файла не должно зависеть от разделителя пути ОС,
+    на которой собирался экспорт.
+    """
+    return f"{SESSION_DIR_NAME}/{PIPELINES_DIR_NAME}/{pipeline_id}/{_RESULT_DIR_NAME}"
+
+
+def export_pipeline(
+    state: PipelineState,
+    *,
+    workspace_root: Path,
+    remote_url: str | None,
+    branch: str | None,
+    partial: bool = False,
+) -> Path:
+    """Пишет `result/{pr_title.txt,pr_body.md,publish.txt,manifest.json}`.
+
+    Возвращает путь к `manifest.json` — commit marker набора. Экспорт
+    начинается с уборки `result/` (stale-остатки прежнего экспорта и его
+    манифест), затем пишет три содержательных файла и в конце — манифест:
+    порядок обеспечивает, что обрыв между записями оставляет набор без
+    манифеста, но никогда — манифест, ссылающийся на содержимое, которого
+    он не описывает.
+
+    Исход влияет только на ЗНАЧЕНИЯ полей честности (`converged`,
+    `escalation_reason`, `open_issues`) и на пометку `[partial]` в заголовке
+    PR — набор ключей манифеста и состав `result/` от него не зависят (P7:
+    разный исход — разное содержимое одного и того же экспорта, не отдельный
+    кодовый путь).
+
+    `partial=True` — уточнение оператора: оно снимает `converged`, но не
+    ставит его. Сходимость выводится из записанного состояния
+    (`_is_converged`), поэтому забытый флаг на остановленном пайплайне
+    больше не превращает частичный результат в полный.
+    """
+    directory = _result_dir(workspace_root, state.pipeline_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    _clear_stale(directory)
+
+    converged = _is_converged(state) and not partial
+    result_relative = _result_dir_relative(state.pipeline_id)
+    contents = {
+        PR_TITLE_NAME: _pr_title(state, converged=converged),
+        PR_BODY_NAME: _pr_body(state, converged=converged),
+        PUBLISH_NAME: _publish_script(
+            remote_url, branch, result_relative=result_relative
+        ),
+    }
+    checksums: dict[str, str] = {}
+    for name, text in contents.items():
+        data = text.encode("utf-8")
+        atomic_write(directory / name, data)
+        checksums[name] = hashlib.sha256(data).hexdigest()
+
+    manifest = _manifest(state, converged=converged, files=checksums)
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    manifest_path = directory / MANIFEST_NAME
+    atomic_write(manifest_path, payload)
+    return manifest_path
+
+
+def _clear_stale(directory: Path) -> None:
+    """Снимает commit marker и удаляет всё, кроме перезаписываемого набора.
+
+    Сохраняются ровно три содержательных файла — те, что тут же будут
+    переписаны заново. `manifest.json` прошлого экспорта удаляется вместе со
+    stale-остатками, и это не уборка, а транзакционная граница: общей
+    атомарности на четыре файла файловая система не даёт (`atomic_write`
+    атомарен для одного), поэтому единственная честная защита — снять
+    marker до первой перезаписи. Пока его нет, обрыв оставляет набор,
+    который никто не считает валидным; переживи он повтор — commit marker
+    объявлял бы завершённым экспорт, чьё содержимое обновлено наполовину, а
+    записанные в манифесте sha256 файлам уже не соответствуют (P8).
+    Повторный вызов чинит это своим же кодовым путём, как и обещает
+    `cli.py`, предлагая экспорт починкой испорченного результата.
+    """
+    for entry in directory.iterdir():
+        if entry.is_file() and entry.name not in _CONTENT_FILE_NAMES:
+            entry.unlink()
+
+
+def _escalation_summary(
+    state: PipelineState,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Причина эскалации и открытые находки — из перехода В `ESCALATED`/`FAILED`.
+
+    Ищется последний переход, ПРИВЕДШИЙ в остановку, а не последний вообще, и
+    разница здесь не теоретическая. Runner кладёт эскалацию двумя переходами
+    одной атомарной записью (`ESCALATED`, следом `ESCALATED → EXPORTING`,
+    `runtime/pipeline_runner.py::_escalate`): `ESCALATED` без немедленного
+    интента экспорта был бы состоянием, из которого пайплайн сам не выходит.
+    Поэтому «последний элемент» — это всегда `export_partial`, то есть ответ
+    «почему пишется частичный результат» вместо «почему пайплайн
+    остановился», а честность манифеста (P7) требует второго. Сквозной
+    прогон эскалации показал это `escalation_reason: "export_partial"` в
+    `result/manifest.json`; на скриптованном `state` одной задачи разойтись
+    было негде — переход туда клали руками.
+
+    Отсутствие такого перехода — `None` и пустой список, а не выдуманная
+    причина: `--partial` вправе назвать человек (§3.1) и на пайплайне,
+    который никуда не эскалировал. Поэтому же функция зовётся безусловно,
+    а не под флагом: она отвечает на вопрос «что записано», и ответ «ничего
+    не записано» — такой же честный, как всякий другой.
+    """
+    for transition in reversed(state.transitions):
+        if transition.to in _STOPPED_PHASES:
+            issues = [
+                evidence.model_dump(mode="json") for evidence in transition.evidence
+            ]
+            return transition.reason.value, issues
+    return None, []
+
+
+def _is_converged(state: PipelineState) -> bool:
+    """Сошёлся ли пайплайн — по ЗАПИСАННОЙ фазе и истории переходов (§2).
+
+    Два условия, и оба нужны. Фаза обязана быть одной из тех, куда приводит
+    сходимость пары (`EXPORTING` внутри цикла, `DONE` после него): экспорт
+    из середины контура — законная операция, но сходимости в этот момент не
+    было, и заявлять её манифест не вправе. И ни один переход не должен
+    приводить в `ESCALATED`/`FAILED`: `DONE` достижим обоими путями (§7.2,
+    честный частичный результат тоже экспортируется), различает их только
+    история.
+
+    Отсюда же ответ, почему это не производная от `partial`. Флаг называет
+    человек, и забыть его — самый вероятный сценарий; манифест, который на
+    забытом флаге объявлял `converged: true` рядом с `"phase": "failed"`,
+    противоречил сам себе именно там, где честность §8.2 (P7) нужнее всего.
+    """
+    if state.phase not in _CONVERGED_PHASES:
+        return False
+    return not any(transition.to in _STOPPED_PHASES for transition in state.transitions)
+
+
+def _manifest(
+    state: PipelineState, *, converged: bool, files: Mapping[str, str]
+) -> dict[str, Any]:
+    """Честная сводка §4.2 плюс три вычисленных здесь ключа.
+
+    `state.model_dump` несёт полную историю манифеста пайплайна как есть —
+    `created_at` и `transitions[].at` попадают в байты без изменений
+    (§8.2: «метки фактов сохраняются»). Тег `schema` исключён: экспортный
+    манифест — не документ семейства `disputatio/pipeline/v1`, а отдельная
+    сводка поверх него, и унаследованный тег ввёл бы читателя в заблуждение
+    о том, чей это артефакт.
+
+    `escalation_reason`/`open_issues` считаются безусловно, а не «когда
+    просили партиал»: остановка либо записана в истории переходов, либо
+    нет, и от флага оператора этот факт не зависит. На пайплайне, никуда не
+    эскалировавшем, `_escalation_summary` честно отвечает `None` и пустым
+    списком — выдумывать причину под флаг незачем.
+    """
+    escalation_reason, open_issues = _escalation_summary(state)
+    payload = state.model_dump(mode="json", exclude={"schema_"})
+    return {
+        **payload,
+        "converged": converged,
+        "escalation_reason": escalation_reason,
+        "open_issues": open_issues,
+        "files": dict(files),
+    }
+
+
+def _pr_title(state: PipelineState, *, converged: bool) -> str:
+    """Заголовок draft-PR: пара документов, с пометкой частичного исхода."""
+    prefix = "" if converged else "[partial] "
+    return f"{prefix}docs: {state.documents.spec_path} + {state.documents.plan_path}\n"
+
+
+def _pr_body(state: PipelineState, *, converged: bool) -> str:
+    """Тело draft-PR: история контуров, сессии, при партиале — эскалация."""
+    partial = not converged
+    lines = [
+        f"# {state.pipeline_id}",
+        "",
+        f"Спека: `{state.documents.spec_path}`",
+        f"План: `{state.documents.plan_path}`",
+        "",
+        "Итог: " + ("частичный результат (эскалация)" if partial else "сходимость"),
+        "",
+        "## Бюджет",
+        f"- токены: {state.budget_used.tokens}",
+        f"- время: {state.budget_used.wall_seconds:g}s",
+        "",
+        "## История контуров",
+    ]
+    for transition in state.transitions:
+        lines.append(
+            f"- {transition.from_.value} -> {transition.to.value} "
+            f"({transition.reason.value}, {transition.at.isoformat()})"
+        )
+
+    lines += ["", "## Сессии"]
+    for label, sessions in (
+        ("spec", state.spec_sessions),
+        ("pair", state.pair_sessions),
+    ):
+        for record in sessions:
+            outcome = record.outcome.value if record.outcome is not None else "n/a"
+            lines.append(
+                f"- {label} r{record.revision} `{record.session_id}`: {outcome}"
+            )
+
+    if partial:
+        reason, issues = _escalation_summary(state)
+        lines += ["", "## Эскалация", f"Причина: {reason}", "", "### Открытые находки"]
+        if issues:
+            for issue in issues:
+                lines.append(
+                    f"- {issue['session_id']} round {issue['round']}: "
+                    f"{issue['finding_id']}"
+                )
+        else:
+            lines.append("- (нет)")
+
+    return "\n".join(lines) + "\n"
+
+
+def _publish_script(
+    remote_url: str | None, branch: str | None, *, result_relative: str
+) -> str:
+    """`git push` + `gh pr create --draft`; шаблон, когда вход не определён.
+
+    Значения приходят готовыми от вызывающей стороны (runner определяет их
+    локально по репозиторию) — эта функция не гадает и не изобретает
+    ничего сама: либо честная команда с обоими значениями, либо
+    параметризованный шаблон с явным предупреждением. Обе команды рассчитаны
+    на запуск из корня рабочего дерева (там же, где выполняются остальные
+    git-команды сессии), поэтому `pr_title.txt`/`pr_body.md` адресуются путём
+    от корня — `result_relative`, а не голым именем файла.
+    """
+    title_path = f"{result_relative}/{PR_TITLE_NAME}"
+    body_path = f"{result_relative}/{PR_BODY_NAME}"
+    if remote_url is None or branch is None:
+        return (
+            "# ВНИМАНИЕ: remote и/или ветка не определились однозначно "
+            "локально — замените плейсхолдеры ниже перед выполнением, "
+            "команда не подставлена автоматически. Запускать из корня "
+            "рабочего дерева.\n"
+            "git push <REMOTE> <BRANCH>\n"
+            "gh pr create --draft --head <BRANCH> "
+            f'--title "$(cat {shlex.quote(title_path)})" '
+            f"--body-file {shlex.quote(body_path)}\n"
+        )
+    quoted_remote = shlex.quote(remote_url)
+    quoted_branch = shlex.quote(branch)
+    return (
+        f"git push {quoted_remote} {quoted_branch}\n"
+        f"gh pr create --draft --head {quoted_branch} "
+        f'--title "$(cat {shlex.quote(title_path)})" '
+        f"--body-file {shlex.quote(body_path)}\n"
+    )

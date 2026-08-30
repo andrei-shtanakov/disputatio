@@ -89,6 +89,8 @@ from disputatio.runtime.layout import (
 )
 from disputatio.verifier import GateSpec
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "s-idempotency"
 
@@ -214,7 +216,7 @@ class NoVerifier:
 
 
 @dataclass
-class RealGit:
+class RealGit(GitOpsFakeBase):
     """`GitOps` поверх настоящего `GitCli` — с журналом вызовов.
 
     Делегирование, а не подмена: «повтор сбросил дерево» и «второго коммита
@@ -250,7 +252,7 @@ class RealGit:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк для шагов, которым трогать репозиторий не положено."""
 
     def diff_head(self) -> str:
@@ -357,7 +359,8 @@ def _context(
     sink = FakeSink()
     fsm = SessionFsm(_state(phase), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent() if author is None else author,

@@ -69,6 +69,8 @@ from disputatio.events import write_round_artifact
 from disputatio.runtime import RuntimeDeps
 from disputatio.verifier import GateSpec
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 _ROUND = 3
 _SESSION_ID = "s-verifying"
@@ -173,7 +175,7 @@ class SpyVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: шаг VERIFYING git не трогает — любой вызов ошибка."""
 
     def diff_head(self) -> str:
@@ -322,7 +324,8 @@ def _make_harness(
     verifier = SpyVerifier(log=log, report=report)
     fsm = SessionFsm(_state(phase), store=store, sink=sink, now=_now)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

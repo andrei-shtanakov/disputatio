@@ -40,6 +40,8 @@ from disputatio.runtime import (
     NotAGitRepository,
 )
 
+from ._fakes import GitOpsFakeBase
+
 _SESSION_DIR = ".disputatio"
 
 # Внешние переменные, каждая из которых перебивает то, что pre-flight
@@ -74,7 +76,7 @@ def _attr(name: str) -> Any:
 
 
 @dataclass
-class FakeGit:
+class FakeGit(GitOpsFakeBase):
     """`GitOps`-фейк: журналирует вызовы, ни одной git-команды не запускает."""
 
     calls: list[str] = field(default_factory=list)

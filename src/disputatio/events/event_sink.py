@@ -15,13 +15,30 @@ from disputatio.events.paths import events_jsonl_path
 class JsonlEventSink:
     """Файловая реализация `ports.EventSink`: append-only `events.jsonl`.
 
-    Предусловие `emit`: `bootstrap_session(root)` уже вызван — директорию
-    `.disputatio/` sink не создаёт (bootstrap — единственная точка `mkdir`,
-    [REQ-002]).
+    Журнал лежит под `artifact_root` (SPEC-002 §4.1): события принадлежат
+    сессии, а не рабочему репозиторию, и у двух сессий над одним деревом
+    ленты разные.
+
+    Предусловие `emit`: `bootstrap_session(artifact_root)` уже вызван —
+    директорию `.disputatio/` sink не создаёт (bootstrap — единственная точка
+    `mkdir`, [REQ-002]).
     """
 
-    def __init__(self, root: Path) -> None:
-        self._path = events_jsonl_path(root)
+    def __init__(self, artifact_root: Path) -> None:
+        self._path = events_jsonl_path(artifact_root)
+
+    @property
+    def path(self) -> Path:
+        """Путь журнала — вход политики целостности P9 (SPEC-002 §2, §7.1).
+
+        Свойство, а не вычисление на стороне читателя: правило [DESIGN-016]
+        запрещает пакету `runtime` строить путь `events.jsonl` вообще — ни
+        литералом, ни `events_jsonl_path`. А P9 при СНЯТИИ снапшота обязана
+        назвать журналы, чью prefix-property она сторожит, и знает их тот,
+        кто ими владеет. Симметрично `PipelineEventSink.path`: у обоих
+        журналов вход в политику один и тот же.
+        """
+        return self._path
 
     def emit(self, event: Event) -> None:
         """Дописывает одну JSON-строку + `"\\n"` в конец `events.jsonl`.

@@ -60,6 +60,8 @@ from disputatio.runtime import RuntimeDeps
 from disputatio.runtime.layout import DECISION_NAME, round_artifact
 from disputatio.runtime.steps import StepContext, decide_step
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
 _ROUND = 2
 _SESSION_ID = "s-deciding-resume"
@@ -114,7 +116,7 @@ class NoVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк: коммит журналируется и вправе сорваться однажды.
 
     `fail_once` воспроизводит именно обрыв между маркером I3 и переходом:
@@ -261,7 +263,8 @@ def _context(root: Path, git: SpyGit) -> StepContext:
     sink = FakeSink()
     fsm = SessionFsm(_state(), store=store, sink=sink, now=lambda: _FROZEN_NOW)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

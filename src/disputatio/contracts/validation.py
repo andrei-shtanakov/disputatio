@@ -9,11 +9,12 @@ SPEC-001. Схемная валидация (pydantic, review.py) и прото�
 сравнивают по константам, без строкового дублирования.
 """
 
-import unicodedata
+from typing import Literal
 
 from pydantic import Field
 
-from disputatio.contracts.base import ArtifactChild
+from disputatio.contracts.base import ArtifactChild, semantic_text
+from disputatio.contracts.checklists_catalog import CHECKLIST_BY_CONTOUR
 from disputatio.contracts.review import Issue, Review, Severity, Verdict
 from disputatio.contracts.verification import OverallStatus, VerificationReport
 
@@ -21,19 +22,18 @@ REASON_NO_SUBSTANTIVE_ISSUES = "no_substantive_issues"
 REASON_APPROVE_ON_FAILED_GATES = "approve_on_failed_gates"
 REASON_EMPTY_CHECKED = "empty_checked"
 
+# SPEC-002 §5.2, doc-ревью (Mode.DOCUMENT, validate_doc_review ниже).
+REASON_CHECKLIST_ID_MISMATCH = "checklist_id_mismatch"
+REASON_APPROVE_WITH_CHECKLIST_FAIL = "approve_with_checklist_fail"
+REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS = "checklist_fail_without_issue_ids"
+REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID = "checklist_fail_unknown_issue_id"
+REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW = "checklist_fail_issue_severity_too_low"
+REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS = "pair_issue_missing_defect_class"
+REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE = "approve_with_substantive_issue"
+REASON_CHECKLIST_PASS_CONTRADICTS_S1 = "checklist_pass_contradicts_s1"
+
 _NEGATIVE_VERDICTS = (Verdict.REQUEST_CHANGES, Verdict.REJECT)
 _SUBSTANTIVE_SEVERITIES = (Severity.BLOCKER, Severity.MAJOR)
-
-
-def _semantic_text(text: str) -> str:
-    """Семантическое содержимое строки: без Cf-символов и краевых пробелов.
-
-    Удаляет все символы Unicode-категории Cf (U+200B, U+FEFF и др.)
-    ДО strip: строка из одних невидимых и/или пробельных символов
-    нормализуется в "".
-    """
-    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
-    return visible.strip()
 
 
 class ReviewAcceptance(ArtifactChild):
@@ -92,7 +92,7 @@ def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
     Голословный блокер не крутит цикл: issue деградируется до `minor`
     вместо отклонения ревью. Evidence из одних пробельных и/или
     невидимых Cf-символов (U+200B, U+FEFF) эквивалентен пустому —
-    критерий `not _semantic_text(evidence)` (REQ-013 + Cf-hardening).
+    критерий `not semantic_text(evidence)` (REQ-013 + Cf-hardening).
     Возвращает новый объект (`model_copy`) и список id деградированных
     issues в исходном порядке; сам `review`, его вердикт и issues с
     содержательным `evidence` не затрагиваются — нормализация только
@@ -104,7 +104,7 @@ def degrade_unevidenced_issues(review: Review) -> tuple[Review, list[str]]:
         unevidenced = issue.severity in (
             Severity.BLOCKER,
             Severity.MAJOR,
-        ) and not _semantic_text(issue.evidence)
+        ) and not semantic_text(issue.evidence)
         if unevidenced:
             issues.append(issue.model_copy(update={"severity": Severity.MINOR}))
             degraded_ids.append(issue.id)
@@ -151,8 +151,88 @@ def check_checked_nonempty(review: Review) -> str | None:
     осмотренного объекта не принимается — дешёвый прокси верифицируемости.
     Элементы из одних пробельных и/или невидимых Cf-символов не
     считаются: `checked` принят, только если хотя бы один элемент
-    проходит `_semantic_text(item)` (REQ-013 + Cf-hardening); `[]`,
+    проходит `semantic_text(item)` (REQ-013 + Cf-hardening); `[]`,
     `["   ", "\\t"]` и `["\\u200b"]` дают один и тот же код причины.
     """
-    substantive = any(_semantic_text(item) for item in review.checked)
+    substantive = any(semantic_text(item) for item in review.checked)
     return None if substantive else REASON_EMPTY_CHECKED
+
+
+def validate_doc_review(
+    review: Review,
+    *,
+    contour: Literal["spec", "pair"],
+    verification: VerificationReport,
+) -> list[str]:
+    """SPEC-002 §5.2, правила V1–V4, V5, V7, V8 doc-ревью (Mode.DOCUMENT).
+
+    Анти-галлюцинационное ядро §4.4 SPEC-001, специализация для doc-сессий:
+    `checklist` обязан покрыть ровно контурный набор id (V1), быть
+    непротиворечив с вердиктом (V3, V7) и с issues этого же ревью (V4, V8);
+    pair-контур дополнительно требует `defect_class` на каждой существенной
+    находке (V5). V2 (evidence непуст) закрыта типом `ChecklistItem` (задача
+    1) и здесь не дублируется; V6 — следствие V1–V4, V7, не отдельная
+    проверка.
+
+    **Порядок вызова в конвейере фиксирован (§5.2 SPEC-002): эта функция
+    обязана получать `review` ДО `degrade_unevidenced_issues`.** Правила
+    V5/V7/V8 сравнивают severity issues напрямую — деградация REQ-009
+    понижает безевиденсный blocker/major до `minor` и стирает именно тот
+    сигнал, который эти правила обязаны увидеть. Функция сама деградацию не
+    вызывает и не мутирует вход — она читает `review` таким, каким его
+    получила; ответственность за порядок — на вызывающем коде.
+
+    `verification` — для симметрии с конвейером §4.4 (`validate_review`) и
+    будущих doc-гейтов, привязанных к результатам verification; V1–V8 её не
+    используют.
+
+    Возвращает список machine-readable кодов причин (`REASON_*`); пустой
+    список означает, что doc-специфичные правила пройдены.
+    """
+    del verification  # не используется V1-V8 (см. докстринг)
+    errors: list[str] = []
+    checklist = list(review.checklist or [])
+    expected_ids = set(CHECKLIST_BY_CONTOUR[contour])
+    actual_ids = [item.id for item in checklist]
+
+    if set(actual_ids) != expected_ids or len(actual_ids) != len(expected_ids):
+        errors.append(REASON_CHECKLIST_ID_MISMATCH)
+
+    issues_by_id = {issue.id: issue for issue in review.issues}
+    substantive_issues = [
+        issue for issue in review.issues if issue.severity in _SUBSTANTIVE_SEVERITIES
+    ]
+
+    if review.verdict == Verdict.APPROVE and any(
+        item.status == "fail" for item in checklist
+    ):
+        errors.append(REASON_APPROVE_WITH_CHECKLIST_FAIL)
+
+    for item in checklist:
+        if item.status != "fail":
+            continue
+        if not item.issue_ids:
+            errors.append(REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS)
+            continue
+        for issue_id in item.issue_ids:
+            linked = issues_by_id.get(issue_id)
+            if linked is None:
+                errors.append(REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID)
+            elif linked.severity not in _SUBSTANTIVE_SEVERITIES:
+                errors.append(REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW)
+
+    if contour == "pair":
+        errors.extend(
+            REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS
+            for issue in substantive_issues
+            if issue.defect_class is None
+        )
+
+    if review.verdict == Verdict.APPROVE and substantive_issues:
+        errors.append(REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE)
+
+    s1 = next((item for item in checklist if item.id == "S1"), None)
+    if s1 is not None and s1.status == "pass" and substantive_issues:
+        errors.append(REASON_CHECKLIST_PASS_CONTRADICTS_S1)
+
+    return errors

@@ -20,10 +20,13 @@ composition root'ом (w-runtime) и транслирует нативный п�
 оставались тривиальными ([REQ-016]).
 """
 
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from disputatio.contracts.base import ArtifactChild
 from disputatio.contracts.events import Event
+from disputatio.contracts.pipeline import PipelineState
+from disputatio.contracts.review import Review
 from disputatio.contracts.session import SessionState
 from disputatio.contracts.verification import VerificationReport
 
@@ -85,4 +88,63 @@ class Verifier(Protocol):
 
     def verify(self, round_no: int) -> VerificationReport:
         """Запускает гейты раунда `round_no` и возвращает отчёт."""
+        ...
+
+
+@runtime_checkable
+class PipelineStateStore(Protocol):
+    """Порт хранилища `pipeline.json`: load/save состояния пайплайна."""
+
+    def load(self, pipeline_id: str) -> PipelineState:
+        """Читает состояние пайплайна `pipeline_id`.
+
+        Отсутствующий пайплайн — `KeyError(pipeline_id)`: стандартный тип,
+        не привязанный к носителю. Повреждённый/схемно-невалидный payload —
+        `ValidationError` pydantic.
+        """
+        ...
+
+    def save(self, state: PipelineState) -> None:
+        """Пишет состояние атомарно (write-ahead: до следующего шага)."""
+        ...
+
+
+class BoundaryVerdict(StrEnum):
+    """Вердикт граничной политики после раунда deciding."""
+
+    PROCEED = "proceed"
+    PARK = "park"
+
+
+@runtime_checkable
+class RoundBoundaryPolicy(Protocol):
+    """Порт политики границы раунда: решение после deciding."""
+
+    def after_deciding(self, review: Review) -> BoundaryVerdict:
+        """Принимает вердикт ревьюера и выбирает действие.
+
+        Возвращает `PROCEED` (продолжить цикл ревизии) или `PARK`
+        (припаркировать раунд для ручного разбора).
+        """
+        ...
+
+
+@runtime_checkable
+class SessionLifecyclePolicy(Protocol):
+    """Порт политики жизненного цикла сессии: хуки вокруг хода автора."""
+
+    def before_author_turn(self, state: SessionState) -> None:
+        """Вызывается перед запуском автора.
+
+        Может проверять инварианты, логировать состояние,
+        подготавливать контекст автора.
+        """
+        ...
+
+    def after_author_turn(self, state: SessionState) -> None:
+        """Вызывается после завершения хода автора.
+
+        Может анализировать результаты, обновлять метрики,
+        принимать решения о продолжении.
+        """
         ...

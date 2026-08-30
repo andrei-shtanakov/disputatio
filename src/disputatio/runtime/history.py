@@ -5,12 +5,17 @@
 процесса и не из чата агента, а с диска — из артефактов, которые пережили бы
 перезапуск оркестратора. Resume и холодный старт читают одно и то же.
 
+Диск здесь — `artifact_root`, журнал сессии, а не рабочий репозиторий
+(SPEC-002 §4.1): у двух сессий над общим git-деревом истории разные, и чтение
+от рабочего корня выдало бы одной из них чужие раунды за свои.
+
 Отсутствующий артефакт — `None`, а не ошибка: раунд 1 прошлого не имеет
 вовсе, а раунд, оборванный до `REVIEWING`, честно не оставил `review.json`.
 Битый артефакт, наоборот, поднимает `ValidationError` — молча подставленный
 `None` превратил бы повреждённую историю в «замечаний не было».
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +25,7 @@ from disputatio.runtime.layout import (
     DECISION_NAME,
     REVIEW_NAME,
     VERIFICATION_NAME,
+    adopted_findings_json,
     round_artifact,
 )
 
@@ -41,7 +47,7 @@ class PriorRound:
     decision: Decision | None = None
 
 
-def load_prior_round(root: Path, round_no: int) -> PriorRound:
+def load_prior_round(artifact_root: Path, round_no: int) -> PriorRound:
     """Читает артефакты раунда `round_no` (== N−1 для шага раунда N).
 
     `round_no < 1` — законный вход, а не ошибка: так выглядит холодный старт
@@ -52,13 +58,15 @@ def load_prior_round(root: Path, round_no: int) -> PriorRound:
         return PriorRound(round=round_no)
     return PriorRound(
         round=round_no,
-        review=_load(root, round_no, REVIEW_NAME, Review),
-        verification=_load(root, round_no, VERIFICATION_NAME, VerificationReport),
-        decision=_load(root, round_no, DECISION_NAME, Decision),
+        review=_load(artifact_root, round_no, REVIEW_NAME, Review),
+        verification=_load(
+            artifact_root, round_no, VERIFICATION_NAME, VerificationReport
+        ),
+        decision=_load(artifact_root, round_no, DECISION_NAME, Decision),
     )
 
 
-def load_verification(root: Path, round_no: int) -> VerificationReport | None:
+def load_verification(artifact_root: Path, round_no: int) -> VerificationReport | None:
     """Отчёт проверок раунда `round_no`; нет файла — `None`.
 
     Отдельно от `load_prior_round`, потому что читается отчёт ТЕКУЩЕГО
@@ -66,10 +74,10 @@ def load_verification(root: Path, round_no: int) -> VerificationReport | None:
     шаг VERIFYING (§6.2), и подмена «взять отчёт прошлого раунда» — самая
     дешёвая ошибка сборки промпта. Разные функции делают её видимой.
     """
-    return _load(root, round_no, VERIFICATION_NAME, VerificationReport)
+    return _load(artifact_root, round_no, VERIFICATION_NAME, VerificationReport)
 
 
-def load_review(root: Path, round_no: int) -> Review | None:
+def load_review(artifact_root: Path, round_no: int) -> Review | None:
     """Ревью раунда `round_no`; нет файла — `None`.
 
     Отдельно от `load_prior_round` по той же причине, что и
@@ -77,10 +85,10 @@ def load_review(root: Path, round_no: int) -> Review | None:
     подмена «взять ревью прошлого» — самая дешёвая ошибка сборки снимка.
     Разные функции делают её видимой.
     """
-    return _load(root, round_no, REVIEW_NAME, Review)
+    return _load(artifact_root, round_no, REVIEW_NAME, Review)
 
 
-def load_decision(root: Path, round_no: int) -> Decision | None:
+def load_decision(artifact_root: Path, round_no: int) -> Decision | None:
     """Решение раунда `round_no`; нет файла — `None`.
 
     Отдельно от `load_prior_round` по той же причине, что и остальные
@@ -88,10 +96,10 @@ def load_decision(root: Path, round_no: int) -> Decision | None:
     финализирован и переписать его нельзя, — а «взять решение прошлого»
     выглядело бы там правдоподобно и молча.
     """
-    return _load(root, round_no, DECISION_NAME, Decision)
+    return _load(artifact_root, round_no, DECISION_NAME, Decision)
 
 
-def load_patch(root: Path, round_no: int) -> str | None:
+def load_patch(artifact_root: Path, round_no: int) -> str | None:
     """Текст `rounds/NNN/changes.patch`; нет раунда или файла — `None`.
 
     `None`, а не пустая строка: «автор ничего не менял» и «сравнивать не с
@@ -105,13 +113,13 @@ def load_patch(root: Path, round_no: int) -> str | None:
     """
     if round_no < 1:
         return None
-    path = round_artifact(root, round_no, CHANGES_PATCH_NAME)
+    path = round_artifact(artifact_root, round_no, CHANGES_PATCH_NAME)
     if not path.is_file():
         return None
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def carried_issues(root: Path, round_no: int) -> tuple[Issue, ...]:
+def carried_issues(artifact_root: Path, round_no: int) -> tuple[Issue, ...]:
     """Замечания раунда `round_no`, оставленные открытыми его решением.
 
     Пересечение двух артефактов ОДНОГО раунда: `review.json` знает сами
@@ -127,14 +135,31 @@ def carried_issues(root: Path, round_no: int) -> tuple[Issue, ...]:
     `open_issues_carried` следующего решения, и перестановка сделала бы
     историю раундов невоспроизводимой.
     """
-    prior = load_prior_round(root, round_no)
+    prior = load_prior_round(artifact_root, round_no)
     if prior.review is None or prior.decision is None:
         return ()
     open_ids = set(prior.decision.open_issues_carried)
     return tuple(issue for issue in prior.review.issues if issue.id in open_ids)
 
 
-def issue_history(root: Path, round_no: int) -> dict[int, tuple[Issue, ...]]:
+def load_adopted_findings(artifact_root: Path) -> tuple[Issue, ...]:
+    """Находки, с которыми открыта ревизия (§7.3 SPEC-002); нет файла — пусто.
+
+    Отсутствие файла — законный вход и означает ровно «ревизия открыта не
+    возвратом»: так стартуют spec-r1 и КАЖДАЯ pair-ревизия (P5 — пара
+    перепроверяется целиком, без унаследованного). Битый файл, наоборот,
+    поднимает `ValidationError`: молча подставленный пустой набор превратил
+    бы потерянные архитектурные находки в «их не было», то есть отправил бы
+    автора переписывать спеку вслепую.
+    """
+    path = adopted_findings_json(artifact_root)
+    if not path.is_file():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return tuple(Issue.model_validate(item) for item in payload)
+
+
+def issue_history(artifact_root: Path, round_no: int) -> dict[int, tuple[Issue, ...]]:
     """`{n: замечания ревью n}` по всем раундам строго до `round_no`.
 
     Строго до — часть контракта, а не оптимизация: попади сюда сам раунд
@@ -147,17 +172,17 @@ def issue_history(root: Path, round_no: int) -> dict[int, tuple[Issue, ...]]:
     """
     history: dict[int, tuple[Issue, ...]] = {}
     for prior in range(1, round_no):
-        review = load_review(root, prior)
+        review = load_review(artifact_root, prior)
         if review is not None:
             history[prior] = tuple(review.issues)
     return history
 
 
 def _load[T: (Review, VerificationReport, Decision)](
-    root: Path, round_no: int, name: str, model: type[T]
+    artifact_root: Path, round_no: int, name: str, model: type[T]
 ) -> T | None:
     """Разбирает `rounds/NNN/name` моделью `model`; нет файла — `None`."""
-    path = round_artifact(root, round_no, name)
+    path = round_artifact(artifact_root, round_no, name)
     if not path.is_file():
         return None
     return model.model_validate_json(path.read_text(encoding="utf-8"))

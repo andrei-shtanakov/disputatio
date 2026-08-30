@@ -80,6 +80,8 @@ from disputatio.runtime.layout import (
 )
 from disputatio.verifier import GateSpec
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "20260810-120000-a1b2"
 _ADAPTER = "resume_cli"
@@ -103,19 +105,53 @@ _WRITING_PHASES = (
     (SessionPhase.REVIEWING, REVIEW_NAME),
 )
 
-# Единственный `except`, которому позволено видеть I3: повтор прерванного
-# DECIDING обязан дойти до конца ([REQ-015], [DESIGN-015]), и терпимость
+# `except`, которым позволено видеть I3. Первый — повтор прерванного
+# DECIDING: он обязан дойти до конца ([REQ-015], [DESIGN-015]), и терпимость
 # держится на равенстве решения тому, что уже лежит в раунде. `raise` в нём
 # обязателен — расхождение решений тихой правкой не лечится.
-_TOLERATED_HANDLER = ("steps.py", "_write_decision", "RoundImmutableError", True)
+#
+# Второй — fail-closed отказа политики P9 (SPEC-002 §7.1). Он широкий, потому
+# что политику пишет пайплайн и тип её отказа runtime не назначает; в список
+# он попал по той же причине, по какой сканер широкую ловлю и считает
+# обработчиком. Артефакт под ним не пишется вовсе — в `try` ровно один вызов
+# хука, — а `raise` безусловен: сессия переводится в `FAILED` и ошибка уходит
+# наружу как есть. Ловля именно `Exception`, а не `BaseException` и не
+# `finally`: kill во время хода автора обязан оставлять сессию в `PROPOSING`,
+# то есть переигрываемой, а не помечать её отказавшей.
+#
+# Третий — граница ревизии пайплайна (SPEC-002 §7.2, задача 17). Он тоже
+# широкий и по той же причине: исход оборвавшейся сессии спрашивается у
+# ДИСКА, а не у типа исключения. Записи под ним нет ни одной — в `try` ровно
+# `anyio.run` цикла, — и `raise` в нём есть: терпится РОВНО терминальная
+# сессия (`FAILED`/`DONE` уже в `session.json`), всё остальное уходит выше
+# как есть. Поймай он I3 у нетерминальной сессии — сработал бы `raise`, то
+# есть тихой правки раунда этот обработчик не даёт ни в одной ветке.
+# Четвёртый — отметка `FAILED` по подмене control plane на resume (SPEC-002
+# §8.1 шаг 0). Он широкий, потому что пишется манифест, про который ровно
+# сейчас доказано, что верить ему нельзя: перечень причин, по которым запись
+# может не удаться, здесь и был дырой — подделанная фаза `DONE` давала
+# `ValueError` мимо перечня, и он вылетал ВМЕСТО `ControlPlaneTampered`.
+# Записи артефакта раунда под ним нет ни одной (в `try` — один вызов
+# `PipelineRunner.fail`), а `raise` безусловен: пойманное уходит наружу
+# причиной того же `ControlPlaneTampered`, то есть тихой правки этот
+# обработчик не даёт ни в одной ветке.
+_TOLERATED_HANDLERS = [
+    ("composition.py", "session_driver", "Exception", True),
+    ("pipeline_resume.py", "_close_tampered", "Exception", True),
+    ("retry.py", "_run_lifecycle_hook", "Exception", True),
+    ("steps.py", "_write_decision", "RoundImmutableError", True),
+]
 
-# Пишущие вызовы, законные в runtime. Оба — не про журнал: правило
-# `.git/info/exclude` ([DESIGN-011]) и уборка огрызков записи в раунде
-# ([REQ-015]). Список точный, а не «не меньше»: новый писатель в runtime
-# обязан быть замечен этим тестом, даже если пишет он не в `events.jsonl`.
+# Пишущие вызовы, законные в runtime. Ни один — не про журнал: правило
+# `.git/info/exclude` ([DESIGN-011]), уборка огрызков записи в раунде
+# ([REQ-015]) и уборка stale-остатков прежнего экспорта пары перед новым
+# (SPEC-002 §8.2, `runtime/pipeline_export.py::_clear_stale`). Список
+# точный, а не «не меньше»: новый писатель в runtime обязан быть замечен
+# этим тестом, даже если пишет он не в `events.jsonl`.
 _ALLOWED_WRITES = {
     ("git.py", "exclude_file.write_text"),
     ("steps.py", "leftover.unlink"),
+    ("pipeline_export.py", "entry.unlink"),
 }
 
 _ROGUE_JOURNAL_LITERAL = (
@@ -273,7 +309,7 @@ class SpyVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк: рабочего дерева не трогает, историю не заводит."""
 
     resets: list[str] = field(default_factory=list)
@@ -608,20 +644,22 @@ def test_runtime_never_swallows_the_round_immutable_error() -> None:
     assert _guard().swallowed_immutability(_runtime_dir()) == []
 
 
-def test_the_only_immutability_handler_is_the_idempotent_decision_write() -> None:
-    """Обработчик I3 в runtime ровно один — терпимость повтора DECIDING.
+def test_the_only_immutability_handlers_are_the_two_named_ones() -> None:
+    """Обработчиков, видящих I3, в runtime ровно два — и оба поимённо.
 
-    Список точный: второй `except` вокруг записи артефакта означал бы второе
-    мнение о том, когда закрытый раунд можно переписать, а именно этого
-    [DESIGN-016] и не допускает. Заодно пинится широкая ловля — `except
-    Exception` поймал бы I3 заодно, и сканер обязан считать её обработчиком.
+    Список точный: `except` вокруг записи артефакта, которого нет в списке,
+    означал бы второе мнение о том, когда закрытый раунд можно переписать, а
+    именно этого [DESIGN-016] и не допускает. Заодно пинится широкая ловля —
+    `except Exception` поймал бы I3 заодно, и сканер обязан считать её
+    обработчиком; поэтому fail-closed политики P9 стоит здесь наравне с
+    терпимостью повтора DECIDING, а не мимо проверки.
     """
     handlers = _guard().scan_immutability_handlers(_runtime_dir())
 
     assert [
         (handler.module.name, handler.function, handler.caught, handler.reraises)
         for handler in handlers
-    ] == [_TOLERATED_HANDLER]
+    ] == _TOLERATED_HANDLERS
 
 
 @pytest.mark.parametrize(

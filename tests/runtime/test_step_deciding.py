@@ -77,6 +77,8 @@ from disputatio.core import (
 from disputatio.events import finalize_round, write_round_artifact
 from disputatio.runtime import ROUND_COMMIT_TEMPLATE, RuntimeDeps
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 9, 0, 0, tzinfo=UTC)
 _ROUND = 4
 _SESSION_ID = "s-deciding"
@@ -289,7 +291,7 @@ class NoVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps`-фейк: коммит журналируется, прочие операции запрещены."""
 
     log: list[str]
@@ -643,7 +645,8 @@ def _make_harness(
     )
     git = SpyGit(log=log)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),

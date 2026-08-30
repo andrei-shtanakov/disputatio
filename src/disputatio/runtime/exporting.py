@@ -70,17 +70,22 @@ def export(ctx: StepContext) -> None:
     ничего не менял» и «экспорт до патча не дошёл» это разные факты, и
     различает их только наличие файла со своим checksum.
     """
-    root = ctx.root
+    artifacts = ctx.artifact_root
     round_no = ctx.round
 
-    decision = _source_decision(root, round_no)
+    decision = _source_decision(artifacts, round_no)
     write_result(
-        root,
+        artifacts,
         {
-            RESULT_MD_NAME: _source_proposal(root, round_no),
-            RESULT_PATCH_NAME: load_patch(root, round_no) or "",
+            RESULT_MD_NAME: _source_proposal(artifacts, round_no),
+            RESULT_PATCH_NAME: load_patch(artifacts, round_no) or "",
         },
-        _manifest(ctx.fsm.state, decision, carried_issues(root, round_no), round_no),
+        _manifest(
+            ctx.fsm.state,
+            decision,
+            carried_issues(artifacts, round_no),
+            round_no,
+        ),
     )
 
     ctx.fsm.transition(SessionPhase.DONE)
@@ -145,7 +150,7 @@ def _issue_entry(issue: Issue) -> dict[str, str]:
     }
 
 
-def _source_decision(root: Path, round_no: int) -> Decision:
+def _source_decision(artifact_root: Path, round_no: int) -> Decision:
     """Решение раунда-источника; его отсутствие — ошибка порядка.
 
     `AssertionError`, а не доменная ошибка: в `EXPORTING` сессию заводит
@@ -154,7 +159,7 @@ def _source_decision(root: Path, round_no: int) -> Decision:
     цикла, а не действие пользователя, — а манифест без исхода объявил бы
     результат экспортированным, не сказав, чем сессия кончилась.
     """
-    decision = load_decision(root, round_no)
+    decision = load_decision(artifact_root, round_no)
     if decision is None:
         raise AssertionError(
             f"нет decision.json раунда {round_no:03d}: шаг EXPORTING вызван "
@@ -164,7 +169,7 @@ def _source_decision(root: Path, round_no: int) -> Decision:
     return decision
 
 
-def _source_proposal(root: Path, round_no: int) -> str:
+def _source_proposal(artifact_root: Path, round_no: int) -> str:
     """`proposal.md` раунда-источника; его отсутствие — ошибка порядка.
 
     `AssertionError` по той же причине: до `EXPORTING` раунд прошёл
@@ -172,7 +177,7 @@ def _source_proposal(root: Path, round_no: int) -> str:
     `result.md` с честным sha256 выглядел бы законным экспортом сессии, в
     которой автор ничего не написал.
     """
-    path = round_artifact(root, round_no, PROPOSAL_NAME)
+    path = round_artifact(artifact_root, round_no, PROPOSAL_NAME)
     if not path.is_file():
         raise AssertionError(
             f"нет proposal.md раунда {round_no:03d}: шаг EXPORTING вызван до "

@@ -79,6 +79,8 @@ from disputatio.events import write_round_artifact
 from disputatio.runtime import GitCli, RuntimeDeps
 from disputatio.runtime.git import ROUND_COMMIT_TEMPLATE
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC)
 _SESSION_DIR = ".disputatio"
 
@@ -163,7 +165,7 @@ class FakeVerifier:
 
 
 @dataclass
-class SpyGit:
+class SpyGit(GitOpsFakeBase):
     """`GitOps` поверх настоящего `GitCli` с общим spy-логом.
 
     Делегирование, а не подмена: `reset_hard`/`clean`/`diff_head` обязаны
@@ -454,7 +456,8 @@ def _make_harness(
     git = SpyGit(root=root, log=log)
     author = SpyAuthor(log=log, reply=reply, fsm=fsm, on_run=on_run)
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=author,

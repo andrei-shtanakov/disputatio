@@ -108,11 +108,18 @@ TASK-001 уже прорастал недетерминированный тег
 FORBIDDEN_CALLS: frozenset[str] = frozenset({"open", "__import__"})
 """Вызовы-обходы: файл можно открыть, ничего не импортировав."""
 
-EXEMPT_TEST_MODULES: frozenset[str] = frozenset()
+EXEMPT_TEST_MODULES: frozenset[str] = frozenset({"test_doc_prompts.py"})
 """Тест-модули, сознательно оставленные вне матрицы покрытия.
 
-Пусто и должно оставаться пустым: исключение — это признание, что тест
-ничего не закрывает.
+Пусто для любого теста воркстрима w-context (TASK-001…008): там
+исключение было бы признанием, что тест ничего не закрывает. Единственное
+легитимное исключение — тест-модуль другого плана: `test_doc_prompts.py`
+закрывает задачу 11 SPEC-002 (`.superpowers/sdd/
+2026-08-28-spec-pair-pipeline-plan/task-11-brief.md`), написанную поверх
+уже сертифицированного волной 1 воркстрима. Матрица REQ-001…011/
+NFR-001…004 фиксирует требования именно того воркстрима — расширять её
+под предмет, которого не существовало на момент её написания, значит
+обесценить трассируемость остальных строк.
 """
 
 TESTS_DIR_NAME = "tests/context"
@@ -359,8 +366,8 @@ _NFR_COVERAGE: dict[str, tuple[tuple[str, str], ...]] = {
     "NFR-002": (
         ("test_tags.py", "test_wrap_is_deterministic"),
         ("test_tags_literals.py", "test_wrap_is_byte_identical_across_processes"),
-        ("test_schema_rules.py", "test_constant_is_a_plain_string_literal"),
-        ("test_schema_rules.py", "test_constant_is_byte_identical_across_processes"),
+        ("test_schema_rules.py", "test_constant_is_built_from_module_literals_only"),
+        ("test_schema_rules.py", "test_constants_are_byte_identical_across_processes"),
         (
             "test_hygiene.py",
             "test_author_prompt_is_byte_identical_for_identical_arguments",

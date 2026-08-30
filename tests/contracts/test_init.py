@@ -16,7 +16,19 @@ from disputatio import contracts
 
 # Публичные имена по подмодулям — источник ожиданий для всех тестов ниже.
 EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
-    "base": ("SCHEMA_V1", "ArtifactBase", "ArtifactChild", "Role"),
+    "base": ("SCHEMA_V1", "SCHEMA_V2", "ArtifactBase", "ArtifactChild", "Role"),
+    "checklist": (
+        "ArtifactEvidence",
+        "GateEvidence",
+        "EvidenceRef",
+        "ChecklistItem",
+    ),
+    "checklists_catalog": (
+        "SPEC_CHECKLIST",
+        "PAIR_CHECKLIST",
+        "CHECKLIST_BY_CONTOUR",
+        "CHECKLIST_TEXT",
+    ),
     "session": (
         "SessionPhase",
         "Mode",
@@ -46,14 +58,54 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "REASON_NO_SUBSTANTIVE_ISSUES",
         "REASON_APPROVE_ON_FAILED_GATES",
         "REASON_EMPTY_CHECKED",
+        "REASON_CHECKLIST_ID_MISMATCH",
+        "REASON_APPROVE_WITH_CHECKLIST_FAIL",
+        "REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS",
+        "REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID",
+        "REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW",
+        "REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS",
+        "REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE",
+        "REASON_CHECKLIST_PASS_CONTRADICTS_S1",
         "ReviewAcceptance",
         "validate_review",
+        "validate_doc_review",
         "degrade_unevidenced_issues",
         "check_substantive_issues",
         "check_verdict_vs_verification",
         "check_checked_nonempty",
     ),
-    "ports": ("StateStore", "EventSink", "AgentAdapter", "Verifier", "AgentTurn"),
+    "ports": (
+        "StateStore",
+        "EventSink",
+        "AgentAdapter",
+        "Verifier",
+        "AgentTurn",
+        "PipelineStateStore",
+        "BoundaryVerdict",
+        "RoundBoundaryPolicy",
+        "SessionLifecyclePolicy",
+    ),
+    "pipeline": (
+        "SCHEMA_PIPELINE_V1",
+        "ALLOWED_TRANSITIONS",
+        "PipelinePhase",
+        "TransitionReason",
+        "SessionOutcome",
+        "PipelineArtifactBase",
+        "FileRef",
+        "DocumentPaths",
+        "EvidenceLink",
+        "SessionRecord",
+        "Transition",
+        "OperatorDecision",
+        "NextAction",
+        "AppendOnlyEntry",
+        "IntegritySnapshot",
+        "PipelineState",
+        # Правило путей манифеста нужно и снаружи схемы: конфиг проверяет им
+        # пару документов ДО создания durable-состояния (§4.2, D2).
+        "validate_relative_path",
+    ),
 }
 
 EXPECTED_PUBLIC_NAMES: Final[tuple[str, ...]] = tuple(

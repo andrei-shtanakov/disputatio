@@ -1,9 +1,17 @@
 """Файловая реализация порта `StateStore` ([DESIGN-003], [REQ-004], [REQ-005]).
 
-Одна рабочая директория — одна сессия: состояние всегда лежит в
-`root/.disputatio/session.json`, а `session_id` в путь не входит. Поэтому
-`load(session_id)` использует аргумент только как ключ проверки: не тот
-`session_id` — `KeyError`, ровно как отсутствующий файл ([ADR-006]).
+Один `artifact_root` — одна сессия ([ADR-006], редакция SPEC-002 §4.1):
+состояние всегда лежит в `artifact_root/.disputatio/session.json`, а
+`session_id` в путь не входит. Поэтому `load(session_id)` использует аргумент
+только как ключ проверки: не тот `session_id` — `KeyError`, ровно как
+отсутствующий файл.
+
+Прежняя редакция говорила «одна рабочая директория — одна сессия» и связывала
+состояние с рабочим git-репозиторием. Формулировка сменилась не ради слов:
+пайплайн размещает несколько сессий под ОДНИМ репозиторием
+(`pipelines/<slug>/sessions/<revision>/`), и правило про рабочую директорию
+запрещало бы ровно это. Один журнал по-прежнему держит одну сессию — просто
+журнал больше не обязан совпадать с репозиторием.
 """
 
 import json
@@ -15,16 +23,20 @@ from disputatio.events.paths import session_json_path
 
 
 class FileStateStore:
-    """Файловая реализация `ports.StateStore`: `session.json` под `root/.disputatio/`.
+    """`ports.StateStore`: `session.json` под `artifact_root/.disputatio/`.
 
-    Предусловие `save`: `bootstrap_session(root)` уже вызван — `atomic_write`
-    кладёт временный файл рядом с целевым, поэтому без `.disputatio/` вызов
-    упадёт `FileNotFoundError` (bootstrap — единственная точка `mkdir`,
-    [REQ-002]).
+    Корень — журнал сессии, а не рабочий репозиторий (SPEC-002 §4.1): две
+    сессии над одним git-деревом различаются именно им, и общий корень свёл бы
+    их в один `session.json`.
+
+    Предусловие `save`: `bootstrap_session(artifact_root)` уже вызван —
+    `atomic_write` кладёт временный файл рядом с целевым, поэтому без
+    `.disputatio/` вызов упадёт `FileNotFoundError` (bootstrap — единственная
+    точка `mkdir`, [REQ-002]).
     """
 
-    def __init__(self, root: Path) -> None:
-        self._path = session_json_path(root)
+    def __init__(self, artifact_root: Path) -> None:
+        self._path = session_json_path(artifact_root)
 
     def load(self, session_id: str) -> SessionState:
         """Читает `session.json` и возвращает состояние сессии `session_id`.

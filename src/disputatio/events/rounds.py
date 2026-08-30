@@ -23,8 +23,15 @@ class RoundImmutableError(Exception):
     """Попытка перезаписать артефакт финализированного раунда (I3, [REQ-009])."""
 
 
-def write_round_artifact(root: Path, round_no: int, name: str, content: str) -> Path:
+def write_round_artifact(
+    artifact_root: Path, round_no: int, name: str, content: str
+) -> Path:
     """Атомарно пишет `rounds/{round_no:03d}/{name}` и возвращает путь к нему.
+
+    Раунд пишется под `artifact_root` (SPEC-002 §4.1), а не под рабочий
+    репозиторий: две сессии над общим деревом обязаны расходиться и
+    артефактами раунда, иначе они разойдутся по `session.json`, но сложат
+    `rounds/` в одну кучу — и разойдутся тихо.
 
     Директория раунда создаётся при необходимости — раунд `NNN` появляется на
     диске вместе с первым своим артефактом ([REQ-008]). Отсутствие любого из
@@ -43,7 +50,7 @@ def write_round_artifact(root: Path, round_no: int, name: str, content: str) -> 
     остаётся нетронутой ([REQ-009]).
     """
     _check_artifact_name(name)
-    directory = round_dir(root, round_no)
+    directory = round_dir(artifact_root, round_no)
     if (directory / FINALIZED_MARKER_NAME).exists():
         raise RoundImmutableError(
             f"раунд {round_no:03d} финализирован: {name} не перезаписывается"
@@ -55,14 +62,14 @@ def write_round_artifact(root: Path, round_no: int, name: str, content: str) -> 
     return path
 
 
-def finalize_round(root: Path, round_no: int) -> None:
+def finalize_round(artifact_root: Path, round_no: int) -> None:
     """Помечает раунд неизменяемым — атомарно пишет пустой маркер `.finalized`.
 
     Идемпотентна: повторный вызов перезаписывает маркер тем же пустым
     содержимым и не бросает ([REQ-009]). Директория раунда создаётся при
     необходимости — финализировать можно и раунд, не оставивший артефактов.
     """
-    directory = round_dir(root, round_no)
+    directory = round_dir(artifact_root, round_no)
     directory.mkdir(parents=True, exist_ok=True)
     atomic_write(directory / FINALIZED_MARKER_NAME, "")
 

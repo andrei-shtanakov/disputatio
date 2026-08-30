@@ -83,6 +83,8 @@ from disputatio.events import bootstrap_session, finalize_round, write_round_art
 from disputatio.runtime import RuntimeDeps
 from disputatio.runtime.layout import session_dir
 
+from ._fakes import GitOpsFakeBase
+
 _FROZEN_NOW = datetime(2026, 8, 10, 12, 0, 0, tzinfo=UTC)
 _SESSION_ID = "20260810-120000-c3d4"
 _ROUND = 3
@@ -277,7 +279,7 @@ class NoVerifier:
 
 
 @dataclass
-class NoGit:
+class NoGit(GitOpsFakeBase):
     """`GitOps`-фейк: частичный исход не коммитится (§2.5), экспорт — тем более."""
 
     def diff_head(self) -> str:
@@ -503,7 +505,8 @@ def _make_harness(
         now=lambda: _FROZEN_NOW,
     )
     deps = RuntimeDeps(
-        root=root,
+        workspace_root=root,
+        artifact_root=root,
         store=store,
         sink=sink,
         author=NoAgent(),
