@@ -220,7 +220,13 @@ def test_write_result_replaces_by_rename_without_leftovers(session_root: Path) -
 def test_write_result_failure_at_rename_leaves_previous_export(
     session_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REQ-001: сбой на `os.replace` не разрушает уже экспортированный файл."""
+    """REQ-001: сбой на `os.replace` не разрушает уже экспортированный файл.
+
+    Прежний `manifest.json` при этом не сохраняется: он снимается до первой
+    перезаписи, потому что пережить её и остаться правдой он не может (см.
+    `test_interrupted_re_export_leaves_no_stale_manifest`). Утверждение
+    теста — про пофайловую атомарность содержимого, а не про marker.
+    """
     from disputatio.events.export import write_result
 
     bootstrap_session(session_root)
@@ -236,7 +242,53 @@ def test_write_result_failure_at_rename_leaves_previous_export(
     assert (result_dir(session_root) / "result.md").read_text(
         encoding="utf-8"
     ) == "первый\n"
-    assert _read_manifest(session_root)["round"] == 1
+    assert not (result_dir(session_root) / "manifest.json").exists()
+
+
+def test_interrupted_re_export_leaves_no_stale_manifest(
+    session_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Обрыв ПОСРЕДИ перезаписи набора не оставляет прежний манифест.
+
+    Симметрия к C1 (`runtime/pipeline_export.py`), тот же инвариант:
+    манифест — commit marker, и он обязан описывать содержимое, лежащее
+    рядом. Первый файл перезаписан, второй нет — прежний манифест, дожив
+    до этого момента, объявляет валидным набор, чьи sha256 половине файлов
+    уже не соответствуют ([REQ-010]). Экспорт сессии переигрывается на
+    resume (переход в `DONE` пишется ПОСЛЕ записи), так что перезапись
+    поверх готового `result/` — штатный путь, а не экзотика.
+    """
+    from disputatio.events.export import write_result
+
+    bootstrap_session(session_root)
+    write_result(
+        session_root,
+        files={"result.md": "первый\n", "result.patch": "diff-1\n"},
+        manifest={"round": 1},
+    )
+
+    real_replace = atomic.os.replace
+
+    def _fail_on_second_file(source: Any, target: Any) -> None:
+        if Path(target).name == "result.patch":
+            raise OSError("симулированный обрыв посреди перезаписи набора")
+        real_replace(source, target)
+
+    monkeypatch.setattr(atomic.os, "replace", _fail_on_second_file)
+    with pytest.raises(OSError):
+        write_result(
+            session_root,
+            files={"result.md": "второй\n", "result.patch": "diff-2\n"},
+            manifest={"round": 2},
+        )
+
+    assert (result_dir(session_root) / "result.md").read_text(
+        encoding="utf-8"
+    ) == "второй\n"
+    assert not (result_dir(session_root) / "manifest.json").exists(), (
+        "манифест раунда 1 пережил обрыв перезаписи: commit marker обещает "
+        "sha256 файлов, половина которых уже другая"
+    )
 
 
 def test_manifest_written_after_files_so_it_never_lists_missing_file(

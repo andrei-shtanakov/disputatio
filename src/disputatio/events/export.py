@@ -33,9 +33,13 @@ def write_result(
 
     Каждый файл, включая манифест, пишется через `atomic_write` — temp-file +
     rename ([REQ-001]). Атомарность здесь пофайловая, а не транзакционная на
-    весь экспорт: манифест пишется последним, поэтому сбой посреди экспорта
-    оставляет прежний манифест (или ни одного), но никогда — манифест с
-    checksum ненаписанного файла.
+    весь экспорт, и разница закрывается порядком: прежний `manifest.json`
+    удаляется ДО первой перезаписи, а новый пишется последним. Поэтому сбой
+    посреди экспорта оставляет набор без манифеста — состояние, которое
+    никто не считает валидным и которое чинится повторным вызовом, — но
+    никогда манифест с checksum ненаписанного файла и никогда прежний
+    манифест рядом с уже переписанным содержимым ([REQ-010]: commit marker
+    описывает то, что лежит рядом, иначе он не marker).
 
     Предусловие: `bootstrap_session(artifact_root)` уже вызван — `result/`
     создаёт только он ([REQ-002]), иначе вызов упадёт `FileNotFoundError`.
@@ -65,6 +69,7 @@ def write_result(
     )
 
     directory = result_dir(artifact_root)
+    (directory / MANIFEST_NAME).unlink(missing_ok=True)
     for name, data in payloads.items():
         atomic_write(directory / name, data)
     atomic_write(directory / MANIFEST_NAME, serialized)
