@@ -23,11 +23,19 @@
   позволяет остановиться ровно на ней; §10 перечисляет одиннадцать
   сценариев, и каждый из них здесь проверяем по отдельности.
 
-Подменены четыре порта: git (настоящий репозиторий тут ничего не доказывал бы
-— все семь операций участвуют только как `head_sha`/`reset_hard`/предусловия),
-драйвер сессии, фабрика сессии и экспортёр. Хранилище манифеста, журнал
-событий и анкер — настоящие: все утверждения этого файла — утверждения о том,
-что легло на диск.
+* **Cleanup возврата обязан быть честным перед манифестом.** `entry_hashes`
+  преемника снимаются в `create_session`, до запуска его сессии, поэтому
+  файл, переживший возврат, попадёт в манифест как вход ревизии, которого
+  автор не видел. Уборка припаркованной попытки — не гигиена дерева, а
+  условие того, что манифест не врёт (§7.3 шаг 3).
+
+Подменены четыре порта: git, драйвер сессии, фабрика сессии и экспортёр.
+Настоящего репозитория здесь нет — все операции git участвуют как
+`head_sha`/предусловия и как cleanup возврата, — но файловую разницу между
+`reset_hard` и `clean` фейк моделирует всерьёз: без неё утверждение об
+`entry_hashes` преемника не различало бы уборку и её отсутствие. Хранилище
+манифеста, журнал событий и анкер — настоящие: все утверждения этого файла —
+утверждения о том, что легло на диск.
 """
 
 import hashlib
@@ -71,6 +79,7 @@ from disputatio.events import (
     bootstrap_session,
     read_pipeline_events,
 )
+from disputatio.events.paths import SESSION_DIR_NAME
 from disputatio.events.pipeline_paths import pipeline_dir, session_artifact_root
 from disputatio.runtime import (
     DirtyWorkingTree,
@@ -100,14 +109,35 @@ class _Boom(RuntimeError):
 
 
 class _FakeGit:
-    """`GitOps` без репозитория: предусловия `run` + reset возврата (§7.3)."""
+    """`GitOps` без репозитория: предусловия `run` + cleanup возврата (§7.3).
 
-    def __init__(self) -> None:
+    Файловая семантика моделируется ровно настолько, насколько её различает
+    возврат: `tracked` — снимок дерева на момент сборки стенда (в настоящем
+    репозитории это закоммиченные файлы), всё появившееся позже — untracked.
+    `reset_hard` untracked-файлов не трогает — как и настоящий, — а `clean`
+    их сносит, обходя `.disputatio/`. Без этой разницы фейк не отличал бы
+    уборку от её отсутствия, и тест на `entry_hashes` преемника был бы
+    зелёным при любом коде.
+    """
+
+    def __init__(self, workspace: Path) -> None:
         self.head = "a" * 40
         self.branch = "docs/pair"
         self.resets: list[str] = []
+        self.cleans = 0
         self.entries: tuple[StatusEntry, ...] = ()
         self.raise_on_reset = False
+        self._workspace = workspace
+        self.tracked = set(self._worktree_files())
+
+    def _worktree_files(self) -> list[Path]:
+        """Файлы дерева вне каталога оркестратора — область `clean`."""
+        return [
+            path
+            for path in self._workspace.rglob("*")
+            if path.is_file()
+            and SESSION_DIR_NAME not in path.relative_to(self._workspace).parts
+        ]
 
     def diff_head(self) -> str:
         return ""
@@ -121,7 +151,10 @@ class _FakeGit:
         self.resets.append(rev)
 
     def clean(self) -> None:
-        raise AssertionError("runner дерево не убирает")
+        self.cleans += 1
+        for path in self._worktree_files():
+            if path not in self.tracked:
+                path.unlink()
 
     def head_sha(self) -> str:
         return self.head
@@ -157,6 +190,10 @@ class Script:
     признакам неотличимо от парковки, и различает их только третий —
     вердикт политики на этом ревью. Второй вызов драйвера доигрывает раунд,
     как это сделал бы session-resume.
+
+    `authors` — файлы, которые автор сессии создаёт в рабочем дереве. Для
+    отсутствовавшего документа это новый untracked-файл: его судьба на
+    возврате и есть предмет §7.3 шага 3.
     """
 
     outcome: str = "converged"
@@ -166,13 +203,15 @@ class Script:
     raise_before_write: bool = False
     raise_after_write: bool = False
     stall_first_call: bool = False
+    authors: tuple[str, ...] = ()
 
 
 class _FakeDriver:
     """`SessionDriver`: пишет артефакты раунда по скрипту и двигает `session.json`."""
 
-    def __init__(self, scripts: dict[str, Script]) -> None:
+    def __init__(self, scripts: dict[str, Script], workspace: Path) -> None:
         self.scripts = scripts
+        self.workspace = workspace
         self.calls: list[tuple[Path, str, object]] = []
 
     def __call__(
@@ -182,6 +221,11 @@ class _FakeDriver:
         script = self.scripts[session_id]
         if script.raise_before_write:
             raise _Boom(f"драйвер упал до записи артефактов {session_id}")
+
+        for relative in script.authors:
+            target = self.workspace / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"# работа {session_id}\n", encoding="utf-8")
 
         store = FileStateStore(artifact_root)
         state = store.load(session_id)
@@ -377,8 +421,8 @@ def build_harness(
     store: Any = (
         _CrashingStore(real_store, crash_on_save) if crash_on_save else real_store
     )
-    git = _FakeGit()
-    driver = _FakeDriver(scripts)
+    git = _FakeGit(workspace)
+    driver = _FakeDriver(scripts, workspace)
     factory = _FakeFactory()
     exporter = _FakeExporter()
     runner = PipelineRunner(
@@ -790,6 +834,31 @@ def test_return_resets_worktree_to_head(tmp_path: Path) -> None:
     harness = build_harness(tmp_path, returning_scripts())
     harness.runner.run(SLUG, "полировать пару")
     assert harness.git.resets == [harness.git.head]
+
+
+def test_return_entry_hashes_do_not_inherit_parked_untracked_file(
+    tmp_path: Path,
+) -> None:
+    """Untracked-файл припаркованной попытки не доживает до `entry_hashes` (§7.3).
+
+    Сценарий буквальный: плана до pair-r1 нет — законный случай, — автор
+    pair-r1 создаёт новый `docs/plan.md`, ревью паркует раунд архитектурным
+    дефектом. `reset --hard` untracked-файл не видит, а `entry_hashes`
+    преемника снимаются сразу в `create_session`; без уборки spec-r2 нёс бы
+    SHA документа, которого на входе ревизии не было, — собственный
+    `PROPOSING` преемника снесёт файл только позже. Утверждение здесь именно
+    про манифест, а не про чистоту дерева: врущий `entry_hashes` переживает
+    прогон, лишний файл — нет.
+    """
+    scripts = returning_scripts()
+    scripts["pair-r1"] = Script(outcome="park", issues=(ARCH,), authors=(PLAN_PATH,))
+    harness = build_harness(tmp_path, scripts)
+    state = harness.runner.run(SLUG, "полировать пару")
+
+    successor = next(r for r in state.spec_sessions if r.session_id == "spec-r2")
+    assert successor.entry_hashes[PLAN_PATH] == "absent"
+    assert not (harness.workspace / PLAN_PATH).exists()
+    assert harness.git.cleans == 1
 
 
 def test_spec_r2_gets_findings_pair_r2_starts_clean(tmp_path: Path) -> None:
