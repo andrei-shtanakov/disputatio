@@ -367,6 +367,77 @@ def test_first_save_has_no_history_to_guard(store: Any) -> None:
     assert store.load(_SLUG) == state
 
 
+# --- одновременная запись: read-check-write под сериализацией (§4.2) ----
+
+
+def test_concurrent_saves_do_not_lose_an_accepted_write(
+    store: Any, session_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Два resume над одним пайплайном: принятая запись не исчезает молча.
+
+    Моделируется РЕАЛЬНОЕ чередование, а не два последовательных вызова:
+    писатель A входит в `save`, читает прежнее состояние и застревает перед
+    самой записью; ровно в этот момент писатель B делает свой `save`
+    целиком. Прежние тесты append-only гоняли изменения по очереди, поэтому
+    дефект read-check-write им не виден: guard каждого процесса сверяет
+    снимок с состоянием, прочитанным ИМ САМИМ.
+
+    Утверждение — не про механизм, а про итог: `save`, который не бросил
+    исключение, обязан остаться на диске. Либо B отвергнут (его снимок
+    собран поверх устаревшего состояния — усечение append-only коллекции),
+    либо его добавление лежит в манифесте; «принят и потерян» — третьего
+    исхода быть не должно.
+    """
+    import threading
+    import time
+
+    from disputatio.events import pipeline_store as module
+    from disputatio.events.pipeline_store import FilePipelineStateStore
+
+    store.save(make_pipeline_state())
+    state_a = make_pipeline_state(spec_sessions=[make_session_record().model_dump()])
+    state_b = make_pipeline_state(
+        transitions=[make_transition().model_dump(by_alias=True)]
+    )
+
+    real_atomic_write = module.atomic_write
+    entered = threading.Event()
+
+    def _slow_write(path: Path, content: Any, *, encoding: str = "utf-8") -> None:
+        # Тормозится только снимок A: он один несёт запись сессии.
+        if "spec-r1" in str(content):
+            entered.set()
+            time.sleep(0.3)
+        real_atomic_write(path, content, encoding=encoding)
+
+    monkeypatch.setattr(module, "atomic_write", _slow_write)
+
+    failures: dict[str, BaseException] = {}
+
+    def _save(name: str, state: PipelineState) -> None:
+        try:
+            FilePipelineStateStore(session_root).save(state)
+        except BaseException as exc:  # noqa: BLE001 — исход писателя, не диагноз
+            failures[name] = exc
+
+    writer_a = threading.Thread(target=_save, args=("A", state_a))
+    writer_a.start()
+    assert entered.wait(5), "писатель A не дошёл до записи"
+    _save("B", state_b)
+    writer_a.join(5)
+
+    assert "A" not in failures, f"писатель A отвергнут: {failures.get('A')!r}"
+    loaded = store.load(_SLUG)
+    if "B" in failures:
+        assert isinstance(failures["B"], ValueError)
+        assert [record.session_id for record in loaded.spec_sessions] == ["spec-r1"]
+    else:
+        assert loaded.transitions, (
+            "принятая запись B исчезла: второй save затёр добавление первого "
+            "в append-only коллекцию (lost update)"
+        )
+
+
 # --- журнал событий пайплайна: словарь, sink, читатель (§4.1, P8) -------
 
 

@@ -14,6 +14,12 @@ append-only коллекции, и **проверять их — обязанн�
 прежнего элемента разрешены, и обе — поля, объявленные заполняемыми позже:
 `outcome` (с `null` на значение, однократно, P3) и `superseded_by`.
 
+Отсюда же второе отличие: сверка с предыдущим состоянием — это
+read-check-write, и атомарности одной записи ему мало. `save` целиком идёт
+под эксклюзивной блокировкой (`events.file_lock`), иначе два процесса,
+продолжающих один пайплайн, прочитали бы одно и то же прежнее состояние,
+оба прошли бы guard и второй затёр бы добавление первого молча.
+
 `pipeline_id` совпадает со слагом каталога (§4.1) и с `anchor_id` (§4.2),
 поэтому путь манифеста выводится из самого состояния — отдельного входа
 хранилищу не нужно.
@@ -30,6 +36,7 @@ from disputatio.contracts.pipeline import (
     Transition,
 )
 from disputatio.events.atomic import atomic_write
+from disputatio.events.file_lock import exclusive_lock
 from disputatio.events.pipeline_paths import manifest_path
 
 # Поля SessionRecord, законно заполняемые задним числом (§4.2). Остальные —
@@ -144,23 +151,35 @@ class FilePipelineStateStore:
 
         Guard идёт **до** записи: отвергнутый `save` оставляет файл на диске
         нетронутым, иначе отказ сам был бы порчей истории.
-        """
-        previous = self._read(state.pipeline_id)
-        if previous is not None:
-            if previous.pipeline_id != state.pipeline_id:
-                # Путь выводится из state.pipeline_id, так что несовпадение
-                # означает чужой манифест на этом месте. Записать поверх —
-                # значит смешать истории двух пайплайнов молча.
-                raise ValueError(
-                    f"манифест по пути пайплайна {state.pipeline_id!r} принадлежит "
-                    f"{previous.pipeline_id!r}"
-                )
-            _guard_history(previous, state)
 
-        payload = json.dumps(
-            state.model_dump(mode="json", by_alias=True), ensure_ascii=False
-        )
-        atomic_write(manifest_path(self._workspace_root, state.pipeline_id), payload)
+        Чтение, сверка и запись идут под эксклюзивной блокировкой
+        (`events.file_lock`) — иначе они не образуют одной операции. Два
+        `disp pipeline resume` над одним пайплайном прочитали бы ОДНО и то
+        же прежнее состояние, оба прошли бы guard (каждый сверяется с тем,
+        что прочитал сам), и `os.replace` второго стёр бы добавление
+        первого — молча, потому что append-only коллекция снаружи выглядит
+        целой. Под блокировкой проигравший перечитывает уже обновлённое
+        состояние, и его снимок отвергает тот же guard: усечение или правка
+        префикса — громкий отказ вместо потерянной записи.
+        """
+        path = manifest_path(self._workspace_root, state.pipeline_id)
+        with exclusive_lock(path):
+            previous = self._read(state.pipeline_id)
+            if previous is not None:
+                if previous.pipeline_id != state.pipeline_id:
+                    # Путь выводится из state.pipeline_id, так что несовпадение
+                    # означает чужой манифест на этом месте. Записать поверх —
+                    # значит смешать истории двух пайплайнов молча.
+                    raise ValueError(
+                        f"манифест по пути пайплайна {state.pipeline_id!r} "
+                        f"принадлежит {previous.pipeline_id!r}"
+                    )
+                _guard_history(previous, state)
+
+            payload = json.dumps(
+                state.model_dump(mode="json", by_alias=True), ensure_ascii=False
+            )
+            atomic_write(path, payload)
 
     def _read(self, pipeline_id: str) -> PipelineState | None:
         """Прежнее состояние с диска либо `None`, если манифеста ещё нет."""
