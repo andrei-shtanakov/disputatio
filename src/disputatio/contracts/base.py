@@ -8,6 +8,7 @@
 `Literal` версии.
 """
 
+import unicodedata
 from enum import StrEnum
 from typing import Any, Final, Literal
 
@@ -15,6 +16,24 @@ from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_V1: Final = "disputatio/v1"
 SCHEMA_V2: Final = "disputatio/v2"
+
+
+def semantic_text(text: str) -> str:
+    """Семантическое содержимое строки: без Cf-символов и краевых пробелов.
+
+    Удаляет все символы Unicode-категории Cf (U+200B, U+FEFF и др.) ДО
+    strip: строка из одних невидимых и/или пробельных символов
+    нормализуется в "".
+
+    Живёт в `base`, а не в `validation`: критерий «содержательно ли это
+    поле» нужен и схемному слою (`checklist.py`, evidence-ссылки), и
+    протокольному (`validation.py`, evidence issue и `checked`), а
+    `validation` импортирует `review`, который импортирует `checklist`, —
+    вторая копия критерия разошлась бы с первой ровно в том месте, где
+    расхождение никто не заметит.
+    """
+    visible = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return visible.strip()
 
 
 class Role(StrEnum):

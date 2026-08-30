@@ -6,6 +6,14 @@ Evidence — дискриминированный union двух закрыты�
 с диапазоном строк или ссылка на результат гейта. Одна модель с
 опциональным `lines` пропускала бы `artifact` без строк и `gate` со
 строками — union с `discriminator="kind"` закрывает обе дыры.
+
+**Непустота проверяется по содержимому, а не по длине контейнера.**
+`evidence=[{"kind": "gate", "ref": ""}]` — список из одного элемента, то
+есть `min_length=1` доволен; при этом пункт не называет ни одного
+проверенного объекта, а именно это V2 и запрещает. Пустая, пробельная и
+невидимая (Cf) ссылка отвергается схемой обеих форм (`semantic_text`), а
+`lines` обязан быть настоящим диапазоном: строки нумеруются с единицы, и
+``"0"`` указывает не на строку, а в никуда.
 """
 
 import re
@@ -13,9 +21,19 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
-from disputatio.contracts.base import ArtifactChild
+from disputatio.contracts.base import ArtifactChild, semantic_text
 
 _LINES_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+
+def _require_substantive_ref(value: str) -> str:
+    """Общий валидатор `ref` обеих форм evidence: ссылка обязана быть ссылкой."""
+    if not semantic_text(value):
+        raise ValueError(
+            "ref обязан называть проверенный объект: пустая, пробельная "
+            f"или невидимая ссылка доказательством не является: {value!r}"
+        )
+    return value
 
 
 class ArtifactEvidence(ArtifactChild):
@@ -25,6 +43,8 @@ class ArtifactEvidence(ArtifactChild):
     ref: str
     lines: str
 
+    _validate_ref = field_validator("ref")(_require_substantive_ref)
+
     @field_validator("lines")
     @classmethod
     def _validate_lines_format(cls, value: str) -> str:
@@ -32,6 +52,8 @@ class ArtifactEvidence(ArtifactChild):
         if match is None:
             raise ValueError(f'lines обязан быть в формате "N" или "N-M": {value!r}')
         start, end = match.group(1), match.group(2)
+        if int(start) < 1:
+            raise ValueError(f"lines: строки нумеруются с единицы: {value!r}")
         if end is not None and int(end) < int(start):
             raise ValueError(f"lines: конец диапазона меньше начала: {value!r}")
         return value
@@ -47,6 +69,8 @@ class GateEvidence(ArtifactChild):
     kind: Literal["gate"]
     ref: str
 
+    _validate_ref = field_validator("ref")(_require_substantive_ref)
+
 
 EvidenceRef = Annotated[ArtifactEvidence | GateEvidence, Field(discriminator="kind")]
 
@@ -56,7 +80,10 @@ class ChecklistItem(ArtifactChild):
 
     `evidence` непуст независимо от статуса (V2, §5.2): pass и
     not_applicable без указания, что именно проверено или почему
-    неприменимо, — голословны. Кросс-артефактные правила V1, V3–V8
+    неприменимо, — голословны. Непустота здесь двойная: длина списка
+    (`min_length=1`) И содержательность каждой ссылки (валидаторы
+    `EvidenceRef`) — первого без второго хватало ровно на то, чтобы
+    голословный approve выглядел обоснованным. Кросс-артефактные правила V1, V3–V8
     (покрытие набора id, согласованность с issues) — вне схемной
     валидации, живут в слое протокольной валидации review.json.
     """
