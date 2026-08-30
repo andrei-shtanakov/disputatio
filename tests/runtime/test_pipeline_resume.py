@@ -448,6 +448,39 @@ def test_corrupted_anchor_record_does_not_disable_the_p9_check(tmp_path: Path) -
         stand.rebuild().resume.resume(SLUG)
 
 
+def test_sealed_anchor_tail_does_not_lift_the_p9_refusal(tmp_path: Path) -> None:
+    """Усечение оборванного хвоста не открывает обход отказа P9 (A3 × A5).
+
+    Предыдущий процесс убит посреди записи анкера; следующий ход пишет свой
+    `pre_turn` — и ровно здесь недописанные байты уходят из файла. Инвариант
+    A5 держится именно этой записью: сотри её вместе с хвостом, и журнал
+    читался бы как «незавершённого хода не было», то есть resume пропустил
+    бы сверку.
+
+    Причина отказа утверждается поимённо: «упало» не отличает подмену
+    артефакта от испорченного снапшота, а prefix-property журналов, чьи
+    записи снапшот несёт, обязана остаться сошедшейся — усечение хвоста
+    анкера их байтов не касается.
+    """
+    stand = build_stand(tmp_path, parked_pair())
+    start(stand)
+    with stand.anchor().path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "pre_tu')
+    _seed_pre_turn(stand, "pair-r1")
+    review = round_dir(stand.artifact_root("pair-r1"), 1) / "review.json"
+    review.write_text('{"verdict": "approve"}', encoding="utf-8")
+    calls_before = len(stand.driver.calls)
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        stand.resume.resume(SLUG)
+
+    assert "review.json: содержимое изменилось" in str(excinfo.value)
+    assert "журнал усечён" not in str(excinfo.value)
+    assert len(stand.driver.calls) == calls_before, "resume продолжил пайплайн"
+    with pytest.raises(ControlPlaneTampered):
+        stand.rebuild().resume.resume(SLUG)
+
+
 def test_resume_without_the_anchor_file_refuses(tmp_path: Path) -> None:
     """Файла анкера нет — отказ с требованием указать `--config`, не пропуск."""
     stand = build_stand(tmp_path, parked_pair())

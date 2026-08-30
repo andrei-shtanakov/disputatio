@@ -78,6 +78,17 @@ class AnchorRecord(ArtifactChild):
         return (self.kind, self.session_id, self.round, self.operation_id)
 
 
+def _decode(line: str) -> AnchorRecord:
+    """Разбирает строку журнала; негодная — `ValueError` (`json` или модель).
+
+    Один разбор на оба берега: читатель решает по нему, доверять ли строке, а
+    `_seal_tail` — стирать ли хвост перед дописыванием. Два разных разбора
+    означали бы два ответа на один вопрос, и хвост, годный для чтения, мог бы
+    оказаться негодным для записи.
+    """
+    return AnchorRecord.model_validate(json.loads(line))
+
+
 def workspace_fingerprint(workspace_root: Path) -> str:
     """Короткий sha256 канонического пути рабочего корня (P9).
 
@@ -174,15 +185,53 @@ class IntegrityAnchor:
         после краха даёт ту же строку, а не вторую. Запись о ходе, который не
         начался, сверку не ломает — она описывает состояние, которое никто не
         менял.
+
+        Перед дописыванием журнал приводится к границе строки (`_seal_tail`):
+        терпимость чтения к оборванному хвосту иначе не пережила бы первую же
+        запись — `O_APPEND` положил бы новый JSON вплотную к недописанным
+        байтам, и восстановимый крах превратился бы в `AnchorCorrupted`
+        навсегда.
         """
         if any(existing.key == record.key for existing in self._read()):
             return
 
-        line = record.model_dump_json() + "\n"
+        line = self._seal_tail() + record.model_dump_json() + "\n"
         with self._path.open("ab") as handle:
             handle.write(line.encode("utf-8"))
             handle.flush()
             os.fsync(handle.fileno())
+
+    def _seal_tail(self) -> str:
+        """Готовит конец журнала к дописыванию; отдаёт недостающий разделитель.
+
+        Файл без завершающего `\\n` кончается ровно на том, что успел
+        записать убитый процесс, и различие здесь то же, что и при чтении, —
+        только ответы зеркальные. **Годная запись без разделителя** дописана
+        целиком: терять её нельзя (журнал из одной `turn_completed` читается
+        как «незавершённого хода не было», то есть отменяет сверку P9), и
+        недостающий байт уезжает вместе со следующей строкой — одним
+        `write`, без промежуточного состояния. **Негодный хвост** — тот
+        самый след краха внутри `_append`, который чтение и пропускает;
+        байты усекаются, чтобы пропуск остался правдой и после записи.
+
+        Усечение доверенных байтов не касается: режется ровно то, что
+        читатель уже объявил не относящимся к истории. Prefix-property P9
+        (§4.2) журнал анкера не сторожит и сторожить не может — он лежит вне
+        рабочего корня (`validate_anchor_path`), а под сверкой префикса
+        ходят только пути внутри него.
+        """
+        raw = self._path.read_bytes()
+        if not raw or raw.endswith(b"\n"):
+            return ""
+        tail_start = raw.rfind(b"\n") + 1
+        try:
+            _decode(raw[tail_start:].decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            with self._path.open("r+b") as handle:
+                handle.truncate(tail_start)
+                os.fsync(handle.fileno())
+            return ""
+        return "\n"
 
     def _read(self) -> list[AnchorRecord]:
         """Все записи журнала; терпим ровно один случай — оборванный хвост.
@@ -191,7 +240,8 @@ class IntegrityAnchor:
         завершающего `\\n` означает крах во время `_append`, то есть ход, о
         котором снапшот не дописан. Строки перед ней — по-прежнему
         доверенные, и `FileNotFoundError` наружу не гасится (см.
-        `last_record`).
+        `last_record`). Пропущенные байты уходят из файла при следующей
+        записи (`_seal_tail`) — иначе терпимость жила бы ровно до неё.
 
         Всякая ДРУГАЯ нечитаемая строка — `AnchorCorrupted`, и это
         обязательно. Пропуск испорченной полной записи выглядел бы для
@@ -210,7 +260,7 @@ class IntegrityAnchor:
         records: list[AnchorRecord] = []
         for index, line in enumerate(lines):
             try:
-                records.append(AnchorRecord.model_validate(json.loads(line)))
+                records.append(_decode(line))
             except ValueError as exc:
                 if index == truncated_tail:
                     break

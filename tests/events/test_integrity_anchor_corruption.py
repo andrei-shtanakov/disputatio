@@ -137,6 +137,66 @@ def test_truncated_tail_without_newline_is_still_tolerated(tmp_path: Path) -> No
     assert anchor.path.read_text(encoding="utf-8").startswith(whole)
 
 
+def test_appending_after_a_truncated_tail_keeps_the_journal_readable(
+    tmp_path: Path,
+) -> None:
+    """Терпимость к хвосту обязана переживать СЛЕДУЮЩУЮ запись.
+
+    Читатель признаёт оборванный хвост допустимым, но байты его остаются в
+    файле, и `_append` в режиме `ab` дописывал новую запись прямо к
+    незаконченным — склейка давала одну невалидную, теперь уже завершённую
+    `\\n` строку, то есть `AnchorCorrupted` навсегда. Восстановимый по
+    построению crash-retry переставал быть восстановимым при первой же
+    попытке продолжить, а это ровно та последовательность, которой ходит
+    `PipelineIntegrityPolicy.before_author_turn`: `last_record()`, затем
+    `append_pre_turn()`.
+
+    Утверждается связка, а не состояние: чтение ПОСЛЕ дописывания.
+    """
+    anchor = _anchor(tmp_path)
+    anchor.append_pre_turn(_snapshot("turn-1"))
+    anchor.append_completion(_snapshot("turn-1"))
+    trusted = anchor.path.read_text(encoding="utf-8")
+    with anchor.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "pre_tu')
+
+    assert anchor.last_record() is not None
+    anchor.append_pre_turn(_snapshot("turn-2"))
+
+    record = anchor.last_record()
+    assert record is not None
+    assert (record.kind, record.operation_id) == ("pre_turn", "turn-2")
+    raw = anchor.path.read_text(encoding="utf-8")
+    # Доверенный префикс не тронут — усечён ровно недописанный хвост.
+    assert raw.startswith(trusted)
+    assert len(raw.splitlines()) == 3
+
+
+def test_a_record_that_lost_only_its_newline_survives_the_next_append(
+    tmp_path: Path,
+) -> None:
+    """Целая последняя запись без `\\n` — запись, а не хвост на выброс.
+
+    Крах между `write` строки и её завершающим байтом оставляет годную
+    запись без разделителя. Усечь её значило бы стереть `pre_turn`, которым
+    держится fail-closed: журнал из одной `turn_completed` читается как
+    «незавершённого хода не было», и resume пропускает сверку P9 (§8.1
+    шаг 0) — тот самый обход, от которого A3 и A5 закрываются.
+    """
+    anchor = _anchor(tmp_path)
+    anchor.append_pre_turn(_snapshot("turn-1"))
+    anchor.path.write_text(
+        anchor.path.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8"
+    )
+
+    anchor.append_completion(_snapshot("turn-1"))
+
+    lines = anchor.path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert "pre_turn" in lines[0]
+    assert anchor.last_record() is not None
+
+
 def test_empty_journal_is_still_none(tmp_path: Path) -> None:
     """Не-вакуумность: пустой журнал — по-прежнему `None`, а не ошибка.
 
