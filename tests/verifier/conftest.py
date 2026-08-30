@@ -46,15 +46,19 @@ def _git_env() -> dict[str, str]:
     return {**env, **_HERMETIC_GIT_ENV}
 
 
-def _git(workdir: Path, *args: str) -> None:
+def _git(workdir: Path, *args: str) -> str:
     """Запускает `git *args` в `workdir`; ненулевой код возврата — ошибка.
+
+    Возвращает stdout: тесты, проверяющие разбор патча, обязаны работать на
+    НАСТОЯЩЕМ выводе git'а, а не на его пересказе строковым литералом —
+    именно пересказ и оставил бинарные формы вне поля зрения (A1).
 
     Окружение герметично (`_git_env`), а сбой пересобирается в
     `RuntimeError` с stderr: `CalledProcessError.__str__` печатает только
     код возврата, и причина падения фикстуры иначе не видна в отчёте.
     """
     try:
-        subprocess.run(
+        completed = subprocess.run(
             ["git", *args],
             cwd=workdir,
             check=True,
@@ -67,6 +71,7 @@ def _git(workdir: Path, *args: str) -> None:
             f"git {' '.join(args)} упал с кодом {exc.returncode}: "
             f"{(exc.stderr or exc.stdout or '').strip()}"
         ) from exc
+    return completed.stdout
 
 
 @pytest.fixture
@@ -93,6 +98,17 @@ def tmp_git_repo(tmp_path: Path) -> Path:
     _git(tmp_path, "add", ".gitignore", "tracked.txt")
     _git(tmp_path, "commit", "--quiet", "-m", "init")
     return tmp_path
+
+
+@pytest.fixture
+def git_run() -> Callable[..., str]:
+    """`git *args` в указанном репозитории → stdout, тем же герметичным окружением.
+
+    Нужна тестам, которым важна форма вывода самого git'а (патч с бинарным
+    файлом, переименованием, сменой режима): выдуманная строка патча
+    проверяет разбор того, что тест сам же и придумал.
+    """
+    return _git
 
 
 @pytest.fixture

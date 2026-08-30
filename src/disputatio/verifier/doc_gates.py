@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from disputatio.contracts.verification import GateResult, GateStatus
@@ -56,6 +57,7 @@ CODE_ESCAPE = "escape"
 CODE_WARNING = "warning"
 CODE_LINE_DRIFT = "line_drift"
 CODE_SCOPE_ESCAPE = "scope_escape"
+CODE_SCOPE_UNPARSED = "scope_unparsed"
 CODE_UNRESOLVED_REF = "unresolved_ref"
 
 #: Коды, не роняющие раунд: находка записана, но статус остаётся `pass`.
@@ -250,6 +252,7 @@ _DIFF_PATH_PATTERNS = (
     _RENAME_TO_RE,
 )
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+_DIFF_GIT_PREFIX = "diff --git "
 
 
 def _iter_file_metadata_lines(patch: str) -> Iterator[tuple[int, str]]:
@@ -298,6 +301,73 @@ def _iter_file_metadata_lines(patch: str) -> Iterator[tuple[int, str]]:
         yield lineno, raw_line
 
 
+@dataclass(frozen=True, slots=True)
+class _FileSection:
+    """Секция одного файла в патче: строка `diff --git` и её метаданные.
+
+    `header_rest` — хвост строки `diff --git ` (то есть `a/OLD b/NEW`) или
+    `None` у преамбулы: строк до первой `diff --git` в выводе git'а не
+    бывает, но патч приходит из вывода агента, а не из доказательства.
+    """
+
+    header_line: int
+    header_rest: str | None
+    lines: tuple[tuple[int, str], ...]
+
+
+def _iter_file_sections(patch: str) -> Iterator[_FileSection]:
+    """Метаданные патча, разложенные по файлам границей `diff --git`.
+
+    Секция — единица учёта `doc-scope`: путь, названный текстовыми
+    заголовками ОДНОГО файла, ничего не говорит о соседнем. Разбор плоским
+    списком строк этого различия не знал и считал непустой список путей по
+    всему патчу достаточным — то есть правка разрешённого документа
+    прикрывала соседнюю секцию, у которой заголовков нет вовсе.
+    """
+    header_line = 0
+    header_rest: str | None = None
+    body: list[tuple[int, str]] = []
+    for lineno, raw_line in _iter_file_metadata_lines(patch):
+        if not raw_line.startswith(_DIFF_GIT_PREFIX):
+            body.append((lineno, raw_line))
+            continue
+        if header_rest is not None or body:
+            yield _FileSection(header_line, header_rest, tuple(body))
+        header_line = lineno
+        header_rest = raw_line[len(_DIFF_GIT_PREFIX) :]
+        body = []
+    if header_rest is not None or body:
+        yield _FileSection(header_line, header_rest, tuple(body))
+
+
+def _paths_from_diff_git(rest: str) -> tuple[str, ...] | None:
+    """Пути из `diff --git a/OLD b/NEW`; `None` — форма неоднозначна.
+
+    Разбирается только как **запасной** источник: у секции без текстовых
+    заголовков (бинарное изменение, смена режима, создание пустого файла)
+    другого источника пути нет, а молчание о такой секции — ровно тот
+    fail-open, ради которого функция написана. Пробел-разделитель в общем
+    случае не отличим от пробела в имени файла, поэтому догадка не
+    допускается: совпадение сторон (обычная правка) снимает
+    неоднозначность, единственный кандидат — тоже, а всё прочее возвращает
+    `None`, и вызывающий обязан записать `scope_unparsed`.
+    """
+    if not rest.startswith("a/"):
+        return None
+    pairs = [
+        (rest[2:idx], rest[idx + 3 :])
+        for idx in range(2, len(rest))
+        if rest[idx] == " " and rest.startswith("b/", idx + 1)
+    ]
+    pairs = [(old, new) for old, new in pairs if old and new]
+    identical = [old for old, new in pairs if old == new]
+    if identical:
+        return (identical[0],)
+    if len(pairs) == 1:
+        return pairs[0]
+    return None
+
+
 def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
     """Диф раунда трогает только пути из `allowed` (§6, doc-scope).
 
@@ -327,29 +397,70 @@ def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
     выглядит как заголовок в точности. Разбор без состояния читал бы её
     как метаданные и ронял весь `VerificationReport` на файле, которого
     патч не трогал.
+
+    **Учёт ведётся по секциям файлов, и секция без единого выведенного пути
+    — не успех, а находка** (A1). Текстовых заголовков нет у целого класса
+    изменений: бинарное (`Binary files … differ`, `GIT binary patch`),
+    смена режима, создание пустого файла. Общий счёт путей по всему патчу
+    их прикрывал: правка разрешённой спеки давала непустой список, и
+    соседняя секция с запрещённым `other.bin` проходила границу молча.
+    Путь такой секции выводится из её `diff --git` (`_paths_from_diff_git`);
+    не вывелся — `scope_unparsed` и `fail`, потому что «не разобрал» и «не
+    вышел за границу» — разные утверждения, и гейт вправе делать только
+    второе.
     """
     allowed_set = set(allowed)
     first_seen: dict[str, int] = {}
-    # TODO(A1): непустой патч без единого распознанного пути (бинарное
-    # изменение — `Binary files … differ`, без `---`/`+++`) сейчас даёт
-    # PASS; фикс встраивается сюда — по пустому `first_seen` при непустом
-    # `patch`, метаданные для него уже отделены от содержимого hunk'ов.
-    for lineno, raw_line in _iter_file_metadata_lines(patch):
-        for pattern in _DIFF_PATH_PATTERNS:
-            match = pattern.match(raw_line)
-            if match is None:
-                continue
-            path = match.group("path")
-            if path is not None and path not in first_seen:
-                first_seen[path] = lineno
-            break
-    entries = [
-        _entry(CODE_SCOPE_ESCAPE, path, lineno)
+    findings: list[tuple[int, str, str]] = []
+    for section in _iter_file_sections(patch):
+        named = False
+        for lineno, raw_line in section.lines:
+            for pattern in _DIFF_PATH_PATTERNS:
+                match = pattern.match(raw_line)
+                if match is None:
+                    continue
+                path = match.group("path")
+                if path is not None:
+                    named = True
+                    first_seen.setdefault(path, lineno)
+                break
+        if named or section.header_rest is None:
+            continue
+        derived = _paths_from_diff_git(section.header_rest)
+        if derived is None:
+            findings.append(
+                (section.header_line, CODE_SCOPE_UNPARSED, section.header_rest)
+            )
+            continue
+        for path in derived:
+            first_seen.setdefault(path, section.header_line)
+    findings.extend(
+        (lineno, CODE_SCOPE_ESCAPE, path)
         for path, lineno in first_seen.items()
         if path not in allowed_set
+    )
+    unparsed = _unparsed_patch(patch) if not first_seen and not findings else None
+    if unparsed is not None:
+        findings.append(unparsed)
+    entries = [
+        _entry(code, target, lineno) for lineno, code, target in sorted(findings)
     ]
     status = GateStatus.FAIL if entries else GateStatus.PASS
     return _build_result("doc-scope", "internal:doc-scope", status, entries)
+
+
+def _unparsed_patch(patch: str) -> tuple[int, str, str] | None:
+    """Находка «патч непуст, а разобрать в нём нечего»; `None` — патч пуст.
+
+    Пустой патч — законный результат раунда (`analyze`-правка, не тронувшая
+    файлов), и `PASS` по нему честен. Непустой патч, из которого не выведено
+    ни одного пути и ни одной секции, честным `PASS` не является: гейт не
+    знает, что именно там описано.
+    """
+    for lineno, raw_line in enumerate(patch.splitlines(), start=1):
+        if raw_line.strip():
+            return (lineno, CODE_SCOPE_UNPARSED, raw_line)
+    return None
 
 
 def _slug_set(headings: list[tuple[int, str]]) -> set[str]:
