@@ -166,6 +166,38 @@ def test_load_pipeline_config_rejects_missing_pipeline_table(tmp_path: Path) -> 
         load_pipeline_config(path)
 
 
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        'spec_path = "../outside/spec.md"',
+        'plan_path = "../../etc/passwd"',
+        'spec_path = "spec/../../outside.md"',
+        'plan_path = "/abs/plan.md"',
+        'spec_path = ""',
+    ],
+)
+def test_load_pipeline_config_rejects_paths_outside_the_repository(
+    tmp_path: Path, bad_line: str
+) -> None:
+    """Пара документов обязана лежать в репозитории — отказ на загрузке (§4.2).
+
+    Отказ именно здесь, а не на записи манифеста: путь наружу отвергает и
+    схема, но она срабатывает уже после того, как `run` создал анкер,
+    каталог и снапшоты — тот же дефект, что D1. Загрузка конфига идёт до
+    первой мутации, и `ConfigError` называет файл, который надо править.
+    """
+    table = _MINIMAL_PIPELINE_TABLE.replace(
+        'spec_path = "docs/specs/2026-08-28-foo-design.md"'
+        if bad_line.startswith("spec_path")
+        else 'plan_path = "docs/plans/2026-08-28-foo-plan.md"',
+        bad_line,
+    )
+    path = _write_config(tmp_path, table)
+
+    with pytest.raises(ConfigError):
+        load_pipeline_config(path)
+
+
 def test_load_pipeline_config_rejects_missing_spec_path(tmp_path: Path) -> None:
     """Отсутствующий обязательный ключ — `ConfigError`, не `KeyError`."""
     path = _write_config(tmp_path, '[pipeline]\nplan_path = "docs/plan.md"\n')

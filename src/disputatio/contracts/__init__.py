@@ -43,6 +43,7 @@ from disputatio.contracts.pipeline import (
     SessionRecord,
     Transition,
     TransitionReason,
+    validate_relative_path,
 )
 from disputatio.contracts.ports import (
     AgentAdapter,
@@ -180,5 +181,6 @@ __all__ = [
     "degrade_unevidenced_issues",
     "parse_proposal",
     "validate_doc_review",
+    "validate_relative_path",
     "validate_review",
 ]

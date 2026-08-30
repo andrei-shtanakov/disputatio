@@ -13,6 +13,7 @@ from disputatio.verifier.doc_gates import (
     gate_doc_links,
     gate_doc_paths,
     gate_doc_scope,
+    resolve_inside,
 )
 from disputatio.verifier.doc_verifier import BASELINE_GATE_NAMES, DocVerifier
 from disputatio.verifier.runner_impl import VerifierRunner
@@ -27,4 +28,5 @@ __all__ = [
     "gate_doc_links",
     "gate_doc_paths",
     "gate_doc_scope",
+    "resolve_inside",
 ]

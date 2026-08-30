@@ -21,7 +21,7 @@
 import re
 from datetime import datetime
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
@@ -34,16 +34,48 @@ SCHEMA_PIPELINE_V1: Final = "disputatio/pipeline/v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _reject_absolute_path(value: str) -> str:
-    # Манифест несёт только пути относительно корня репозитория или
-    # каталога пайплайна (§4.2) — расположение анкера машинно-зависимо
-    # именно потому, что живёт в конфиге, а не здесь (§2 P9).
+def validate_relative_path(value: str) -> str:
+    """Путь манифеста: внутрь корня, POSIX-разделителем, в каноническом виде.
+
+    «Относительный» — не то же самое, что «внутри». `../outside/spec.md`
+    относителен и синтаксически безупречен, но склеенный с `workspace_root`
+    выводит читателя за пределы репозитория, и проверка одного
+    `is_absolute()` пропускала его молча. Поэтому путь разбирается по
+    сегментам, и отвергается всё, что не является спуском от корня вниз:
+
+    * пустой (и пробельный) путь и пустой сегмент — `spec//design.md`,
+      `spec/` — вид, который не описывает файл;
+    * `..` в любом месте — и уводящий наружу, и возвращающийся внутрь:
+      `spec/../design.md` равен `design.md` только пока `spec` не
+      символическая ссылка, а лексической правды тут недостаточно;
+    * `.` — не выход, но и не канонический вид: `Path` его снимает, значит
+      в манифест он попасть может только мимо обычного пути записи;
+    * разделитель и корень другой ОС — `spec\\design.md`, `C:/repo/spec.md`,
+      `C:spec.md`, UNC-форма: §4.2 запрещает машинно-зависимые значения, а
+      на POSIX `C:spec.md` — это ещё и легальное имя файла, то есть тихая
+      подмена смысла при переносе манифеста.
+
+    Symlink здесь не виден по определению — путь проверяется как текст, без
+    файловой системы. Containment после раскрытия ссылок проверяет тот, кто
+    резолвит путь в файл (`verifier.doc_gates.resolve_inside` и его
+    вызывающие); схема закрывает лексическую половину, и обе нужны.
+    """
+    if not value.strip():
+        raise ValueError(f"path обязан быть непустым: {value!r}")
+    if "\\" in value or PureWindowsPath(value).drive:
+        raise ValueError(f"path обязан быть POSIX-путём без корня другой ОС: {value!r}")
     if PurePosixPath(value).is_absolute():
         raise ValueError(f"path обязан быть относительным: {value!r}")
+    for segment in value.split("/"):
+        if not segment.strip() or segment in {".", ".."}:
+            raise ValueError(
+                f"path обязан вести внутрь корня в каноническом виде "
+                f"(сегмент {segment!r} недопустим): {value!r}"
+            )
     return value
 
 
-RelativePath = Annotated[str, AfterValidator(_reject_absolute_path)]
+RelativePath = Annotated[str, AfterValidator(validate_relative_path)]
 
 
 class PipelinePhase(StrEnum):

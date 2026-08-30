@@ -342,6 +342,57 @@ def test_relative_paths_only_documents() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "../outside/spec.md",  # выход за корень в лоб
+        "spec/../../outside.md",  # выход после нормализации
+        "spec/../design.md",  # внутри, но неоднозначно: `spec` может быть symlink
+        "..",
+        ".",
+        "",
+        "   ",
+        "spec//design.md",  # пустой сегмент — не канонический вид
+        "spec/",  # каталог, а не файл
+        "./spec/design.md",
+        "C:/repo/spec.md",  # абсолютный в Windows-форме
+        "C:spec.md",  # относительный диску, а не корню репозитория
+        "\\\\server\\share\\spec.md",
+        "spec\\design.md",  # разделитель другой ОС — машинно-зависимый вид
+    ],
+)
+def test_paths_leaving_the_root_or_non_canonical_rejected(bad: str) -> None:
+    """Манифест несёт пути ВНУТРЬ корня и в каноническом виде (§4.2).
+
+    `is_absolute()` ловил только первую форму из списка: `spec_path=
+    "../outside/spec.md"` проходил как относительный, а runner склеивал его
+    с `workspace_root`, читал и хешировал файл за пределами репозитория.
+    """
+    with pytest.raises(ValidationError):
+        DocumentPaths.model_validate({"spec_path": bad, "plan_path": "spec/tasks.md"})
+
+
+@pytest.mark.parametrize(
+    "good", ["spec.md", "spec/design.md", "docs/plans/2026-08-30-план.md", "a/b/c/d.md"]
+)
+def test_ordinary_relative_paths_accepted(good: str) -> None:
+    """Обычный путь внутрь репозитория проверку проходит — она не глухая."""
+    assert (
+        DocumentPaths.model_validate(
+            {"spec_path": good, "plan_path": "spec/tasks.md"}
+        ).spec_path
+        == good
+    )
+
+
+def test_escaping_path_rejected_everywhere_it_appears() -> None:
+    """Правило действует на всех полях-путях манифеста, не только на паре."""
+    with pytest.raises(ValidationError):
+        FileRef.model_validate({"path": "../outside/task.md", "sha256": _SHA})
+    with pytest.raises(ValidationError):
+        SessionRecord.model_validate(_session_record(path="../outside/sessions/1"))
+
+
 def test_relative_paths_only_pipeline_state() -> None:
     """Абсолютный путь где-либо в манифесте отклоняется на уровне поля."""
     payload = _pipeline_state_payload()

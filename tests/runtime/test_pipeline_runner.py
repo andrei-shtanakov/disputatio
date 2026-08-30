@@ -82,6 +82,7 @@ from disputatio.events import (
 from disputatio.events.paths import SESSION_DIR_NAME
 from disputatio.events.pipeline_paths import pipeline_dir, session_artifact_root
 from disputatio.runtime import (
+    ConfigError,
     DirtyWorkingTree,
     PipelineAlreadyExists,
     PipelineConfig,
@@ -714,6 +715,34 @@ def test_entry_hashes_mark_absent_plan(tmp_path: Path) -> None:
     entry = state.spec_sessions[0].entry_hashes
     assert entry[PLAN_PATH] == "absent"
     assert entry[SPEC_PATH] != "absent"
+
+
+def test_entry_hashes_refuse_document_resolving_outside_the_repository(
+    tmp_path: Path,
+) -> None:
+    """Документ, уводящий symlink'ом наружу, не читается и не хешируется (§6).
+
+    Вторая половина D2. Лексическую форму пути закрывает схема (`..`,
+    абсолютные, неканонические), но symlink в тексте пути не виден:
+    `docs/spec.md` безупречен, а `docs` ведёт за пределы репозитория.
+    Прежде runner молча читал и хешировал чужой файл — то есть заносил в
+    манифест вход, которого в репозитории нет.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "docs").symlink_to(outside, target_is_directory=True)
+    secret = "секрет за пределами репозитория\n"
+    harness = build_harness(tmp_path, converged_pair())
+    (outside / "spec.md").write_text(secret, encoding="utf-8")
+
+    with pytest.raises(ConfigError):
+        harness.runner.run(SLUG, "полировать пару")
+
+    manifest = pipeline_dir(harness.workspace, SLUG) / "pipeline.json"
+    leaked = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    assert not manifest.is_file() or leaked not in manifest.read_text(encoding="utf-8")
 
 
 def test_session_artifact_roots_are_separate(tmp_path: Path) -> None:

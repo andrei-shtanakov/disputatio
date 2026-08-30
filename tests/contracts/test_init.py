@@ -102,6 +102,9 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "AppendOnlyEntry",
         "IntegritySnapshot",
         "PipelineState",
+        # Правило путей манифеста нужно и снаружи схемы: конфиг проверяет им
+        # пару документов ДО создания durable-состояния (§4.2, D2).
+        "validate_relative_path",
     ),
 }
 

@@ -29,7 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from disputatio.contracts import CHECKLIST_BY_CONTOUR, CHECKLIST_TEXT
+from disputatio.contracts import (
+    CHECKLIST_BY_CONTOUR,
+    CHECKLIST_TEXT,
+    validate_relative_path,
+)
 from disputatio.runtime import _toml
 from disputatio.runtime.config import AgentConfig, LimitsConfig
 from disputatio.runtime.errors import (
@@ -363,11 +367,24 @@ def _check_pipeline_dir_absent(workspace_root: Path, slug: str) -> None:
 
 
 def _from_pipeline_table(table: Mapping[str, Any]) -> PipelineConfig:
-    """Собирает `PipelineConfig` из разобранной таблицы `[pipeline]`."""
+    """Собирает `PipelineConfig` из разобранной таблицы `[pipeline]`.
+
+    Пара документов проверяется тем же `validate_relative_path`, каким
+    манифест проверяет свои пути (`contracts.pipeline`), — одна
+    формулировка правила на оба слоя. Проверка здесь не дублирующая, а
+    ранняя: без неё `spec_path = "../outside/spec.md"` доживал бы до записи
+    манифеста, то есть до момента, когда `run` уже создал анкер, каталог
+    пайплайна и снапшоты, — тот же дефект, что D1. `ValueError` отсюда
+    `load_pipeline_config` переводит в `ConfigError` с именем файла.
+    """
     where = "pipeline"
     kwargs: dict[str, Any] = {
-        "spec_path": Path(_toml.text(table, "spec_path", where=where)),
-        "plan_path": Path(_toml.text(table, "plan_path", where=where)),
+        "spec_path": Path(
+            validate_relative_path(_toml.text(table, "spec_path", where=where))
+        ),
+        "plan_path": Path(
+            validate_relative_path(_toml.text(table, "plan_path", where=where))
+        ),
     }
     if "max_architectural_returns" in table:
         kwargs["max_architectural_returns"] = _toml.integer(

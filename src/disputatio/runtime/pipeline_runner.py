@@ -92,7 +92,7 @@ from disputatio.events import (
     PipelineEventType,
     atomic_write,
 )
-from disputatio.runtime.errors import PipelineAlreadyExists
+from disputatio.runtime.errors import ConfigError, PipelineAlreadyExists
 from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
 from disputatio.runtime.history import load_decision, load_review
 from disputatio.runtime.layout import REVIEW_NAME, round_dir
@@ -102,6 +102,7 @@ from disputatio.runtime.pipeline_config import (
     check_run_preconditions,
 )
 from disputatio.runtime.pipeline_export import ExportFn
+from disputatio.verifier import resolve_inside
 
 #: Имена контуров (§2): spec — полировка спеки, pair — перепроверка пары.
 CONTOUR_SPEC: Final = "spec"
@@ -1233,13 +1234,39 @@ class PipelineRunner:
         """
         hashes: dict[str, str] = {}
         for relative in (state.documents.spec_path, state.documents.plan_path):
-            path = self._workspace_root / relative
+            path = self._resolve_document(relative)
             hashes[relative] = (
                 hashlib.sha256(path.read_bytes()).hexdigest()
                 if path.is_file()
                 else "absent"
             )
         return hashes
+
+    def _resolve_document(self, relative: str) -> Path:
+        """Путь документа внутри рабочего дерева — с проверкой containment (§6).
+
+        Лексическую половину закрывает схема: `..`, абсолютная и
+        неканоническая формы в манифест не попадают
+        (`contracts.validate_relative_path`). Остаётся то, чего в тексте
+        пути не видно, — символическая ссылка, ведущая наружу: `docs/spec.md`
+        безупречен, а `docs` может указывать куда угодно. Резолвер тот же,
+        которым doc-гейты проверяют containment ссылок
+        (`verifier.doc_gates.resolve_inside`): containment — одно правило
+        репозитория, и второй его реализации здесь заводить нечем.
+
+        Отказ — `ConfigError`, как и у `validate_anchor_path` на нарушении
+        containment анкера: диагноз человеку один и тот же — путь ведёт не
+        туда, куда ему положено, и правится он снаружи оркестратора.
+        """
+        resolved = resolve_inside(self._workspace_root, relative)
+        if resolved is None:
+            raise ConfigError(
+                f"документ {relative} резолвится за пределы репозитория "
+                f"({self._workspace_root}) — вероятно, symlink в пути ведёт "
+                "наружу; пайплайн ведёт пару документов внутри репозитория и "
+                "не читает файлы за его границей (§6)"
+            )
+        return resolved
 
     def _carried_findings(
         self, state: PipelineState, args: Mapping[str, Any]
