@@ -226,6 +226,12 @@ def test_write_result_failure_at_rename_leaves_previous_export(
     перезаписи, потому что пережить её и остаться правдой он не может (см.
     `test_interrupted_re_export_leaves_no_stale_manifest`). Утверждение
     теста — про пофайловую атомарность содержимого, а не про marker.
+
+    Имя теста историческое: «previous export» здесь — содержимое отдельного
+    файла, а не набор целиком. Правило набора (SPEC-002 §8.2): уже
+    экспортированный отдельный файл остаётся целым; при прерванном повторном
+    экспорте commit marker удаляется; набор считается невалидным до
+    успешного нового marker.
     """
     from disputatio.events.export import write_result
 
