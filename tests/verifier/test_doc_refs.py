@@ -342,6 +342,83 @@ def test_wrapped_bullet_across_lines_captures_every_backtick_path() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Экранирование: обратный слеш оставляет форму обычным текстом
+# ---------------------------------------------------------------------------
+
+
+def test_escaped_reference_link_is_plain_text() -> None:
+    r"""`\[plan][missing]` — литерал, а не битая ссылка (§6).
+
+    Ложная запись `unresolved_ref` уходит в детерминированный отчёт
+    `doc-links`, то есть прямо к doc-ревьюеру: гейт при этом остаётся
+    `PASS`, поэтому шум ничем не гасится и выглядит находкой.
+    """
+    doc_refs = _import_doc_refs()
+
+    parsed = doc_refs.parse_document("Форма записывается так: \\[plan][missing].\n")
+
+    assert parsed.refs == []
+    assert parsed.unresolved == []
+
+
+def test_escaped_inline_link_is_plain_text() -> None:
+    r"""`\[текст](docs/missing.md)` — тоже литерал: дыра была общей для форм."""
+    doc_refs = _import_doc_refs()
+
+    refs = doc_refs.parse_doc_refs("Пишется \\[текст](docs/missing.md) вот так.\n")
+
+    assert refs == []
+
+
+def test_escaped_autolink_is_plain_text() -> None:
+    r"""`\<docs/missing.md>` — литерал, а не автоссылка."""
+    doc_refs = _import_doc_refs()
+
+    refs = doc_refs.parse_doc_refs("Автоссылка пишется \\<docs/missing.md>.\n")
+
+    assert refs == []
+
+
+def test_escaped_code_span_is_plain_text() -> None:
+    r"""Экранированный бэктик спана не открывает — пути внутри нет.
+
+    Экранирован ровно ОДИН бэктик, открывающий: пара `` \`x` `` — та форма,
+    на которой видно правило. Экранируй тест оба, и он проходил бы даром —
+    хвостовой слеш попадает в содержимое и ломает шаблон пути сам по себе.
+
+    Цена ошибки здесь выше, чем у reference-формы: несуществующий путь в
+    таком «спане» — не `warning`, а `fail` гейта `doc-paths`.
+    """
+    doc_refs = _import_doc_refs()
+
+    refs = doc_refs.parse_doc_refs("Спан пишется \\`docs/missing.md` вот так.\n")
+
+    assert refs == []
+
+
+def test_escaped_backtick_in_a_declaration_bullet_is_plain_text() -> None:
+    r"""Правило одно на все формы, включая пути деклараций `Modify:`."""
+    doc_refs = _import_doc_refs()
+
+    refs = doc_refs.parse_doc_refs("- Modify: \\`docs/missing.md\\`\n")
+
+    assert refs == []
+
+
+def test_escaped_backslash_leaves_the_link_alone() -> None:
+    r"""`\\[текст](docs/plan.md)` — экранирован слеш, а не скобка.
+
+    Правило — чётность: считается не «есть ли слеш перед формой», а сколько
+    их. Иначе литерал `\` перед настоящей ссылкой скрывал бы её от гейтов.
+    """
+    doc_refs = _import_doc_refs()
+
+    refs = doc_refs.parse_doc_refs("Слеш \\\\[текст](docs/plan.md) и ссылка.\n")
+
+    assert [(ref.kind, ref.target) for ref in refs] == [("md_link", "docs/plan.md")]
+
+
+# ---------------------------------------------------------------------------
 # github_slug — нормализация якорей
 # ---------------------------------------------------------------------------
 

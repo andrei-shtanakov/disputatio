@@ -1,4 +1,4 @@
-"""Парсер ссылок в документах и нормализация якорей (SPEC-002 §6).
+r"""Парсер ссылок в документах и нормализация якорей (SPEC-002 §6).
 
 `parse_doc_refs` — чистая функция без файлового I/O: разбирает текст
 документа на `DocRef` по замкнутому набору однозначно распознаваемых форм.
@@ -36,6 +36,19 @@
   `declared_planned` (объявление намерения, см. `doc_gates.gate_doc_paths`).
 
 Всё прочее не порождает `DocRef` вовсе.
+
+**Экранирование снимает форму целиком, и правило одно на все формы.**
+Открывающий символ, перед которым стоит НЕЧЁТНОЕ число обратных слешей
+(``\[plan][missing]``, ``\[текст](t.md)``, ``\<t.md>``, ``\`t.md` ``,
+и он же в путях деклараций), — обычный текст: документ показывает, КАК
+форма пишется, а не пользуется ею. Считается чётность, потому что ``\\``
+экранирует сам слеш, и ссылка после него остаётся ссылкой. Разбирать
+экранирование в одной форме и не разбирать в остальных нельзя: цена
+одинаковых промахов разная лишь по громкости — у reference-формы это
+ложный `unresolved_ref` (`warning` в отчёте doc-ревьюеру), у пути в
+inline-code — уже `fail` гейта `doc-paths`. Дальше этой точки парсер за
+markdown не гонится: пересчёта пар бэктиков за экранированным спаном он не
+делает — он распознаватель замкнутого набора форм, а не renderer.
 
 **`DocRef` — не единственный результат разбора.** `parse_document` возвращает
 пару: распознанные ссылки и `unresolved` — reference-ссылки правильной формы
@@ -121,6 +134,22 @@ _PUNCTUATION_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _is_escaped(line: str, start: int) -> bool:
+    r"""Экранирован ли символ в позиции `start` обратными слешами перед ним.
+
+    Считается ЧЁТНОСТЬ, а не наличие: `\[` — экранированная скобка (форма
+    остаётся текстом), `\\[` — экранированный слеш плюс обычная скобка (форма
+    остаётся ссылкой). Проверка «есть ли слеш перед» скрыла бы от гейтов
+    настоящую ссылку, стоящую после литерального `\`.
+    """
+    backslashes = 0
+    index = start - 1
+    while index >= 0 and line[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
 def parse_doc_refs(text: str) -> list[DocRef]:
     """Разбирает `text` на `DocRef` по замкнутому набору форм (см. модуль)."""
     return parse_document(text).refs
@@ -197,6 +226,10 @@ def _mask_inline_code(line: str) -> tuple[str, list[tuple[str, str | None]]]:
     spans: list[tuple[str, str | None]] = []
 
     def _replace(match: re.Match[str]) -> str:
+        if _is_escaped(line, match.start()):
+            # Экранированный бэктик спана не открывает: текст остаётся
+            # текстом — и в маске тоже, иначе формы под ним пропали бы.
+            return match.group(0)
         tail = line[match.end() :]
         quote = _TRAILING_QUOTE_RE.match(tail)
         spans.append((match.group(1), quote.group(1) if quote else None))
@@ -240,9 +273,13 @@ def _match_md_links(
     refs: list[DocRef] = []
     unresolved: list[UnresolvedRef] = []
     for match in _MD_INLINE_LINK_RE.finditer(line):
+        if _is_escaped(line, match.start()):
+            continue
         path, anchor = _split_target_anchor(match.group("target"))
         refs.append(DocRef(kind="md_link", target=path, line=lineno, anchor=anchor))
     for match in _MD_REF_LINK_RE.finditer(line):
+        if _is_escaped(line, match.start()):
+            continue
         written = match.group("ref") or match.group("text")
         raw_target = definitions.get(written.casefold())
         if raw_target is None:
@@ -258,6 +295,8 @@ def _match_md_links(
 def _match_autolinks(line: str, lineno: int) -> list[DocRef]:
     refs: list[DocRef] = []
     for match in _AUTOLINK_RE.finditer(line):
+        if _is_escaped(line, match.start()):
+            continue
         content = match.group(1)
         if _URI_SCHEME_RE.match(content):
             continue  # URI-схема — внешняя ссылка, вне области гейтов
@@ -294,6 +333,8 @@ def _parse_declared_paths(lines: list[str]) -> tuple[list[DocRef], set[int]]:
         for lineno, content in bullet_lines:
             consumed.add(lineno)
             for backtick_match in _BACKTICK_RE.finditer(content):
+                if _is_escaped(content, backtick_match.start()):
+                    continue
                 refs.append(
                     DocRef(kind=kind, target=backtick_match.group(1), line=lineno)
                 )

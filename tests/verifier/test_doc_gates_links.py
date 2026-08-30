@@ -298,6 +298,25 @@ def test_gate_doc_links_warns_on_a_reference_link_without_a_definition(
     assert result.reason == "1 warning"
 
 
+def test_gate_doc_links_says_nothing_about_an_escaped_reference_form(
+    tmp_path: Path,
+) -> None:
+    r"""`\[plan][missing]` — литеральный текст, а не битая ссылка (§6).
+
+    Утверждение про сам отчёт, а не про парсер: `doc-links` остаётся `PASS` и
+    с ложной записью, поэтому проверять статус бессмысленно — шум уходит
+    doc-ревьюеру в детерминированном хвосте, где выглядит находкой гейта.
+    """
+    doc_gates = _import_doc_gates()
+    doc = _write(tmp_path / "spec.md", "Форма пишется так: \\[plan][missing].\n")
+
+    result = doc_gates.gate_doc_links(doc, tmp_path)
+
+    assert result.status is GateStatus.PASS
+    assert _tail_entries(result.tail) == []
+    assert result.reason != "1 warning"
+
+
 def test_gate_doc_paths_stays_silent_about_unresolved_reference_links(
     tmp_path: Path,
 ) -> None:
