@@ -13,6 +13,7 @@
 `_append`, то есть хода, о котором снапшот не дописан.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,79 @@ def test_a_record_that_lost_only_its_newline_survives_the_next_append(
     assert len(lines) == 2
     assert "pre_turn" in lines[0]
     assert anchor.last_record() is not None
+
+
+def test_concurrent_appends_do_not_drop_an_accepted_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Два resume над одним журналом: усечение хвоста не смеет съесть чужую запись.
+
+    Моделируется РЕАЛЬНОЕ чередование, а не два последовательных вызова:
+    писатель A входит в `_append`, снимает байты журнала для решения о
+    хвосте и застревает ровно там; писатель B в этот момент проделывает
+    свой `_append` целиком — усекает тот же хвост и дописывает полную,
+    fsync-нутую запись. Затем A досчитывает по СТАРОМУ снимку и режет файл
+    до смещения хвоста, стирая уже принятую запись B.
+
+    Утверждение — про итог, а не про механизм: `_append`, который вернулся
+    без исключения, обязан остаться на диске. Журнал append-only, и
+    «принят и потерян» — не один из его исходов. Последовательные вызовы
+    этого не видят: снимок каждого писателя согласован сам с собой.
+    """
+    import threading
+
+    anchor = _anchor(tmp_path)
+    anchor.append_pre_turn(_snapshot("turn-1"))
+    anchor.append_completion(_snapshot("turn-1"))
+    trusted = anchor.path.read_text(encoding="utf-8")
+    with anchor.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"kind": "pre_tu')
+
+    entered = threading.Event()
+    released = threading.Event()
+    real_read_bytes = Path.read_bytes
+
+    def _slow_read_bytes(self: Path) -> bytes:
+        raw = real_read_bytes(self)
+        # Тормозится только снимок A и только тот, по которому считается
+        # смещение усечения (`_seal_tail`), — окно TOCTOU целиком.
+        if self == anchor.path and threading.current_thread().name == "writer-a":
+            entered.set()
+            released.wait(5)
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", _slow_read_bytes)
+
+    failures: dict[str, BaseException] = {}
+
+    def _append(name: str, operation_id: str) -> None:
+        try:
+            anchor.append_pre_turn(_snapshot(operation_id))
+        except BaseException as exc:  # noqa: BLE001 — исход писателя, не диагноз
+            failures[name] = exc
+
+    writer_a = threading.Thread(target=_append, args=("A", "turn-2"), name="writer-a")
+    writer_b = threading.Thread(target=_append, args=("B", "turn-3"), name="writer-b")
+    writer_a.start()
+    assert entered.wait(5), "писатель A не дошёл до снимка журнала"
+    writer_b.start()
+    # Под сериализацией B ждёт блокировку и ожидание истекает — это
+    # штатный исход, а не сбой: важно лишь, чтобы без неё B успел записать
+    # и fsync-нуть свою строку до того, как A продолжит.
+    writer_b.join(1)
+    released.set()
+    writer_a.join(5)
+    writer_b.join(5)
+
+    assert not failures, f"писатель отвергнут: {failures!r}"
+    raw = anchor.path.read_text(encoding="utf-8")
+    assert raw.startswith(trusted), "доверенный префикс журнала повреждён"
+    operations = [json.loads(line)["operation_id"] for line in raw.splitlines()]
+    assert "turn-3" in operations, (
+        "принятая запись B исчезла: усечение хвоста в A сработало по "
+        f"снимку, снятому до записи B (журнал: {operations!r})"
+    )
+    assert "turn-2" in operations
 
 
 def test_empty_journal_is_still_none(tmp_path: Path) -> None:

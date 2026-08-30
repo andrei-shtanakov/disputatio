@@ -38,6 +38,7 @@ from pydantic import Field
 
 from disputatio.contracts.base import ArtifactChild
 from disputatio.contracts.pipeline import AppendOnlyEntry, IntegritySnapshot
+from disputatio.events.file_lock import exclusive_lock
 from disputatio.events.pipeline_paths import validate_slug
 
 FINGERPRINT_LENGTH: Final = 16
@@ -174,8 +175,15 @@ class IntegrityAnchor:
         при отсутствии файла и пропускает сверку при пустом журнале, и
         свести оба случая к `None` значило бы дать пайплайну с нестандартным
         `anchor_path` молча пропускать сверку.
+
+        Чтение идёт под той же блокировкой, что и запись: `_seal_tail`
+        укорачивает файл, а `read_text` добирает содержимое не одним
+        системным вызовом — читатель, попавший в это окно, склеил бы хвост
+        старого файла с началом новой строки и объявил бы `AnchorCorrupted`
+        на журнале, с которым всё в порядке.
         """
-        records = self._read()
+        with exclusive_lock(self._path):
+            records = self._read()
         return records[-1] if records else None
 
     def _append(self, record: AnchorRecord) -> None:
@@ -191,15 +199,26 @@ class IntegrityAnchor:
         запись — `O_APPEND` положил бы новый JSON вплотную к недописанным
         байтам, и восстановимый крах превратился бы в `AnchorCorrupted`
         навсегда.
-        """
-        if any(existing.key == record.key for existing in self._read()):
-            return
 
-        line = self._seal_tail() + record.model_dump_json() + "\n"
-        with self._path.open("ab") as handle:
-            handle.write(line.encode("utf-8"))
-            handle.flush()
-            os.fsync(handle.fileno())
+        Чтение, решение о хвосте, усечение и сама запись идут под одной
+        эксклюзивной блокировкой (`events.file_lock`) — иначе это не одна
+        операция. Пока усечения не было, разъехавшиеся писатели теряли разве
+        что дедупликацию (`O_APPEND` чужих байтов не затирает), но усечение
+        режет файл по смещению, посчитанному ДО чужой записи: два `disp
+        pipeline resume` над журналом с оборванным хвостом сняли бы один и
+        тот же снимок, второй дописал бы и fsync-нул полную `pre_turn`, а
+        первый срезал бы её как «хвост». Append-only журнал терял бы
+        подтверждённую запись, и ход остался бы без снапшота P9.
+        """
+        with exclusive_lock(self._path):
+            if any(existing.key == record.key for existing in self._read()):
+                return
+
+            line = self._seal_tail() + record.model_dump_json() + "\n"
+            with self._path.open("ab") as handle:
+                handle.write(line.encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def _seal_tail(self) -> str:
         """Готовит конец журнала к дописыванию; отдаёт недостающий разделитель.
@@ -219,6 +238,11 @@ class IntegrityAnchor:
         (§4.2) журнал анкера не сторожит и сторожить не может — он лежит вне
         рабочего корня (`validate_anchor_path`), а под сверкой префикса
         ходят только пути внутри него.
+
+        **Предусловие: вызывается только из `_append`, под блокировкой.**
+        Снимок `read_bytes` и `truncate` по посчитанному из него смещению —
+        две операции, и без сериализации между ними помещается чужая
+        завершённая запись, которую усечение и срежет.
         """
         raw = self._path.read_bytes()
         if not raw or raw.endswith(b"\n"):
