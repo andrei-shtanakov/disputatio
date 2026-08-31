@@ -43,6 +43,12 @@
 - Коммит после каждой задачи: `feat(contracts): …` / `feat(pipeline): …` по
   пакету задачи; TDD — red-тест до реализации.
 - Русский язык докстрингов и сообщений об ошибках — как в существующем коде.
+- **Меняешь сигнатуру — сначала посчитай вызовы.** Пять из шести дефектов,
+  найденных ревью этой пары, были одного класса: обязательное изменение,
+  чьи существующие call site'ы не попали в область задачи. Перед реализацией
+  каждой задачи прогнать `grep -rn "<имя>(" src tests` и сверить с её списком
+  файлов; расхождение — дефект плана, о нём сообщить, а не молча дописать
+  дефолт, гасящий ошибку.
 
 ---
 
@@ -469,6 +475,10 @@ git commit -m "feat(contracts): вид пайплайна как дискрим�
 - Modify: `src/disputatio/contracts/checklists_catalog.py`
 - Modify: `src/disputatio/contracts/validation.py:160-245`
 - Modify: `src/disputatio/contracts/__init__.py`
+- Modify: `src/disputatio/runtime/steps.py` — единственный боевой вызов
+  `validate_doc_review`
+- Modify: `tests/contracts/test_doc_review_validation.py` — **18 существующих
+  вызовов** `validate_doc_review`; смена сигнатуры роняет их все
 - Test: `tests/contracts/test_checklist_role.py`
 
 **Интерфейсы (потребляет):** ничего из задачи 1.
@@ -631,14 +641,37 @@ ResolvedChecklist`, `contour` расширить до `str`. Заменить д
 - [ ] **Шаг 8: прогнать — проходит, suite зелёный**
 
 Run: `uv run pytest tests/contracts -q && uv run pytest -q`
-Ожидание: PASS. Существующие вызовы `validate_doc_review` в `runtime/steps.py`
-обновить: собрать `ResolvedChecklist` из уже доступного там `spec.checklist`.
+Ожидание: PASS — но только после обновления **всех** существующих вызовов, а их
+19 (`grep -rn "validate_doc_review(" src tests`): один боевой в
+`runtime/steps.py` (собрать `ResolvedChecklist` из доступного там
+`spec.checklist`) и 18 в `tests/contracts/test_doc_review_validation.py`.
+
+Чтобы правка 18 тестов была механической, а не творческой, завести в этом же
+файле хелпер и звать его вместо литералов:
+
+```python
+def _resolved(contour: str) -> ResolvedChecklist:
+    """Разрешённый чеклист встроенного контура — вендоренный состав."""
+    order = CHECKLIST_BY_CONTOUR[contour]
+    return ResolvedChecklist(
+        order=order,
+        texts={item_id: CHECKLIST_TEXT[item_id] for item_id in order},
+        findings_item=FINDINGS_ITEM_BY_CONTOUR[contour],
+    )
+```
+
+**Один из 18 меняет ожидание, а не только вызов.** Тест, утверждающий, что
+`S1: pass` при blocker/major отвергается, для контура `pair` проходил лишь
+потому, что искал литерал `S1` в pair-чеклисте и не находил. Разобраться, какой
+именно это тест, и привести его к объявленному поведению: у `pair` роль пуста,
+V8 бездействует, работу делает V7.
 
 - [ ] **Шаг 9: коммит**
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/contracts/ src/disputatio/runtime/steps.py tests/contracts/
+git add src/disputatio/contracts/ src/disputatio/runtime/steps.py \
+        tests/contracts/
 git commit -m "feat(contracts): V8 привязан к роли findings-item, а не к S1"
 ```
 
@@ -955,6 +988,11 @@ git commit -m "feat(pipeline): две формы [pipeline], fail-closed раз�
 **Файлы:**
 - Modify: `src/disputatio/context/doc_author.py:40-90`
 - Modify: `src/disputatio/context/doc_reviewer.py:60-190`
+- Modify: `src/disputatio/runtime/steps.py` — два боевых вызова сборщиков
+- Modify: `tests/context/test_doc_prompts.py` — **18 существующих вызовов**;
+  смена типа `checklist` роняет их все. Один из них проверяет сигнатуру
+  через `inspect.signature` (`test_doc_prompts.py:130`) — его ожидание
+  придётся обновить вместе с сигнатурой, а не «починить» подгонкой
 - Test: `tests/context/test_doc_prompts_document_kind.py`
 
 **Интерфейсы (потребляет):** `ResolvedChecklist` (задача 2).
@@ -1049,7 +1087,7 @@ Run: `uv run pytest tests/context -q && uv run pytest -q`
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/context/ tests/context/test_doc_prompts_document_kind.py
+git add src/disputatio/context/ src/disputatio/runtime/steps.py tests/context/
 git commit -m "feat(context): промпты контура doc, чеклист приходит разрешённым"
 ```
 
