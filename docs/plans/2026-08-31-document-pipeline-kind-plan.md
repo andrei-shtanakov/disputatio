@@ -29,10 +29,13 @@
 - `core/deciding.py` и `core/machine.py` **не редактируются ни в одной задаче**
   (SPEC-002 V6/§7.1); правка в них = ошибка декомпозиции плана.
 - **Вид `pair` не меняет поведения ни в одной задаче.** Допустимых отличий
-  ровно два, оба в сериализации манифеста и оба объявлены в §4.2: тег схемы
-  `disputatio/pipeline/v1 → v2` и появление `documents.kind = "pair"`. Они
-  приходят парой и порознь невозможны: файл с `kind` под тегом v1 запрещён
-  контрактом, а тег v2 без `kind` не прошёл бы дискриминацию. Любое другое
+  **три**, все в сериализации манифеста и все объявлены в §4.2: тег схемы
+  `disputatio/pipeline/v1 → v2`, появление `documents.kind = "pair"` и пустая
+  коллекция `doc_sessions: []`. Первые два приходят парой и порознь
+  невозможны (файл с `kind` под тегом v1 запрещён контрактом, тег v2 без
+  `kind` не прошёл бы дискриминацию); третье — следствие того, что
+  `default_factory=list` сериализуется наравне с `spec_sessions` и
+  `pair_sessions`, как устроены обе существующие коллекции. Любое другое
   расхождение — регрессия, а не «побочный эффект рефакторинга».
 - Механика чужого вида **не конструируется** (P10). Проверка на ревью: если в
   диффе появилось `if kind == ...` внутри `PipelineRunner` там, где можно было
@@ -520,21 +523,41 @@ Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
 
 Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q && uv run pytest -q`
 Ожидание: PASS. Существующие тесты манифеста продолжают проходить; если
-какой-то сравнивает сериализацию с эталоном — обновить эталон **по обоим
-полям сразу**: `"schema": "disputatio/pipeline/v2"` и `"kind": "pair"`.
-Обновить только одно значит зафиксировать эталоном запрещённое состояние.
+какой-то сравнивает сериализацию с эталоном — обновить эталон **по всем трём
+полям сразу**: `"schema": "disputatio/pipeline/v2"`, `"kind": "pair"` и
+`"doc_sessions": []`. Обновить не все значит зафиксировать эталоном
+состояние, которого модель не порождает.
 Изменение назвать в сообщении коммита.
 
 Отдельным тестом закрепить миграцию целиком, а не по кускам:
 
 ```python
+#: Всё, что редакция v0.2 добавляет в сериализацию pair-манифеста. Список
+#: закрытый: тест ниже требует, чтобы других отличий не было ни одного.
+_V2_ADDITIONS = {
+    ("schema",): "disputatio/pipeline/v2",
+    ("documents", "kind"): "pair",
+    ("doc_sessions",): [],
+}
+
+
 def test_v1_fixture_saves_as_v2_and_keeps_everything_else(tmp_path) -> None:
-    """Пара переходит на v2 ровно двумя полями и ничем больше."""
+    """Пара переходит на v2 ровно тремя полями и ничем больше.
+
+    `doc_sessions` попадает в дамп наравне с двумя существующими
+    коллекциями — `default_factory=list` сериализуется как обычное поле.
+    Забыть его в списке ожидаемых отличий значит написать тест, который
+    невозможно выполнить.
+    """
     before = json.loads(_V1_FIXTURE.read_text(encoding="utf-8"))
     after = PipelineState.model_validate(before).model_dump(mode="json")
-    assert after["schema"] == "disputatio/pipeline/v2"
-    assert after["documents"]["kind"] == "pair"
-    stripped = {**after, "schema": before["schema"]}
+
+    assert after["schema"] == _V2_ADDITIONS[("schema",)]
+    assert after["documents"]["kind"] == _V2_ADDITIONS[("documents", "kind")]
+    assert after["doc_sessions"] == _V2_ADDITIONS[("doc_sessions",)]
+
+    stripped = {k: v for k, v in after.items() if k != "doc_sessions"}
+    stripped["schema"] = before["schema"]
     stripped["documents"] = {
         k: v for k, v in after["documents"].items() if k != "kind"
     }
@@ -1640,6 +1663,23 @@ def test_resume_with_config_of_other_kind_mutates_nothing(document_stand) -> Non
         document_stand.resume_with(_pair_config())
 
     assert document_stand.mutable_surfaces() == before
+
+
+def test_tampered_plane_outranks_kind_check(document_stand) -> None:
+    """Приоритет шага 0: подмена важнее чужого вида (§2 P0, §8.1).
+
+    При повреждённом control plane и конфиге другого вида отказ обязан быть
+    ПО ПОДМЕНЕ, а перевод в FAILED — законной мутацией. Без этого теста
+    предыдущий требовал бы неизменности поверхностей и там, где спека её не
+    обещает.
+    """
+    document_stand.runner.run("charter", "…")
+    document_stand.tamper_manifest()
+
+    with pytest.raises(ControlPlaneTampered):
+        document_stand.resume_with(_pair_config())
+
+    assert document_stand.phase() is PipelinePhase.FAILED
 ```
 
 Хелпер стенда собирает всё, что resume вправе тронуть, — один снимок, чтобы
@@ -1780,7 +1820,24 @@ class SingleContourAdoptionRouter:
 `OperatorIntents.__init__` получает `router: AdoptionRouter`; `PipelineDeps`
 публикует `intents`, чтобы выбор реализации был наблюдаем тестом сборки.
 
-В `pipeline_resume` перед любой мутацией добавить проверку P0:
+В `pipeline_resume` проверка P0 ставится **сразу после `_load()`** — не
+раньше и не позже. Раньше нельзя: `resume()` вызывает `_verify_integrity()`
+первым (`pipeline_resume.py:260`, §8.1 шаг 0), а вид живёт в манифесте,
+который до сверки читать нельзя. Позже нельзя: следом идут `detect_parked`,
+классификация дерева и мутирующая фаза.
+
+Отказ P9 при этом мутирует сам (`_close_tampered` → `runner.fail()`,
+`pipeline_resume.py:398`) — и это разрешено: §2 P0 объявляет его единственной
+мутацией, законно предшествующей проверке вида, потому что подменённый
+control plane обесценивает и сам вопрос о виде.
+
+```python
+        anchor = self._verify_integrity(slug)   # шаг 0 — не трогаем
+        state = self._load(slug, anchor)
+        _require_same_kind(state, self._config, slug)   # P0, здесь
+        parked = self._runner.detect_parked(state)
+```
+
 
 ```python
     if state.kind is not config.kind:
