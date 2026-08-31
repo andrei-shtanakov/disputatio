@@ -1063,6 +1063,9 @@ git commit -m "feat(context): промпты контура doc, чеклист 
   `_records`, `_records_update`)
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
   таблицы политик)
+- Modify: `tests/runtime/_pipeline_stand.py:366`,
+  `tests/runtime/test_pipeline_runner.py:429,473` — существующие места, где
+  `PipelineRunner` конструируется напрямую
 - Test: `tests/runtime/test_pipeline_runner_document.py`
 
 **Интерфейсы (потребляет):** `CONTOURS_BY_KIND`, `TERMINAL_CONTOUR`,
@@ -1107,6 +1110,15 @@ runner'а — `pipeline_runner.py:581`:
 объекта политики в таком пайплайне не существует. Runner делает
 `self._boundary_policies.get(contour)`; ветвления по виду у него нет.
 
+**Параметр обязателен и дефолта не имеет.** Три места конструируют
+`PipelineRunner` напрямую (`_pipeline_stand.py:366`,
+`test_pipeline_runner.py:429` и `:473`), и все три обязаны в этой же задаче
+получить `boundary_policies={CONTOUR_PAIR: ArchitecturalDefectPolicy()}`.
+Дефолт `{}` был бы худшим из решений: suite позеленел бы молча, а pair-runner
+потерял бы политику — то есть P6 (приоритет архитектурного возврата) перестал
+бы исполняться, и заметил бы это только живой прогон. `TypeError` на
+забытом аргументе честнее.
+
 - [ ] **Шаг 1: red-тест — старт и терминал вида document**
 
 ```python
@@ -1141,6 +1153,20 @@ def test_document_pipeline_holds_no_boundary_policy(document_stand) -> None:
 
 def test_pair_pipeline_holds_exactly_one_boundary_policy(pair_stand) -> None:
     assert set(pair_stand.runner.boundary_policies) == {"pair"}
+
+
+def test_architectural_return_still_happens(pair_stand) -> None:
+    """Регрессия P6 на обновлённом стенде: политика доехала до runner'а.
+
+    Без неё suite позеленел бы на дефолте `{}`, а возврат по архитектурному
+    дефекту молча перестал бы происходить.
+    """
+    state = pair_stand.run_with_architectural_finding()
+    assert (
+        PipelinePhase.PAIR_LOOP,
+        PipelinePhase.SPEC_LOOP,
+        TransitionReason.ARCHITECTURAL_DEFECT,
+    ) in [(t.from_, t.to, t.reason) for t in state.transitions]
 
 
 def test_pair_pipeline_edges_unchanged(pair_stand) -> None:
@@ -1325,17 +1351,16 @@ def test_adoption_of_document_opens_next_revision_without_transition(
 - [ ] **Шаг 2: прогнать, убедиться что падает**
 
 Run: `uv run pytest tests/runtime/test_document_composition.py -q`
-Ожидание: FAIL — `build_pipeline` передаёт политику всегда.
+Ожидание: FAIL — `PipelineDeps` не публикует `intents`, порта `AdoptionRouter`
+не существует. (Политику `build_pipeline` сегодня не передаёт вообще — её
+создаёт сам runner, `pipeline_runner.py:581`; шов закрывает задача 5.)
 
 - [ ] **Шаг 3: реализация — ветка вида в composition root**
 
-В `build_pipeline` политика границы раунда строится только для вида `pair`:
-
-```python
-    boundary = (
-        _pair_boundary_policy if config.kind is PipelineKind.PAIR else None
-    )
-```
+Таблицу политик задача 6 **не переопределяет**: её единственный контракт задан
+задачей 5 (`boundary_policies`, `Mapping[str, RoundBoundaryPolicy]`), и здесь
+она только передаётся в конструктор runner'а. Скалярной политики в плане нет
+нигде — второй контракт разошёлся бы с публичным свойством и P10-тестами.
 
 `_contour_of` расширяется до `str` и возвращает контур как есть (`split_revision`
 уже даёт `"doc"`); `_doc_paths` и граница `doc-scope` берутся из
@@ -1359,7 +1384,14 @@ def compute_scope(
 
 ```python
 class AdoptionRouter(Protocol):
-    def successor(self, scope: AdoptionScope, contour: str) -> AdoptionRoute:
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> AdoptionRoute:
         """Контур-преемник и причина pipeline-перехода, если он нужен."""
 
 
@@ -1370,15 +1402,42 @@ class AdoptionRoute:
 
 
 class PairAdoptionRouter:
-    """Текущий `_route` целиком: читает spec_touched и класс дефекта."""
+    """Текущий `_route` целиком. Stateless: динамические факты приходят
+    аргументами вызова, а не в конструктор.
 
-    def __init__(self, *, returns_exhausted: bool, defect: bool) -> None: ...
+    `parked` и `returns_exhausted` меняются от одного adoption к другому
+    внутри жизни одного пайплайна; зашить их при сборке значило бы
+    заморозить в объекте состояние, которое к следующему вызову уже ложь.
+    """
+
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> AdoptionRoute: ...
 
 
 class SingleContourAdoptionRouter:
-    """Контур один — преемник им и определён; входов о паре не принимает."""
+    """Контур один — преемник им и определён.
 
-    def successor(self, scope: AdoptionScope, contour: str) -> AdoptionRoute:
+    Сигнатуру Protocol'а реализация несёт целиком, но pair-факты игнорирует
+    и назвать их в теле не может: их там нет. Отдельный узкий Protocol был
+    бы честнее по типам, ценой двух портов у одного шва — выбран общий
+    Protocol и явное `del` неиспользуемых входов, как в `validate_doc_review`.
+    """
+
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> AdoptionRoute:
+        del scope, parked, returns_exhausted
         return AdoptionRoute(contour=contour, reason=None)
 ```
 
@@ -1577,7 +1636,8 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 (каталоги создаются существующим кодом по имени ревизии); §4.2 union, коллекции,
 две версии схемы → задача 1; §5.1 промпт контура → задача 4; §5.2 V1/V5/V8 →
 задача 2; §5.3 чеклисты, роль, порядок → задачи 2, 3; §6 `doc-scope` → задача 6;
-§7.1 политика не конструируется → задача 6; §7.2 таблица терминалов → задача 5;
+§7.1 политика приходит таблицей из composition root → задача 5 (шов),
+задача 6 (передача); §7.2 таблица терминалов → задача 5;
 §7.3 неприменим → задача 6 (ветка); §8.1 resume → задача 6; §8.2 экспорт →
 задача 7; §9 пакеты — распределение задач ему следует; §10 тесты — каждый пункт
 списка редакции v0.2 закреплён за задачей выше.
@@ -1590,3 +1650,7 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 3 и 4. `SESSIONS_FIELD_BY_CONTOUR` (задача 1) — единственный источник имени
 коллекции в задаче 5. `PipelineKind` — из `contracts.pipeline` во всех задачах.
 `compute_scope(git, *, allowed_paths)` (задача 6) — единственная сигнатура.
+`boundary_policies: Mapping[str, RoundBoundaryPolicy]` (задача 5) — единственный
+контракт политики во всём плане; скалярной формы нет нигде. `AdoptionRouter`
+stateless: динамические факты (`parked`, `returns_exhausted`) идут аргументами
+`successor()`, а не в конструктор.
