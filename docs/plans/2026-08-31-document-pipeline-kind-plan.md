@@ -64,6 +64,11 @@
   алиаса не остаётся: `src/disputatio/runtime/pipeline_runner.py` (2),
   `tests/contracts/test_pipeline_state.py` (5),
   `tests/runtime/test_pipeline_export.py` (2), `tests/contracts/test_init.py` (1)
+- Modify: `src/disputatio/events/pipeline_store.py:109-116` — append-only guard
+  перечисляет коллекции сессий поимённо; пятая обязана попасть под ту же
+  защиту, иначе история doc-ревизий молча усекается
+- Modify: `tests/events/test_pipeline_store.py` — фикстура манифеста (`:47-48`)
+  и симметричный негативный тест для `doc_sessions`
 - Modify: **все читатели `documents.spec_path`/`.plan_path`** — после union
   этих полей у ветки `SingleDocument` нет, и `pyrefly` краснеет немедленно:
   `pipeline_runner.py:1236`, `pipeline_export.py:291,300,301`, `cli.py:409`.
@@ -595,12 +600,50 @@ def test_v1_fixture_saves_as_v2_and_keeps_everything_else(tmp_path) -> None:
     assert stripped == before
 ```
 
+- [ ] **Шаг 8-бис: подключить `doc_sessions` к append-only guard**
+
+`_guard_history` сегодня называет коллекции сессий литералами, а его докстринг
+обещает «все четыре» — с пятой обещание становится ложью, и новая коллекция
+остаётся без защиты: усечённую или переписанную историю doc-ревизий стор принял
+бы и записал атомарно. Чиним структурно, а не третьим литералом, — иначе
+следующий контур повторит ту же историю:
+
+```python
+def _guard_history(previous: PipelineState, current: PipelineState) -> None:
+    """Сверяет все append-only коллекции манифеста (§4.2).
+
+    Коллекции сессий обходятся по `SESSIONS_FIELD_BY_CONTOUR`, а не
+    перечисляются литералами: третий контур уже показал, что перечисление
+    забывают дополнить, и забытая коллекция теряет защиту молча.
+    """
+    for field_name in SESSIONS_FIELD_BY_CONTOUR.values():
+        _guard_sessions(
+            getattr(previous, field_name), getattr(current, field_name), field_name
+        )
+    _guard_immutable(previous.transitions, current.transitions, "transitions")
+    _guard_immutable(
+        previous.operator_decisions, current.operator_decisions, "operator_decisions"
+    )
+```
+
+Тест — симметричный существующему `test_pair_sessions_guarded_too:278`:
+
+```python
+def test_doc_sessions_guarded_too(store: Any) -> None:
+    """`doc_sessions` под тем же guard'ом, что две прежние коллекции."""
+    first = _session_record("doc-r1")
+    store.save(make_pipeline_state(doc_sessions=[first.model_dump()]))
+    with pytest.raises(AppendOnlyViolation):
+        store.save(make_pipeline_state(doc_sessions=[]))
+```
+
 - [ ] **Шаг 9: коммит**
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
 git add src/disputatio/contracts/ src/disputatio/runtime/ \
-        src/disputatio/cli.py tests/contracts/ tests/runtime/test_pipeline_export.py
+        src/disputatio/events/pipeline_store.py src/disputatio/cli.py \
+        tests/contracts/ tests/events/ tests/runtime/test_pipeline_export.py
 git commit -m "feat(contracts): вид пайплайна как дискриминатор documents"
 ```
 
@@ -2137,6 +2180,7 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 | `build_doc_*_prompt(..., checklist=)` | задача 4 | 20 (2 боевых + 18) |
 | `PipelineRunner.__init__(boundary_policies=)` | задача 5 | 4 (1 боевой + 3 теста) |
 | `ArchitecturalDefectPolicy(` — места конструирования | задача 5 | 2 боевых + 1 тест |
+| `_guard_history` — коллекции под append-only защитой | задача 1 | 1 боевое + 1 тест |
 | `_config_snapshot` / `_checklists_snapshot` | задача 5 | внутренние |
 | `compute_scope(git, *, allowed_paths)` | задача 6 | 2 (1 боевой + 1 тест) |
 | `OperatorIntents.__init__(router=)` | задача 6 | 2 (composition + стенд) |
@@ -2150,7 +2194,15 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 конструирует».** Инвариант P10 — про создание объекта, и таблица меняемых
 сигнатур его не ловит: `ArchitecturalDefectPolicy` создавалась в двух местах
 runner'а, а план снимал одно. Для каждой механики, которую P10 запрещает
-конструировать, обязателен свой `grep "<Класс>("`. Иначе задача
+конструировать, обязателен свой `grep "<Класс>("`.
+
+Третье, из четвёртого ревью PR: **добавляя элемент в перечисление, найди все
+места, где это перечисление выписано литералами.** `doc_sessions` — пятая
+append-only коллекция, а `_guard_history` называл их поимённо и обещал
+докстрингом «все четыре». Новая коллекция осталась бы без защиты, и стор принял
+бы усечённую историю doc-ревизий. Лечится не третьим литералом, а обходом по
+`SESSIONS_FIELD_BY_CONTOUR`: перечисление, которое забывают дополнить, обязано
+перестать быть перечислением. Иначе задача
 заканчивается красным `pyrefly` — и именно так план был устроен до раунда 8
 в двух местах сразу (union документов и опциональные пути конфига).
 
