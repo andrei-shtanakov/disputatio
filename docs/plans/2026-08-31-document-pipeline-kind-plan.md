@@ -845,14 +845,40 @@ class PipelineConfig:
 
 | Читатель | Было | Стало |
 |---|---|---|
-| `pipeline_runner.py:410-411` | `config.spec_path.as_posix()` ×2 | `_documents()` (шаг задачи 5) |
-| `pipeline_runner.py:1184-1185` | две строки TOML | `config.documents()` |
+| `pipeline_runner.py:410-411` | `config.spec_path.as_posix()` ×2 | `_documents()` — **вводится здесь же** |
+| `pipeline_runner.py:1184-1185` (`_config_snapshot`) | две строки TOML | рендер по виду, **здесь же** |
 | `composition.py:596-599` | `_doc_paths` тернарником | `config.contour_documents(contour)` |
 | `composition.py:621-623` | `allowed` тернарником | `config.scope_paths(contour)` |
 | `pipeline_adopt.py:126,128,158` | `allowed` из пары | `config.scope_paths(contour)` |
 
 Сигнатуры аксессоров объявлены выше и в задачах 5–6 уже не меняются: те
 задачи меняют семантику вида, а не способ добраться до путей.
+
+**Ни одна строка миграции не отложена на потом** — это и было дефектом,
+найденным pair-раундом 2: таблица отсылала `pipeline_runner.py:410-411` к
+`_documents()`, который вводился только задачей 5, и коммит задачи 3
+оставался типово красным. Поэтому `_documents()` и рендер `_config_snapshot`
+по виду принадлежат **этой** задаче:
+
+```python
+    def _documents(self) -> Documents:
+        """Артефактная форма документов вида (§4.2)."""
+        if self._config.kind is PipelineKind.DOCUMENT:
+            document_path = self._config.document_path
+            assert document_path is not None  # гарантия `_resolve_kind`
+            return SingleDocument(
+                kind="document", document_path=document_path.as_posix()
+            )
+        spec_path, plan_path = self._config.spec_path, self._config.plan_path
+        assert spec_path is not None and plan_path is not None
+        return PairDocuments(
+            spec_path=spec_path.as_posix(), plan_path=plan_path.as_posix()
+        )
+```
+
+`_config_snapshot` рендерит секцию `[pipeline]` по виду: пара — два пути и
+`max_architectural_returns`, документ — `document_path` без него. Задача 5
+берёт оба метода готовыми и меняет только семантику запуска.
 
 - [ ] **Шаг 1: red-тест — XOR форм и текст отказа**
 
@@ -1256,9 +1282,10 @@ git commit -m "feat(context): промпты контура doc, чеклист 
 **Файлы:**
 - Modify: `src/disputatio/runtime/pipeline_runner.py` (`__init__`, `run`,
   `_do_run_session`, `_do_finish_session`, `_enter_export`, `_start_pair`,
-  `_records`, `_records_update`, **`_config_snapshot`, `_checklists_snapshot`,
-  `active_session`, `recompute_budget`**) — `_entry_hashes` уже переведён на
-  `documents.paths()` задачей 1 и здесь не трогается
+  `_records`, `_records_update`, **`_checklists_snapshot`, `active_session`,
+  `recompute_budget`**) — `_entry_hashes` переведён на `documents.paths()`
+  задачей 1, а `_documents()` и `_config_snapshot` — задачей 3; здесь они
+  берутся готовыми
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
   таблицы политик)
 - Modify: `tests/runtime/_pipeline_stand.py:368`,
@@ -1432,6 +1459,9 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
         )
 ```
 
+(Метод введён задачей 3 вместе с опционализацией путей; здесь он только
+используется.)
+
 - [ ] **Шаг 3-бис: реализация — политика приходит снаружи**
 
 Удалить строку `pipeline_runner.py:581` и взять политику из таблицы:
@@ -1460,12 +1490,9 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
 
 - [ ] **Шаг 3-тер: реализация — снапшоты и entry_hashes под вид**
 
-Два метода runner'а обязаны быть переписаны в этой же задаче — иначе артефакт
+Один метод runner'а обязан быть переписан в этой же задаче — иначе артефакт
 задачи 3 (`ResolvedChecklist`) потребляется старым типом:
 
-- `_config_snapshot` (`pipeline_runner.py:1184`) зовёт `.as_posix()` у
-  `spec_path`/`plan_path`, ставших optional. Рендерить по виду: пара — две
-  строки и `max_architectural_returns`, документ — `document_path` без него;
 - `_checklists_snapshot` (`pipeline_runner.py:1201`) обращается к значению как
   к `Mapping[str, str]` и **сортирует пункты по id**. Оба факта меняются:
   значение теперь `ResolvedChecklist`, а порядок для операторского контура —
@@ -1598,11 +1625,42 @@ def test_pair_kind_builds_pair_router(tmp_repo) -> None:
     assert isinstance(deps.intents.router, PairAdoptionRouter)
 
 
-def test_resume_with_config_of_other_kind_is_rejected(document_stand) -> None:
-    """P0: вид неизменяем; смена конфига — отказ до любой мутации."""
+def test_resume_with_config_of_other_kind_mutates_nothing(document_stand) -> None:
+    """P0: отказ **до любой мутации**, а не просто отказ.
+
+    `pytest.raises` доказывает только исключение. Норматив (§2 P0, §10) сильнее:
+    реализация, успевшая переиграть раунд, дописать журнал или сдвинуть HEAD и
+    лишь потом заметившая чужой вид, прошла бы такой тест зелёной. Поэтому
+    сверяются наблюдаемые поверхности, которые resume вправе менять.
+    """
     document_stand.runner.run("charter", "…")
+    before = document_stand.mutable_surfaces()
+
     with pytest.raises(ConfigError, match="вид"):
         document_stand.resume_with(_pair_config())
+
+    assert document_stand.mutable_surfaces() == before
+```
+
+Хелпер стенда собирает всё, что resume вправе тронуть, — один снимок, чтобы
+список нельзя было тихо сократить:
+
+```python
+    def mutable_surfaces(self) -> dict[str, object]:
+        """Байты и состояние всех поверхностей, мутируемых resume (§8.1)."""
+        return {
+            "manifest": self._manifest_path.read_bytes(),
+            "events": self._events_path.read_bytes(),
+            "anchor": self._anchor_path.read_bytes(),
+            "adoptions": sorted(p.name for p in self._adoptions_dir.iterdir()),
+            "head": self._git.head(),
+            "status": tuple(self._git.status_entries()),
+            "tree": sorted(
+                str(p.relative_to(self._workspace))
+                for p in self._workspace.rglob("*")
+                if p.is_file()
+            ),
+        }
 
 
 def test_doc_scope_allows_only_the_document(tmp_repo) -> None:
