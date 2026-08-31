@@ -352,6 +352,14 @@ EDGES_BY_KIND: Final[
 где `_SHARED_EDGES` — `(ESCALATED, EXPORTING)`, `(EXPORTING, DONE)` и все
 `(phase, FAILED)`.
 
+**Таблицу обязательно ПОДКЛЮЧИТЬ к валидации, а не только объявить.**
+`Transition._validate_against_table` вида не знает и знать не может — вид
+живёт в `PipelineState`. Поэтому проверка принадлежности ребра виду идёт
+model-валидатором состояния (шаг 7), а тест на неё — негативный: документный
+манифест с ребром `SPEC_LOOP → PAIR_LOOP` обязан **не читаться**. Тест,
+проверяющий лишь `edge in EDGES_BY_KIND[...]`, доказывал бы существование
+таблицы и ничего не говорил бы о том, что ею кто-то пользуется.
+
 - [ ] **Шаг 4: прогнать — тесты проходят**
 
 Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
@@ -360,6 +368,33 @@ Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
 - [ ] **Шаг 5: red-тест — `PipelineState` под вид**
 
 ```python
+def test_state_rejects_transition_of_foreign_kind() -> None:
+    """Ребро, допустимое общей таблицей, но чужое виду, отвергается (§2).
+
+    Проверка членства в `EDGES_BY_KIND` доказывала бы только объявление
+    таблицы. Здесь проверяется её ПРИМЕНЕНИЕ: документный манифест с
+    ребром pair-механики не должен читаться вовсе — иначе таблица остаётся
+    мёртвой при зелёном тесте.
+    """
+    with pytest.raises(ValidationError, match="чужое виду"):
+        _document_state(
+            transitions=[
+                {
+                    "from": "SPEC_LOOP",
+                    "to": "PAIR_LOOP",
+                    "reason": "spec_converged",
+                    "at": "2026-08-31T00:00:00Z",
+                }
+            ]
+        )
+
+
+def test_pair_state_accepts_its_own_edges() -> None:
+    """Регрессия: у пары те же рёбра принимаются как раньше."""
+    state = PipelineState.model_validate(_pair_payload_with_spec_converged())
+    assert state.transitions[-1].to is PipelinePhase.PAIR_LOOP
+
+
 def test_state_rejects_sessions_of_foreign_kind() -> None:
     """Непустая коллекция чужого вида — invariant_violation, не «лишние данные»."""
     with pytest.raises(ValidationError, match="чужого вида"):
@@ -421,6 +456,15 @@ Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
                     f"{field_name}: непустая коллекция сессий чужого вида "
                     f"(контур {contour!r} не принадлежит виду "
                     f"{self.kind.value!r})"
+                )
+        allowed_edges = EDGES_BY_KIND[self.kind]
+        for transition in self.transitions:
+            edge = (transition.from_, transition.to)
+            if edge not in allowed_edges:
+                raise ValueError(
+                    f"переход {transition.from_.value} → {transition.to.value} "
+                    f"чужое виду {self.kind.value!r} ребро: таблица §2 его "
+                    "допускает, но не для этого вида пайплайна"
                 )
         if self.kind is PipelineKind.DOCUMENT and self.schema_ != SCHEMA_PIPELINE_V2:
             raise ValueError(
@@ -851,44 +895,52 @@ B1 = "нет blocker/major-находок"
     assert config.document_path.as_posix() == "docs/charter.md"
 
 
-def test_mixed_form_is_rejected_and_names_both_schemas(tmp_path) -> None:
-    path = _write(tmp_path, """
-[pipeline]
-document_path = "docs/charter.md"
-spec_path = "docs/spec.md"
-""" + _AGENTS)
-    with pytest.raises(ConfigError) as excinfo:
-        load_pipeline_config(path)
-    message = str(excinfo.value)
-    assert "spec_path" in message and "plan_path" in message
-    assert "document_path" in message
-
-
-def test_half_pair_is_rejected(tmp_path) -> None:
-    path = _write(tmp_path, '[pipeline]\nspec_path = "docs/spec.md"\n' + _AGENTS)
-    with pytest.raises(ConfigError):
-        load_pipeline_config(path)
-
-
-def test_no_form_at_all_is_rejected(tmp_path) -> None:
-    path = _write(tmp_path, "[pipeline]\n" + _AGENTS)
-    with pytest.raises(ConfigError):
-        load_pipeline_config(path)
-
-
-def test_explicit_max_returns_with_document_is_rejected(tmp_path) -> None:
-    """Ключ, написанный руками и молча проигнорированный, — тот самый дефект."""
-    path = _write(tmp_path, """
-[pipeline]
-document_path = "docs/charter.md"
-max_architectural_returns = 2
+_DOC_CHECKLIST = """
 [pipeline.checklists.doc]
 findings_item = "B1"
 [pipeline.checklists.doc.items]
 B1 = "нет находок"
-""" + _AGENTS)
+"""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # смешанная форма
+        '[pipeline]\ndocument_path = "d.md"\nspec_path = "s.md"\n',
+        # пара наполовину
+        '[pipeline]\nspec_path = "s.md"\n',
+        # ни одной формы
+        "[pipeline]\n",
+        # ключ чужой формы при document_path
+        '[pipeline]\ndocument_path = "d.md"\n'
+        "max_architectural_returns = 2\n" + _DOC_CHECKLIST,
+    ],
+    ids=["mixed", "half-pair", "empty", "foreign-key"],
+)
+def test_every_form_refusal_names_both_schemas(tmp_path, body: str) -> None:
+    """C3 и §10: КАЖДЫЙ отказ формы перечисляет обе допустимые схемы.
+
+    Проверять один лишь факт `raises` мало: диагностическая часть C3 —
+    обязательное требование, и без утверждения о тексте она регрессирует
+    молча, оставляя тест зелёным.
+    """
+    with pytest.raises(ConfigError) as excinfo:
+        load_pipeline_config(_write(tmp_path, body + _AGENTS))
+    message = str(excinfo.value)
+    assert "document_path" in message
+    assert "spec_path" in message
+    assert "plan_path" in message
+
+
+def test_foreign_key_refusal_also_names_the_key(tmp_path) -> None:
+    """Обе схемы — не вместо причины отказа, а вместе с ней."""
+    body = (
+        '[pipeline]\ndocument_path = "d.md"\n'
+        "max_architectural_returns = 2\n" + _DOC_CHECKLIST
+    )
     with pytest.raises(ConfigError, match="max_architectural_returns"):
-        load_pipeline_config(path)
+        load_pipeline_config(_write(tmp_path, body + _AGENTS))
 ```
 
 - [ ] **Шаг 2: прогнать, убедиться что падает**
@@ -942,15 +994,18 @@ def _resolve_kind(table: Mapping[str, Any]) -> PipelineKind:
     raise ConfigError(_both_forms("[pipeline] не задаёт ни одной из форм"))
 ```
 
-Отказ на `max_architectural_returns` при `DOCUMENT` — сразу после `_resolve_kind`:
+Отказ на `max_architectural_returns` при `DOCUMENT` — сразу после
+`_resolve_kind`, и он тоже проходит через `_both_forms`: оператор написал ключ
+из формы пары, значит показать ему обе формы — прямой ответ на его ошибку, а не
+шум (§3.2, C3):
 
 ```python
     if kind is PipelineKind.DOCUMENT and "max_architectural_returns" in table:
-        raise ConfigError(
+        raise ConfigError(_both_forms(
             "max_architectural_returns не применим к виду document: возвратов "
             "у него нет. Ключ отвергается, а не игнорируется — молча "
             "проигнорированная настройка оператора хуже отказа"
-        )
+        ))
 ```
 
 - [ ] **Шаг 4: прогнать — проходит**
