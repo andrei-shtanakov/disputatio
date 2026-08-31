@@ -1058,17 +1058,54 @@ git commit -m "feat(context): промпты контура doc, чеклист 
 ### Задача 5: runtime — runner под вид
 
 **Файлы:**
-- Modify: `src/disputatio/runtime/pipeline_runner.py` (`run`, `_do_finish_session`,
-  `_enter_export`, `_start_pair`, `_records`, `_records_update`)
+- Modify: `src/disputatio/runtime/pipeline_runner.py` (`__init__`, `run`,
+  `_do_run_session`, `_do_finish_session`, `_enter_export`, `_start_pair`,
+  `_records`, `_records_update`)
+- Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
+  таблицы политик)
 - Test: `tests/runtime/test_pipeline_runner_document.py`
 
 **Интерфейсы (потребляет):** `CONTOURS_BY_KIND`, `TERMINAL_CONTOUR`,
 `ENTRY_PHASE`, `SESSIONS_FIELD_BY_CONTOUR`, `PipelineKind` (задача 1);
 `PipelineConfig.kind` (задача 3).
 
-**Интерфейсы (производит):** `CONTOUR_DOC: Final = "doc"`;
-`PipelineRunner._enter_export(state, records_update, finished, *, from_phase,
-reason)`.
+**Интерфейсы (производит):**
+
+```python
+class PipelineRunner:
+    def __init__(
+        self,
+        *,
+        boundary_policies: Mapping[str, RoundBoundaryPolicy],
+        # …существующие параметры без изменений
+    ) -> None: ...
+
+    @property
+    def boundary_policies(self) -> Mapping[str, RoundBoundaryPolicy]:
+        """Таблица политик по контурам, собранная при построении.
+
+        Публично — потому что пустота таблицы у вида document это
+        наблюдаемое свойство СБОРКИ, а тест на неё не вправе лезть в
+        приватные поля (§10 SPEC-002).
+        """
+```
+
+`CONTOUR_DOC: Final = "doc"`; `PipelineRunner._enter_export(state,
+records_update, finished, *, from_phase, reason)`.
+
+**Почему таблица, а не объект и не флаг.** Сегодня политика создаётся ВНУТРИ
+runner'а — `pipeline_runner.py:581`:
+
+```python
+            policy = ArchitecturalDefectPolicy() if contour == CONTOUR_PAIR else None
+```
+
+Пока строка выглядит так, P10 невыполним: механика вида `pair` физически
+присутствует в каждом пайплайне и отделена от работы одним условием. Строка
+удаляется; политику выбирает `build_pipeline` и отдаёт таблицей по контурам
+(§7.1). У вида `pair` в таблице одна запись, у вида `document` она пуста —
+объекта политики в таком пайплайне не существует. Runner делает
+`self._boundary_policies.get(contour)`; ветвления по виду у него нет.
 
 - [ ] **Шаг 1: red-тест — старт и терминал вида document**
 
@@ -1090,6 +1127,20 @@ def test_converged_doc_session_goes_straight_to_exporting(document_stand) -> Non
         TransitionReason.DOCUMENT_CONVERGED,
     ) in edges
     assert not any(t.to is PipelinePhase.PAIR_LOOP for t in state.transitions)
+
+
+def test_document_pipeline_holds_no_boundary_policy(document_stand) -> None:
+    """P10 проверяется отсутствием ОБЪЕКТА, а не поведением.
+
+    Тест «drive() ведёт себя как без политики» прошёл бы и у политики,
+    всегда отвечающей proceed, то есть не отличил бы «не конструируется»
+    от запрещённого «не срабатывает» (§10 SPEC-002).
+    """
+    assert document_stand.runner.boundary_policies == {}
+
+
+def test_pair_pipeline_holds_exactly_one_boundary_policy(pair_stand) -> None:
+    assert set(pair_stand.runner.boundary_policies) == {"pair"}
 
 
 def test_pair_pipeline_edges_unchanged(pair_stand) -> None:
@@ -1147,6 +1198,28 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
             spec_path=self._config.spec_path.as_posix(),
             plan_path=self._config.plan_path.as_posix(),
         )
+```
+
+- [ ] **Шаг 3-бис: реализация — политика приходит снаружи**
+
+Удалить строку `pipeline_runner.py:581` и взять политику из таблицы:
+
+```python
+        if session is None or not self._is_settled(artifact_root, session, contour):
+            self._session_driver(
+                artifact_root, session_id, self._boundary_policies.get(contour)
+            )
+```
+
+`ArchitecturalDefectPolicy` больше не импортируется `pipeline_runner`'ом как
+конструируемый объект — её создаёт `build_pipeline`:
+
+```python
+    boundary_policies: dict[str, RoundBoundaryPolicy] = (
+        {CONTOUR_PAIR: ArchitecturalDefectPolicy()}
+        if config.kind is PipelineKind.PAIR
+        else {}
+    )
 ```
 
 - [ ] **Шаг 4: реализация — терминал контура и параметризованное ребро**
@@ -1207,12 +1280,19 @@ git commit -m "feat(pipeline): runner ведёт контуры по виду, �
 - [ ] **Шаг 1: red-тест — политика не конструируется, P0, scope**
 
 ```python
-def test_document_kind_builds_without_boundary_policy(tmp_repo) -> None:
-    """P10: механика вида pair не создаётся, а не «не срабатывает»."""
+def test_document_kind_builds_single_contour_router(tmp_repo) -> None:
+    """P10: у документного вида СВОЯ реализация порта, а не общая с флагом."""
     deps = build_pipeline(
         _document_config(tmp_repo), _profile(), tmp_repo, "charter", git=_git()
     )
-    assert deps.runner._session_driver.boundary_policy_for("doc-r1") is None
+    assert isinstance(deps.intents.router, SingleContourAdoptionRouter)
+
+
+def test_pair_kind_builds_pair_router(tmp_repo) -> None:
+    deps = build_pipeline(
+        _pair_config(tmp_repo), _profile(), tmp_repo, "foo", git=_git()
+    )
+    assert isinstance(deps.intents.router, PairAdoptionRouter)
 
 
 def test_resume_with_config_of_other_kind_is_rejected(document_stand) -> None:
@@ -1271,8 +1351,39 @@ def compute_scope(
 ) -> AdoptionScope: ...
 ```
 
-`_route` для вида `document` возвращает `("doc", None)` — маршрут один,
-pipeline-перехода нет.
+Маршрутизация adoption становится портом с двумя реализациями, и выбирает их
+`build_pipeline`. Общая функция, возвращающая для документного вида тривиальный
+ответ, — это запрещённое «не срабатывает» (P10, §3.1): механика пары
+присутствовала бы в документном пайплайне и ждала, пока условие в ней однажды
+разойдётся с реальностью.
+
+```python
+class AdoptionRouter(Protocol):
+    def successor(self, scope: AdoptionScope, contour: str) -> AdoptionRoute:
+        """Контур-преемник и причина pipeline-перехода, если он нужен."""
+
+
+@dataclass(frozen=True, slots=True)
+class AdoptionRoute:
+    contour: str
+    reason: TransitionReason | None
+
+
+class PairAdoptionRouter:
+    """Текущий `_route` целиком: читает spec_touched и класс дефекта."""
+
+    def __init__(self, *, returns_exhausted: bool, defect: bool) -> None: ...
+
+
+class SingleContourAdoptionRouter:
+    """Контур один — преемник им и определён; входов о паре не принимает."""
+
+    def successor(self, scope: AdoptionScope, contour: str) -> AdoptionRoute:
+        return AdoptionRoute(contour=contour, reason=None)
+```
+
+`OperatorIntents.__init__` получает `router: AdoptionRouter`; `PipelineDeps`
+публикует `intents`, чтобы выбор реализации был наблюдаем тестом сборки.
 
 В `pipeline_resume` перед любой мутацией добавить проверку P0:
 
