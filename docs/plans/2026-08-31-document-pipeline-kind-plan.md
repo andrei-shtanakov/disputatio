@@ -1336,8 +1336,9 @@ git commit -m "feat(context): промпты контура doc, чеклист 
 **Файлы:**
 - Modify: `src/disputatio/runtime/pipeline_runner.py` (`__init__`, `run`,
   `_do_run_session`, `_do_finish_session`, `_enter_export`, `_start_pair`,
-  `_records`, `_records_update`, **`_checklists_snapshot`, `active_session`,
-  `recompute_budget`**) — `_entry_hashes` переведён на `documents.paths()`
+  `_records`, `_records_update`, **`_parked_round` (второй конструктор
+  политики), `_checklists_snapshot`, `active_session`, `recompute_budget`**) —
+  `_entry_hashes` переведён на `documents.paths()`
   задачей 1, а `_documents()` и `_config_snapshot` — задачей 3; здесь они
   берутся готовыми
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
@@ -1390,6 +1391,35 @@ runner'а — `pipeline_runner.py:581`:
 объекта политики в таком пайплайне не существует. Runner делает
 `self._boundary_policies.get(contour)`; ветвления по виду у него нет.
 
+**Конструкторов политики в runner'е ДВА, и снять надо оба.**
+`grep -rn "ArchitecturalDefectPolicy(" src` даёт `pipeline_runner.py:581`
+(запуск сессии) и `pipeline_runner.py:1071` (`_parked_round` — обнаружение
+парковки, обслуживает `detect_parked:489`, `_interpret:1016` и
+`_is_settled:1083`). Снять только первый — значит оставить P10 наполовину
+невыполненным и, хуже того, развести два источника истины: `drive()` паркует
+раунд политикой из таблицы, а обнаружение спрашивает свежесозданную
+`ArchitecturalDefectPolicy`. Подменённая через таблицу реализация паркует по
+своему условию — и `_parked_round` её парковку не признаёт: resume продолжит
+сессию, которую надлежит вернуть, либо интерпретация объявит нетерминальное
+состояние нарушением инварианта.
+
+```python
+    def _parked_round(
+        self, artifact_root: Path, session: SessionState, contour: str
+    ) -> int | None:
+        policy = self._boundary_policies.get(contour)
+        if policy is None:
+            return None          # у вида без политики парковки не бывает
+        ...
+        if policy.after_deciding(review) is not BoundaryVerdict.PARK:
+            return None
+        return round_no
+```
+
+Ранний выход по `policy is None` — не оптимизация: у вида `document` таблица
+пуста, парковать нечем, и «не припарковано» здесь единственный правдивый
+ответ.
+
 **Параметр обязателен и дефолта не имеет.** `PipelineRunner` конструируется в
 **четырёх** местах (`grep -rn "PipelineRunner(" src tests`), и все четыре
 закрывает эта задача — иначе после её коммита либо падает `build_pipeline`,
@@ -1440,6 +1470,21 @@ def test_document_pipeline_holds_no_boundary_policy(document_stand) -> None:
 
 def test_pair_pipeline_holds_exactly_one_boundary_policy(pair_stand) -> None:
     assert set(pair_stand.runner.boundary_policies) == {"pair"}
+
+
+def test_drive_and_detection_use_the_same_policy(pair_stand) -> None:
+    """Один источник истины: обнаружение парковки спрашивает ТУ ЖЕ политику.
+
+    Тест подменяет реализацию через таблицу — на такую, что паркует по
+    собственному условию. Если `_parked_round` создаёт свою
+    `ArchitecturalDefectPolicy`, парковку он не признает, и расхождение
+    проявится как «resume продолжил сессию, которую надлежало вернуть».
+    Тест на ключи таблицы этого не ловит: там обе политики совпадают.
+    """
+    stand = pair_stand.with_boundary_policy("pair", _ParksEverything())
+    state = stand.run_until_first_review()
+
+    assert stand.runner.detect_parked(state) is not None
 
 
 def test_architectural_return_still_happens(pair_stand) -> None:
@@ -2091,14 +2136,21 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 | `PipelineConfig.kind` (обязателен) | задача 3 | 4 прямых конструктора |
 | `build_doc_*_prompt(..., checklist=)` | задача 4 | 20 (2 боевых + 18) |
 | `PipelineRunner.__init__(boundary_policies=)` | задача 5 | 4 (1 боевой + 3 теста) |
+| `ArchitecturalDefectPolicy(` — места конструирования | задача 5 | 2 боевых + 1 тест |
 | `_config_snapshot` / `_checklists_snapshot` | задача 5 | внутренние |
 | `compute_scope(git, *, allowed_paths)` | задача 6 | 2 (1 боевой + 1 тест) |
 | `OperatorIntents.__init__(router=)` | задача 6 | 2 (composition + стенд) |
 | `PipelineDeps.intents` | задача 6 | 1 (composition) |
 | `render_status` | задача 7 | 1 (cli), тестов сегодня нет |
 
-**Правило, выведенное из этой таблицы:** расширение или опционализация типа
-принадлежит той же задаче, что и миграция его читателей. Иначе задача
+**Два правила, выведенные из этой таблицы.** Первое: расширение или
+опционализация типа принадлежит той же задаче, что и миграция его читателей.
+Второе добавлено после третьего ревью PR и стоит отдельно, потому что первое
+его не покрывает: **инвентарь «кто вызывает» не заменяет инвентаря «кто
+конструирует».** Инвариант P10 — про создание объекта, и таблица меняемых
+сигнатур его не ловит: `ArchitecturalDefectPolicy` создавалась в двух местах
+runner'а, а план снимал одно. Для каждой механики, которую P10 запрещает
+конструировать, обязателен свой `grep "<Класс>("`. Иначе задача
 заканчивается красным `pyrefly` — и именно так план был устроен до раунда 8
 в двух местах сразу (union документов и опциональные пути конфига).
 
