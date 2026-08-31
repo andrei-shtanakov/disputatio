@@ -87,9 +87,16 @@ SCHEMA_PIPELINE_V2: Final = "disputatio/pipeline/v2"
 
 **Почему `documents` — union, а не опциональные поля.** «Документный пайплайн с
 `plan_path`» обязан быть невыразим схемой, а не просто не встречаться (§4.2,
-P10). `DocumentPaths` переименовывается в `PairDocuments` с дефолтом
-`kind="pair"`, поэтому манифесты, записанные до этой редакции, читаются без
-миграции.
+P10). `DocumentPaths` переименовывается в `PairDocuments`.
+
+**Совместимость — нормализация по тегу, а НЕ дефолт внутри модели.** Проверено
+экспериментом: тег-union pydantic выбирает ветку до валидации её членов, поэтому
+payload без `kind` отвергается `union_tag_not_found`, сколько бы значений по
+умолчанию ни стояло в `PairDocuments.kind`. Одновременно дописать `kind` в файл
+под тегом v1 нельзя: базовая модель несёт `extra="forbid"`, и строгий читатель
+v1 отвергнет такой файл `extra_forbidden`. Отсюда контракт §4.2: v1 заморожена
+без `kind`, всякий файл с `kind` — v2, пишется всегда v2, а чтение v1 идёт через
+`mode="before"`-нормализацию.
 
 - [ ] **Шаг 1: red-тест — union документов и запрет чужой формы**
 
@@ -107,12 +114,24 @@ from disputatio.contracts.pipeline import (
 )
 
 
-def test_pair_documents_default_kind_reads_pre_v02_manifest() -> None:
-    """Манифест, записанный до v0.2, поля kind не несёт — читается как пара."""
-    docs = PairDocuments.model_validate(
-        {"spec_path": "docs/spec.md", "plan_path": "docs/plan.md"}
-    )
-    assert docs.kind == "pair"
+def test_v1_payload_without_kind_reads_as_pair() -> None:
+    """Манифест v0.1 поля kind не несёт — нормализуется по тегу, не дефолтом."""
+    state = PipelineState.model_validate(_pair_payload("disputatio/pipeline/v1"))
+    assert state.kind is PipelineKind.PAIR
+
+
+def test_v1_payload_carrying_kind_is_rejected() -> None:
+    """Файл, лгущий о своей форме, проходить не должен."""
+    payload = _pair_payload("disputatio/pipeline/v1")
+    payload["documents"]["kind"] = "pair"
+    with pytest.raises(ValidationError, match="v1"):
+        PipelineState.model_validate(payload)
+
+
+def test_every_write_carries_v2_tag() -> None:
+    """Пара, заведённая как v1, при первой же записи объявляет форму честно."""
+    state = PipelineState.model_validate(_pair_payload("disputatio/pipeline/v1"))
+    assert state.model_dump(mode="json")["schema"] == "disputatio/pipeline/v2"
 
 
 def test_single_document_rejects_plan_path() -> None:
@@ -180,8 +199,11 @@ class PipelineKind(StrEnum):
 class PairDocuments(ArtifactChild):
     """Пара редактируемых документов (§4.2, `documents.kind = "pair"`).
 
-    `kind` имеет дефолт, поэтому манифесты, записанные до редакции v0.2,
-    читаются без миграции: отсутствие дискриминатора означает пару.
+    Дефолт у `kind` есть, но совместимость держит НЕ он: тег-union выбирает
+    ветку до валидации членов, и payload без дискриминатора отвергается
+    `union_tag_not_found`. Дефолт нужен лишь программному конструированию
+    внутри runner'а; чтение старых файлов чинит нормализация по тегу схемы
+    в `PipelineState` (ниже).
     """
 
     kind: Literal["pair"] = "pair"
@@ -311,11 +333,10 @@ def test_document_state_requires_v2_schema() -> None:
     with pytest.raises(ValidationError, match="disputatio/pipeline/v2"):
         _document_state(schema="disputatio/pipeline/v1")
 
-
-def test_v2_reader_accepts_v1_pair_manifest() -> None:
-    state = PipelineState.model_validate(_pair_payload("disputatio/pipeline/v1"))
-    assert state.kind is PipelineKind.PAIR
 ```
+
+(Чтение v1 и отказ на лгущем теге проверены тестами шага 1; здесь — только
+инварианты вида и обязательность v2 для документного пайплайна.)
 
 (`_document_state` / `_pair_payload` — локальные хелперы файла теста,
 собирающие минимальный валидный payload с `task`/`config`/`checklists`/
@@ -365,19 +386,45 @@ Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
 ```
 
 `PipelineArtifactBase.schema_` расширяется до
-`Literal["disputatio/pipeline/v1", "disputatio/pipeline/v2"]`, а подстановка в
-`__init__` выбирает версию по форме `documents`:
+`Literal["disputatio/pipeline/v1", "disputatio/pipeline/v2"]`, подстановка в
+`__init__` даёт `SCHEMA_PIPELINE_V2` (пишем всегда v2, §4.2), а чтение v1
+чинится нормализацией **до** дискриминации:
 
 ```python
-        if "schema" not in data and "schema_" not in data:
-            documents = data.get("documents")
-            kind = getattr(documents, "kind", None)
-            if kind is None and isinstance(documents, dict):
-                kind = documents.get("kind", "pair")
-            data["schema"] = (
-                SCHEMA_PIPELINE_V2 if kind == "document" else SCHEMA_PIPELINE_V1
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_v1_documents(cls, data: Any) -> Any:
+        """Совместимость с v1 — до выбора ветки union, а не дефолтом в ней.
+
+        Тег-union pydantic извлекает дискриминатор раньше, чем валидирует
+        члена, поэтому `documents` без `kind` отвергается
+        `union_tag_not_found` независимо от значений по умолчанию внутри
+        `PairDocuments`. Дописать же `kind` в файл под тегом v1 нельзя:
+        `extra="forbid"` базовой модели — значит строгий читатель v1
+        отвергнет такой файл. Отсюда правило §4.2: v1 без `kind`, всякий
+        файл с `kind` — v2.
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("schema") != SCHEMA_PIPELINE_V1:
+            return data
+        documents = data.get("documents")
+        if not isinstance(documents, dict):
+            return data
+        if "kind" in documents:
+            raise ValueError(
+                "манифест с тегом disputatio/pipeline/v1 несёт "
+                "documents.kind: версия v1 заморожена без этого поля, файл "
+                "лжёт о своей форме (§4.2)"
             )
+        data = {**data, "documents": {**documents, "kind": "pair"}}
+        data["schema"] = SCHEMA_PIPELINE_V2
+        return data
 ```
+
+Подъём тега прямо здесь — не побочный эффект: прочитанный v1-манифест уже
+представлен в памяти v2-формой, и оставить ему прежний тег значило бы записать
+обратно файл, чья форма не совпадает с объявленной.
 
 - [ ] **Шаг 8: прогнать — тесты проходят, suite зелёный**
 
