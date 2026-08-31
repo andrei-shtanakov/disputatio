@@ -1063,9 +1063,10 @@ git commit -m "feat(context): промпты контура doc, чеклист 
   `_records`, `_records_update`)
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
   таблицы политик)
-- Modify: `tests/runtime/_pipeline_stand.py:366`,
-  `tests/runtime/test_pipeline_runner.py:429,473` — существующие места, где
-  `PipelineRunner` конструируется напрямую
+- Modify: `tests/runtime/_pipeline_stand.py:368`,
+  `tests/runtime/test_pipeline_runner.py:429,473` — существующие ТЕСТОВЫЕ
+  места, где `PipelineRunner` конструируется напрямую (четвёртое, боевое —
+  `composition.py:510`, выше)
 - Test: `tests/runtime/test_pipeline_runner_document.py`
 
 **Интерфейсы (потребляет):** `CONTOURS_BY_KIND`, `TERMINAL_CONTOUR`,
@@ -1110,10 +1111,17 @@ runner'а — `pipeline_runner.py:581`:
 объекта политики в таком пайплайне не существует. Runner делает
 `self._boundary_policies.get(contour)`; ветвления по виду у него нет.
 
-**Параметр обязателен и дефолта не имеет.** Три места конструируют
-`PipelineRunner` напрямую (`_pipeline_stand.py:366`,
-`test_pipeline_runner.py:429` и `:473`), и все три обязаны в этой же задаче
-получить `boundary_policies={CONTOUR_PAIR: ArchitecturalDefectPolicy()}`.
+**Параметр обязателен и дефолта не имеет.** `PipelineRunner` конструируется в
+**четырёх** местах (`grep -rn "PipelineRunner(" src tests`), и все четыре
+закрывает эта задача — иначе после её коммита либо падает `build_pipeline`,
+либо правка боевого файла протекает через границу в чужую задачу:
+
+| Место | Что передать |
+|---|---|
+| `src/disputatio/runtime/composition.py:510` | собранную здесь же таблицу (боевой путь) |
+| `tests/runtime/_pipeline_stand.py:368` | `{CONTOUR_PAIR: ArchitecturalDefectPolicy()}` |
+| `tests/runtime/test_pipeline_runner.py:429` | то же |
+| `tests/runtime/test_pipeline_runner.py:473` | то же |
 Дефолт `{}` был бы худшим из решений: suite позеленел бы молча, а pair-runner
 потерял бы политику — то есть P6 (приоритет архитектурного возврата) перестал
 бы исполняться, и заметил бы это только живой прогон. `TypeError` на
@@ -1246,6 +1254,10 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
         if config.kind is PipelineKind.PAIR
         else {}
     )
+    runner = PipelineRunner(
+        boundary_policies=boundary_policies,
+        # …остальные аргументы `composition.py:510` без изменений
+    )
 ```
 
 - [ ] **Шаг 4: реализация — терминал контура и параметризованное ребро**
@@ -1287,8 +1299,9 @@ Run: `uv run pytest tests/runtime -q && uv run pytest -q`
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/runtime/pipeline_runner.py tests/runtime/
-git commit -m "feat(pipeline): runner ведёт контуры по виду, ребро экспорта параметризовано"
+git add src/disputatio/runtime/pipeline_runner.py \
+        src/disputatio/runtime/composition.py tests/runtime/
+git commit -m "feat(pipeline): runner ведёт контуры по виду, политика приходит таблицей"
 ```
 
 ---
@@ -1357,10 +1370,11 @@ Run: `uv run pytest tests/runtime/test_document_composition.py -q`
 
 - [ ] **Шаг 3: реализация — ветка вида в composition root**
 
-Таблицу политик задача 6 **не переопределяет**: её единственный контракт задан
-задачей 5 (`boundary_policies`, `Mapping[str, RoundBoundaryPolicy]`), и здесь
-она только передаётся в конструктор runner'а. Скалярной политики в плане нет
-нигде — второй контракт разошёлся бы с публичным свойством и P10-тестами.
+Таблицы политик задача 6 **не касается вовсе**: и её контракт, и её передача в
+`PipelineRunner` на `composition.py:510` закрыты задачей 5 целиком. Здесь
+меняются только маршрутизация adoption, границы документов и resume.
+Скалярной политики в плане нет нигде — второй контракт разошёлся бы с публичным
+свойством и P10-тестами.
 
 `_contour_of` расширяется до `str` и возвращает контур как есть (`split_revision`
 уже даёт `"doc"`); `_doc_paths` и граница `doc-scope` берутся из
