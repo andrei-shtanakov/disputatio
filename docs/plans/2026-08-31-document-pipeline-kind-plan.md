@@ -28,10 +28,12 @@
   `uv run pyrefly check`, полный suite зелёный. Строка ≤ 88.
 - `core/deciding.py` и `core/machine.py` **не редактируются ни в одной задаче**
   (SPEC-002 V6/§7.1); правка в них = ошибка декомпозиции плана.
-- **Вид `pair` не меняет поведения ни в одной задаче.** Единственное
-  допустимое отличие — появление `documents.kind = "pair"` в сериализации
-  манифеста (§4.2, объявлено). Любое другое расхождение — регрессия, а не
-  «побочный эффект рефакторинга».
+- **Вид `pair` не меняет поведения ни в одной задаче.** Допустимых отличий
+  ровно два, оба в сериализации манифеста и оба объявлены в §4.2: тег схемы
+  `disputatio/pipeline/v1 → v2` и появление `documents.kind = "pair"`. Они
+  приходят парой и порознь невозможны: файл с `kind` под тегом v1 запрещён
+  контрактом, а тег v2 без `kind` не прошёл бы дискриминацию. Любое другое
+  расхождение — регрессия, а не «побочный эффект рефакторинга».
 - Механика чужого вида **не конструируется** (P10). Проверка на ревью: если в
   диффе появилось `if kind == ...` внутри `PipelineRunner` там, где можно было
   выбрать объект в `build_pipeline`, — это отклонение от P10.
@@ -430,8 +432,26 @@ Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q`
 
 Run: `uv run pytest tests/contracts/test_pipeline_kind.py -q && uv run pytest -q`
 Ожидание: PASS. Существующие тесты манифеста продолжают проходить; если
-какой-то сравнивает сериализацию с эталоном — обновить эталон, добавив
-`"kind": "pair"`, и **в сообщении коммита назвать это изменение**.
+какой-то сравнивает сериализацию с эталоном — обновить эталон **по обоим
+полям сразу**: `"schema": "disputatio/pipeline/v2"` и `"kind": "pair"`.
+Обновить только одно значит зафиксировать эталоном запрещённое состояние.
+Изменение назвать в сообщении коммита.
+
+Отдельным тестом закрепить миграцию целиком, а не по кускам:
+
+```python
+def test_v1_fixture_saves_as_v2_and_keeps_everything_else(tmp_path) -> None:
+    """Пара переходит на v2 ровно двумя полями и ничем больше."""
+    before = json.loads(_V1_FIXTURE.read_text(encoding="utf-8"))
+    after = PipelineState.model_validate(before).model_dump(mode="json")
+    assert after["schema"] == "disputatio/pipeline/v2"
+    assert after["documents"]["kind"] == "pair"
+    stripped = {**after, "schema": before["schema"]}
+    stripped["documents"] = {
+        k: v for k, v in after["documents"].items() if k != "kind"
+    }
+    assert stripped == before
+```
 
 - [ ] **Шаг 9: коммит**
 
