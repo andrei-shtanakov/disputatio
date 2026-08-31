@@ -57,6 +57,10 @@
 **Файлы:**
 - Modify: `src/disputatio/contracts/pipeline.py`
 - Modify: `src/disputatio/contracts/__init__.py` (реэкспорт новых имён)
+- Modify: **все потребители имени `DocumentPaths`** — оно переименовывается,
+  алиаса не остаётся: `src/disputatio/runtime/pipeline_runner.py` (2),
+  `tests/contracts/test_pipeline_state.py` (5),
+  `tests/runtime/test_pipeline_export.py` (2), `tests/contracts/test_init.py` (1)
 - Test: `tests/contracts/test_pipeline_kind.py`
 
 **Интерфейсы (производит):**
@@ -95,7 +99,9 @@ SCHEMA_PIPELINE_V2: Final = "disputatio/pipeline/v2"
 
 **Почему `documents` — union, а не опциональные поля.** «Документный пайплайн с
 `plan_path`» обязан быть невыразим схемой, а не просто не встречаться (§4.2,
-P10). `DocumentPaths` переименовывается в `PairDocuments`.
+P10). `DocumentPaths` переименовывается в `PairDocuments`. **Алиаса старого
+имени не остаётся**, поэтому все четыре потребителя правятся этой же задачей —
+иначе её коммит не может закончиться зелёным suite.
 
 **Совместимость — нормализация по тегу, а НЕ дефолт внутри модели.** Проверено
 экспериментом: тег-union pydantic выбирает ветку до валидации её членов, поэтому
@@ -463,7 +469,8 @@ def test_v1_fixture_saves_as_v2_and_keeps_everything_else(tmp_path) -> None:
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/contracts/ tests/contracts/test_pipeline_kind.py
+git add src/disputatio/contracts/ src/disputatio/runtime/pipeline_runner.py \
+        tests/contracts/ tests/runtime/test_pipeline_export.py
 git commit -m "feat(contracts): вид пайплайна как дискриминатор documents"
 ```
 
@@ -681,6 +688,11 @@ git commit -m "feat(contracts): V8 привязан к роли findings-item, �
 
 **Файлы:**
 - Modify: `src/disputatio/runtime/pipeline_config.py`
+- Modify: **четыре места, конструирующие `PipelineConfig` напрямую** —
+  `kind` обязателен и дефолта не имеет: `tests/runtime/_pipeline_stand.py:337`,
+  `tests/runtime/test_pipeline_runner.py:413`,
+  `tests/runtime/test_pipeline_adopt.py:753`,
+  `tests/runtime/test_pipeline_config.py:315`
 - Test: `tests/runtime/test_pipeline_config_kinds.py`
 
 **Интерфейсы (потребляет):** `PipelineKind`, `ResolvedChecklist` (задачи 1–2).
@@ -977,7 +989,7 @@ Run: `uv run pytest tests/runtime -q && uv run pytest -q`
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/runtime/pipeline_config.py tests/runtime/test_pipeline_config_kinds.py
+git add src/disputatio/runtime/pipeline_config.py tests/runtime/
 git commit -m "feat(pipeline): две формы [pipeline], fail-closed разбор вида"
 ```
 
@@ -1098,7 +1110,8 @@ git commit -m "feat(context): промпты контура doc, чеклист 
 **Файлы:**
 - Modify: `src/disputatio/runtime/pipeline_runner.py` (`__init__`, `run`,
   `_do_run_session`, `_do_finish_session`, `_enter_export`, `_start_pair`,
-  `_records`, `_records_update`)
+  `_records`, `_records_update`, **`_config_snapshot`, `_checklists_snapshot`,
+  `_entry_hashes`, `active_session`, `recompute_budget`**)
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
   таблицы политик)
 - Modify: `tests/runtime/_pipeline_stand.py:368`,
@@ -1298,6 +1311,46 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
     )
 ```
 
+- [ ] **Шаг 3-тер: реализация — снапшоты и entry_hashes под вид**
+
+Три метода runner'а сегодня безусловно читают поля пары и обязаны быть
+переписаны в этой же задаче — иначе документный пайплайн падает на первом же
+`run`, а артефакт задачи 3 (`ResolvedChecklist`) потребляется старым типом:
+
+- `_config_snapshot` (`pipeline_runner.py:1184`) зовёт `.as_posix()` у
+  `spec_path`/`plan_path`, ставших optional. Рендерить по виду: пара — две
+  строки и `max_architectural_returns`, документ — `document_path` без него;
+- `_entry_hashes` (`pipeline_runner.py:1236`) итерирует
+  `(documents.spec_path, documents.plan_path)`. Источник — документы вида:
+  `CONTOURS_BY_KIND`-независимый список из `state.documents`;
+- `_checklists_snapshot` (`pipeline_runner.py:1201`) обращается к значению как
+  к `Mapping[str, str]` и **сортирует пункты по id**. Оба факта меняются:
+  значение теперь `ResolvedChecklist`, а порядок для операторского контура —
+  порядок объявления, потому что он входит в identity чеклиста (§5.3 SPEC-002).
+
+```python
+    def _checklists_snapshot(self) -> str:
+        lines: list[str] = []
+        for contour in sorted(self._config.checklists):
+            checklist = self._config.checklists[contour]
+            lines.append(f"[{contour}]")
+            lines.append(f"findings_item = {_toml_string(checklist.findings_item)}"
+                         if checklist.findings_item is not None
+                         else "findings_item = false")
+            # Встроенные контуры — сортировка по id (состав фиксирован, защищаем
+            # хеш от порядка ключей конфига). Операторский — порядок объявления:
+            # он ЧАСТЬ чеклиста, и отсортированный снапшот его бы потерял.
+            order = (
+                checklist.order
+                if contour == CONTOUR_DOC
+                else tuple(sorted(checklist.order))
+            )
+            for item_id in order:
+                lines.append(f"{item_id} = {_toml_string(checklist.texts[item_id])}")
+            lines.append("")
+        return "\n".join(lines)
+```
+
 - [ ] **Шаг 4: реализация — терминал контура и параметризованное ребро**
 
 В `_do_finish_session` заменить `if contour == CONTOUR_PAIR:` на
@@ -1350,6 +1403,10 @@ git commit -m "feat(pipeline): runner ведёт контуры по виду, �
 - Modify: `src/disputatio/runtime/composition.py:348-624`
 - Modify: `src/disputatio/runtime/pipeline_adopt.py:114-160, 539-570`
 - Modify: `src/disputatio/runtime/pipeline_resume.py`
+- Modify: `tests/runtime/test_pipeline_adopt.py:759` — прямой вызов
+  `compute_scope(git, config, allow_plan=True)` старой формой
+- Modify: `tests/runtime/_pipeline_stand.py:389` — конструирует
+  `OperatorIntents` без нового обязательного `router`
 - Test: `tests/runtime/test_document_composition.py`
 
 **Интерфейсы (потребляет):** всё из задач 1, 3, 5.
@@ -1521,7 +1578,7 @@ Run: `uv run pytest tests/runtime -q && uv run pytest -q`
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/runtime/ tests/runtime/test_document_composition.py
+git add src/disputatio/runtime/ tests/runtime/
 git commit -m "feat(pipeline): composition собирает под вид, adoption и resume знают document"
 ```
 
@@ -1688,8 +1745,8 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 (каталоги создаются существующим кодом по имени ревизии); §4.2 union, коллекции,
 две версии схемы → задача 1; §5.1 промпт контура → задача 4; §5.2 V1/V5/V8 →
 задача 2; §5.3 чеклисты, роль, порядок → задачи 2, 3; §6 `doc-scope` → задача 6;
-§7.1 политика приходит таблицей из composition root → задача 5 (шов),
-задача 6 (передача); §7.2 таблица терминалов → задача 5;
+§7.1 политика приходит таблицей из composition root → **только задача 5**
+(и контракт, и передача в `composition.py:510`); §7.2 таблица терминалов → задача 5;
 §7.3 неприменим → задача 6 (ветка); §8.1 resume → задача 6; §8.2 экспорт →
 задача 7; §9 пакеты — распределение задач ему следует; §10 тесты — каждый пункт
 списка редакции v0.2 закреплён за задачей выше.
