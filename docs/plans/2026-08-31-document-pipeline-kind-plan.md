@@ -490,6 +490,8 @@ git commit -m "feat(contracts): вид пайплайна как дискрим�
   `DocSessionSpec.checklist`; сейчас делает `dict(config.checklists[contour])`
 - Modify: `tests/contracts/test_doc_review_validation.py` — **18 существующих
   вызовов** `validate_doc_review`; смена сигнатуры роняет их все
+- Modify: `tests/contracts/test_init.py:68` — фиксирует состав `__all__`,
+  где лежит переименовываемая константа V8
 - Test: `tests/contracts/test_checklist_role.py`
 
 **Интерфейсы (потребляет):** ничего из задачи 1.
@@ -653,9 +655,24 @@ ResolvedChecklist`, `contour` расширить до `str`. Заменить д
             errors.append(REASON_CHECKLIST_CONTRADICTS_ISSUES)
 ```
 
-(`REASON_CHECKLIST_CONTRADICTS_ISSUES` — переименование существующей
-константы V8; старое имя удалить, не оставляя алиаса: два имени одного кода
-разошлись бы в сообщениях.)
+**Переименование константы V8 — 6 файлов, 14 мест** (точный список:
+`grep -rn "PASS_CONTRADICTS_S1" src tests`). Меняется и имя, и
+машинно-читаемое значение, потому что после перехода на роль лгут оба:
+
+```python
+# было
+REASON_CHECKLIST_PASS_CONTRADICTS_S1 = "checklist_pass_contradicts_s1"
+# стало
+REASON_CHECKLIST_CONTRADICTS_ISSUES = "checklist_pass_contradicts_issues"
+```
+
+Места: `contracts/validation.py` (объявление + использование),
+`contracts/__init__.py` (импорт + `__all__`), `tests/contracts/test_init.py:68`
+(состав `__all__`), `tests/contracts/test_doc_review_validation.py` (9).
+Старое имя удалить, алиаса не оставлять: два имени одного кода разошлись бы в
+сообщениях. Значение уходит в текст retry ревьюеру — то есть код, называющий
+`s1` там, где контур `doc` про `S1` не слышал, вводил бы в заблуждение агента,
+а не только читателя.
 
 Правило V5 оставить условием `if contour == "pair"` — оно и так неприменимо
 к `spec` и `doc` (§5.2).
@@ -1800,6 +1817,29 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 **Осознанный пропуск.** Гейт под DSL devtools (`#### BEH-NN`, `traces:`,
 `checked_by`) в план не входит: §11 SPEC-002 держит его отдельным doc-гейтом
 сверх baseline, он не зависит от вида пайплайна и приедет своим PR.
+
+**Финальный инвентарь меняемых интерфейсов** — каждый со своим владельцем и
+полным списком потребителей, сверенным `grep`'ом по `src` и `tests`:
+
+| Интерфейс | Владелец | Потребителей |
+|---|---|---|
+| `DocumentPaths` → `PairDocuments` | задача 1 | 4 файла (runner, 3 теста) |
+| `PipelineState.documents` / `doc_sessions` | задача 1 | 4 конструктора |
+| `validate_doc_review(..., checklist=)` | задача 2 | 19 (1 боевой + 18) |
+| `REASON_CHECKLIST_PASS_CONTRADICTS_S1` → … | задача 2 | 6 файлов / 14 мест |
+| `DocSessionSpec.checklist` → `ResolvedChecklist` | задача 2 | 1 (`composition.py:493`) |
+| `PipelineConfig.checklists` → `ResolvedChecklist` | задача 3 | 13 индексаций + composition |
+| `PipelineConfig.kind` (обязателен) | задача 3 | 4 прямых конструктора |
+| `build_doc_*_prompt(..., checklist=)` | задача 4 | 20 (2 боевых + 18) |
+| `PipelineRunner.__init__(boundary_policies=)` | задача 5 | 4 (1 боевой + 3 теста) |
+| `_config_snapshot` / `_entry_hashes` / `_checklists_snapshot` | задача 5 | внутренние |
+| `compute_scope(git, *, allowed_paths)` | задача 6 | 3 (2 боевых + 1 тест) |
+| `OperatorIntents.__init__(router=)` | задача 6 | 2 (composition + стенд) |
+| `PipelineDeps.intents` | задача 6 | 1 (composition) |
+| `render_status` | задача 7 | 2 (cli), тестов сегодня нет |
+
+Правило проверки перед каждой задачей — в «Глобальных ограничениях»: `grep`
+по имени, сверка со списком файлов, расхождение — дефект плана.
 
 **Согласованность имён.** `ResolvedChecklist` (задача 2) — тот же тип в задачах
 3 и 4. `SESSIONS_FIELD_BY_CONTOUR` (задача 1) — единственный источник имени
