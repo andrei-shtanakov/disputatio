@@ -105,7 +105,7 @@ SESSIONS_FIELD_BY_CONTOUR: Final[dict[str, str]]
 SCHEMA_PIPELINE_V2: Final = "disputatio/pipeline/v2"
 ```
 
-`PipelinePhase.DOC_LOOP`, `TransitionReason.DOCUMENT_CONVERGED`,
+`PHASES_BY_KIND`, `PipelinePhase.DOC_LOOP`, `TransitionReason.DOCUMENT_CONVERGED`,
 `PipelineState.doc_sessions`, `PipelineState.kind` (property, читает
 `documents.kind`).
 
@@ -360,10 +360,35 @@ SESSIONS_FIELD_BY_CONTOUR: Final[dict[str, str]] = {
 `SPEC_LOOP`/`PAIR_LOOP` и для `DOC_LOOP` **не переиспользуется**: у вида
 `document` возвратов нет, и общий набор внёс бы причину, которая не наступает.
 
-Принадлежность рёбер видам:
+Принадлежность рёбер видам. **`FAILED`-рёбра выводятся из фаз вида, а не
+берутся общим списком** — иначе документный манифест с ребром
+`SPEC_LOOP → FAILED` прошёл бы проверку, и fail-closed обещание §2 оказалось бы
+ложным для целого класса переходов:
 
 ```python
-EDGES_BY_KIND: Final[
+#: Фазы, принадлежащие каждому виду. Отсюда выводятся и FAILED-рёбра:
+#: у вида нет своей фазы — нет и перехода из неё, даже в FAILED.
+PHASES_BY_KIND: Final[dict[PipelineKind, tuple[PipelinePhase, ...]]] = {
+    PipelineKind.PAIR: (PipelinePhase.SPEC_LOOP, PipelinePhase.PAIR_LOOP),
+    PipelineKind.DOCUMENT: (PipelinePhase.DOC_LOOP,),
+}
+
+#: Нетерминальные фазы, общие обоим видам.
+_COMMON_PHASES: Final = (
+    PipelinePhase.IDLE,
+    PipelinePhase.EXPORTING,
+    PipelinePhase.ESCALATED,
+)
+
+_SHARED_EDGES: Final = frozenset(
+    {
+        (PipelinePhase.ESCALATED, PipelinePhase.EXPORTING),
+        (PipelinePhase.EXPORTING, PipelinePhase.DONE),
+        *((phase, PipelinePhase.FAILED) for phase in _COMMON_PHASES),
+    }
+)
+
+_OWN_EDGES: Final[
     dict[PipelineKind, frozenset[tuple[PipelinePhase, PipelinePhase]]]
 ] = {
     PipelineKind.PAIR: frozenset(
@@ -374,7 +399,6 @@ EDGES_BY_KIND: Final[
             (PipelinePhase.PAIR_LOOP, PipelinePhase.SPEC_LOOP),
             (PipelinePhase.SPEC_LOOP, PipelinePhase.ESCALATED),
             (PipelinePhase.PAIR_LOOP, PipelinePhase.ESCALATED),
-            *_SHARED_EDGES,
         }
     ),
     PipelineKind.DOCUMENT: frozenset(
@@ -382,14 +406,25 @@ EDGES_BY_KIND: Final[
             (PipelinePhase.IDLE, PipelinePhase.DOC_LOOP),
             (PipelinePhase.DOC_LOOP, PipelinePhase.EXPORTING),
             (PipelinePhase.DOC_LOOP, PipelinePhase.ESCALATED),
-            *_SHARED_EDGES,
         }
     ),
 }
+
+EDGES_BY_KIND: Final[
+    dict[PipelineKind, frozenset[tuple[PipelinePhase, PipelinePhase]]]
+] = {
+    kind: own
+    | _SHARED_EDGES
+    | frozenset((phase, PipelinePhase.FAILED) for phase in PHASES_BY_KIND[kind])
+    for kind, own in _OWN_EDGES.items()
+}
 ```
 
-где `_SHARED_EDGES` — `(ESCALATED, EXPORTING)`, `(EXPORTING, DONE)` и все
-`(phase, FAILED)`.
+Общая таблица `ALLOWED_TRANSITIONS` при этом по-прежнему содержит
+`(phase, FAILED)` для **всех** нетерминальных фаз — она описывает машину
+целиком, и это верно. Сужает её `EDGES_BY_KIND`, и сужение обязано доходить до
+`FAILED`: «любая нетерминальная фаза → FAILED» в §2 означает любую фазу
+**своего** вида.
 
 **Таблицу обязательно ПОДКЛЮЧИТЬ к валидации, а не только объявить.**
 `Transition._validate_against_table` вида не знает и знать не может — вид
@@ -425,6 +460,34 @@ def test_state_rejects_transition_of_foreign_kind() -> None:
                     "at": "2026-08-31T00:00:00Z",
                 }
             ]
+        )
+
+
+@pytest.mark.parametrize(
+    "kind, foreign_phase",
+    [("document", "SPEC_LOOP"), ("document", "PAIR_LOOP"), ("pair", "DOC_LOOP")],
+)
+def test_state_rejects_failed_edge_from_foreign_phase(
+    kind: str, foreign_phase: str
+) -> None:
+    """Сужение по виду доходит и до FAILED-рёбер.
+
+    «Любая нетерминальная фаза → FAILED» в §2 означает любую фазу СВОЕГО
+    вида. Общий список всех `(phase, FAILED)` пропускал бы документный
+    манифест с историей `SPEC_LOOP → FAILED` — целый класс переходов мимо
+    fail-closed проверки.
+    """
+    with pytest.raises(ValidationError, match="чужое виду"):
+        _state_of_kind(
+            kind,
+            transitions=[
+                {
+                    "from": foreign_phase,
+                    "to": "FAILED",
+                    "reason": "invariant_violation",
+                    "at": "2026-08-31T00:00:00Z",
+                }
+            ],
         )
 
 
