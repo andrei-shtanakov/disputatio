@@ -66,7 +66,8 @@
   `tests/runtime/test_pipeline_export.py` (2), `tests/contracts/test_init.py` (1)
 - Modify: **все читатели `documents.spec_path`/`.plan_path`** — после union
   этих полей у ветки `SingleDocument` нет, и `pyrefly` краснеет немедленно:
-  `pipeline_runner.py:1236`, `pipeline_export.py:291,300,301`, `cli.py:409`
+  `pipeline_runner.py:1236`, `pipeline_export.py:291,300,301`, `cli.py:409`.
+  Вывод пары при этом обязан остаться **байт-в-байт прежним** — см. ниже
 - Test: `tests/contracts/test_pipeline_kind.py`
 
 **Интерфейсы (производит):**
@@ -132,11 +133,29 @@ class SingleDocument(ArtifactChild):
 `_entry_hashes` итерирует `state.documents.paths()` (задача 5 его уже не
 касается), `_pr_title` и `cli.py:409` собирают
 `" + ".join(state.documents.paths())` — для пары это байт-в-байт прежняя
-строка. Оставшиеся две (`pipeline_export.py:300-301`, прозаические «Спека:» и
-«План:») в этой задаче становятся общим списком документов, а окончательную
-формулировку по виду им даёт задача 7. Эта двухшаговость объявлена
-намеренно: две строки переписываются дважды, зато ни одна задача не
-заканчивается красным типчекером.
+строка.
+
+Оставшиеся две (`pipeline_export.py:300-301`, прозаические «Спека:» и «План:»)
+**сохраняют прежний вид пары дословно**, а не становятся общим списком.
+Сужением по ветке union, без ветвления по виду:
+
+```python
+    documents = state.documents
+    if isinstance(documents, PairDocuments):
+        lines += [
+            f"Спека: `{documents.spec_path}`",
+            f"План: `{documents.plan_path}`",
+        ]
+```
+
+Первая редакция плана предлагала здесь общий список с обещанием «задача 7
+вернёт формулировку по виду», и это было нарушением глобального ограничения
+этого же плана: `pr_body.md` — пользовательский артефакт, а ограничение
+разрешает виду `pair` ровно три отличия, и все три в сериализации манифеста.
+Хуже того, нарушение было бы **невидимым**: существующий тест
+(`test_pipeline_export.py:668`) утверждает лишь присутствие путей, а не
+подписей, так что suite остался бы зелёным. Задача 7 добавляет к сужению
+ветку документа — она дописывает, а не переписывает.
 
 **Совместимость — нормализация по тегу, а НЕ дефолт внутри модели.** Проверено
 экспериментом: тег-union pydantic выбирает ветку до валидации её членов, поэтому
@@ -167,6 +186,18 @@ def test_v1_payload_without_kind_reads_as_pair() -> None:
     """Манифест v0.1 поля kind не несёт — нормализуется по тегу, не дефолтом."""
     state = PipelineState.model_validate(_pair_payload("disputatio/pipeline/v1"))
     assert state.kind is PipelineKind.PAIR
+
+
+def test_pair_pr_body_labels_are_untouched(pair_export) -> None:
+    """Регрессия: `pr_body.md` пары не меняется ни в одной задаче.
+
+    Существующий тест экспорта проверяет присутствие путей, но не подписей,
+    и потому пропустил бы замену «Спека:»/«План:» общим списком. Ограничение
+    плана называет три допустимых отличия у пары, и все три — в манифесте.
+    """
+    body = pair_export.pr_body
+    assert "Спека: `docs/spec.md`" in body
+    assert "План: `docs/plan.md`" in body
 
 
 def test_v1_payload_carrying_kind_is_rejected() -> None:
@@ -1922,8 +1953,13 @@ Run: `uv run pytest tests/runtime/test_export_document.py tests/cli/test_cli_pip
 
 - [ ] **Шаг 3: реализация**
 
-`_pr_title` и `_pr_body` ветвятся по `state.kind`; секции сессий строятся по
-`CONTOURS_BY_KIND[state.kind]`, а не по фиксированной паре.
+`_pr_title` уже собран из `documents.paths()` задачей 1 и не трогается.
+`_pr_body` **дописывает** ветку документа к сужению, введённому задачей 1
+(«Документ: `<path>`» рядом с существующими «Спека:»/«План:» пары); подписи
+пары остаются дословно прежними — тест
+`test_pair_pr_body_labels_are_untouched` из задачи 1 обязан продолжать
+проходить. Секции сессий строятся по `CONTOURS_BY_KIND[state.kind]`, а не по
+фиксированной паре.
 
 `render_status`: `kind: {state.kind.value}` первой строкой; строка `documents:`
 рендерится по виду (`{spec} + {plan}` либо один путь).
