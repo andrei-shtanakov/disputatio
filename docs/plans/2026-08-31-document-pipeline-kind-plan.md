@@ -61,6 +61,9 @@
   алиаса не остаётся: `src/disputatio/runtime/pipeline_runner.py` (2),
   `tests/contracts/test_pipeline_state.py` (5),
   `tests/runtime/test_pipeline_export.py` (2), `tests/contracts/test_init.py` (1)
+- Modify: **все читатели `documents.spec_path`/`.plan_path`** — после union
+  этих полей у ветки `SingleDocument` нет, и `pyrefly` краснеет немедленно:
+  `pipeline_runner.py:1236`, `pipeline_export.py:291,300,301`, `cli.py:409`
 - Test: `tests/contracts/test_pipeline_kind.py`
 
 **Интерфейсы (производит):**
@@ -102,6 +105,35 @@ SCHEMA_PIPELINE_V2: Final = "disputatio/pipeline/v2"
 P10). `DocumentPaths` переименовывается в `PairDocuments`. **Алиаса старого
 имени не остаётся**, поэтому все четыре потребителя правятся этой же задачей —
 иначе её коммит не может закончиться зелёным suite.
+
+**Расширение типа и миграция читателей — одна атомарная единица.** Как только
+`documents` становится union'ом, всякое обращение к `.spec_path`/`.plan_path`
+перестаёт типизироваться: у ветки `SingleDocument` таких полей нет. Отложить
+эти пять мест до задач 5 и 7, как было в первой редакции плана, значит оставить
+`pyrefly check` красным на две задачи вперёд — а он объявлен обязательным после
+каждой. Поэтому union приходит вместе с общим аксессором, и читатели переходят
+на него здесь же:
+
+```python
+class PairDocuments(ArtifactChild):
+    def paths(self) -> tuple[str, ...]:
+        return (self.spec_path, self.plan_path)
+
+
+class SingleDocument(ArtifactChild):
+    def paths(self) -> tuple[str, ...]:
+        return (self.document_path,)
+```
+
+Три из пяти мест получают окончательную форму и больше не трогаются:
+`_entry_hashes` итерирует `state.documents.paths()` (задача 5 его уже не
+касается), `_pr_title` и `cli.py:409` собирают
+`" + ".join(state.documents.paths())` — для пары это байт-в-байт прежняя
+строка. Оставшиеся две (`pipeline_export.py:300-301`, прозаические «Спека:» и
+«План:») в этой задаче становятся общим списком документов, а окончательную
+формулировку по виду им даёт задача 7. Эта двухшаговость объявлена
+намеренно: две строки переписываются дважды, зато ни одна задача не
+заканчивается красным типчекером.
 
 **Совместимость — нормализация по тегу, а НЕ дефолт внутри модели.** Проверено
 экспериментом: тег-union pydantic выбирает ветку до валидации её членов, поэтому
@@ -469,8 +501,8 @@ def test_v1_fixture_saves_as_v2_and_keeps_everything_else(tmp_path) -> None:
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/contracts/ src/disputatio/runtime/pipeline_runner.py \
-        tests/contracts/ tests/runtime/test_pipeline_export.py
+git add src/disputatio/contracts/ src/disputatio/runtime/ \
+        src/disputatio/cli.py tests/contracts/ tests/runtime/test_pipeline_export.py
 git commit -m "feat(contracts): вид пайплайна как дискриминатор documents"
 ```
 
@@ -666,9 +698,10 @@ REASON_CHECKLIST_PASS_CONTRADICTS_S1 = "checklist_pass_contradicts_s1"
 REASON_CHECKLIST_CONTRADICTS_ISSUES = "checklist_pass_contradicts_issues"
 ```
 
-Места: `contracts/validation.py` (объявление + использование),
-`contracts/__init__.py` (импорт + `__all__`), `tests/contracts/test_init.py:68`
-(состав `__all__`), `tests/contracts/test_doc_review_validation.py` (9).
+Места — четыре файла, 14 вхождений: `contracts/validation.py` (2),
+`contracts/__init__.py` (2: импорт и `__all__`),
+`tests/contracts/test_init.py:68` (1),
+`tests/contracts/test_doc_review_validation.py` (9).
 Старое имя удалить, алиаса не оставлять: два имени одного кода разошлись бы в
 сообщениях. Значение уходит в текст retry ревьюеру — то есть код, называющий
 `s1` там, где контур `doc` про `S1` не слышал, вводил бы в заблуждение агента,
@@ -722,9 +755,13 @@ git commit -m "feat(contracts): V8 привязан к роли findings-item, �
 - Modify: `src/disputatio/runtime/pipeline_config.py`
 - Modify: `src/disputatio/runtime/composition.py:493` — перестаёт собирать
   `ResolvedChecklist` и передаёт уже разрешённый объект конфига
-- Modify: `tests/runtime/test_pipeline_config.py` — **13 мест индексируют
+- Modify: `tests/runtime/test_pipeline_config.py` — **7 строк индексируют
   `config.checklists[...][...]` как словарь** (напр. `:127`, `:272`); после
   смены типа обращение идёт через `.texts[...]`
+- Modify: **все читатели `config.spec_path`/`.plan_path`** — поля становятся
+  `Path | None`, и `.as_posix()` на них немедленно краснит `pyrefly`:
+  `pipeline_runner.py:410,411,1184,1185`, `composition.py:596,599,621,623`,
+  `pipeline_adopt.py:126,128,158`
 - Modify: **четыре места, конструирующие `PipelineConfig` напрямую** —
   `kind` обязателен и дефолта не имеет: `tests/runtime/_pipeline_stand.py:337`,
   `tests/runtime/test_pipeline_runner.py:413`,
@@ -755,6 +792,23 @@ class PipelineConfig:
 **разобранный конфиг**, а он обязан уметь представить обе формы. Невыразимость
 чужой формы держит манифест (задача 1) и fail-closed разбор ниже; тип
 `PipelineConfig` строит его.
+
+**Но сырые опциональные поля наружу не выходят — их закрывают три аксессора,
+и читатели переходят на них в этой же задаче.** Причина та же, что в задаче 1:
+как только `spec_path` становится `Path | None`, одиннадцать существующих
+`.as_posix()` краснят `pyrefly`, а он обязателен после каждой задачи. Отложить
+их до задач 5 и 6 нельзя.
+
+| Читатель | Было | Стало |
+|---|---|---|
+| `pipeline_runner.py:410-411` | `config.spec_path.as_posix()` ×2 | `_documents()` (шаг задачи 5) |
+| `pipeline_runner.py:1184-1185` | две строки TOML | `config.documents()` |
+| `composition.py:596-599` | `_doc_paths` тернарником | `config.contour_documents(contour)` |
+| `composition.py:621-623` | `allowed` тернарником | `config.scope_paths(contour)` |
+| `pipeline_adopt.py:126,128,158` | `allowed` из пары | `config.scope_paths(contour)` |
+
+Сигнатуры аксессоров объявлены выше и в задачах 5–6 уже не меняются: те
+задачи меняют семантику вида, а не способ добраться до путей.
 
 - [ ] **Шаг 1: red-тест — XOR форм и текст отказа**
 
@@ -1026,7 +1080,7 @@ Run: `uv run pytest tests/runtime -q && uv run pytest -q`
 
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
-git add src/disputatio/runtime/pipeline_config.py tests/runtime/
+git add src/disputatio/runtime/ tests/runtime/
 git commit -m "feat(pipeline): две формы [pipeline], fail-closed разбор вида"
 ```
 
@@ -1148,7 +1202,8 @@ git commit -m "feat(context): промпты контура doc, чеклист 
 - Modify: `src/disputatio/runtime/pipeline_runner.py` (`__init__`, `run`,
   `_do_run_session`, `_do_finish_session`, `_enter_export`, `_start_pair`,
   `_records`, `_records_update`, **`_config_snapshot`, `_checklists_snapshot`,
-  `_entry_hashes`, `active_session`, `recompute_budget`**)
+  `active_session`, `recompute_budget`**) — `_entry_hashes` уже переведён на
+  `documents.paths()` задачей 1 и здесь не трогается
 - Modify: `src/disputatio/runtime/composition.py` (`build_pipeline` — сборка
   таблицы политик)
 - Modify: `tests/runtime/_pipeline_stand.py:368`,
@@ -1350,16 +1405,12 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
 
 - [ ] **Шаг 3-тер: реализация — снапшоты и entry_hashes под вид**
 
-Три метода runner'а сегодня безусловно читают поля пары и обязаны быть
-переписаны в этой же задаче — иначе документный пайплайн падает на первом же
-`run`, а артефакт задачи 3 (`ResolvedChecklist`) потребляется старым типом:
+Два метода runner'а обязаны быть переписаны в этой же задаче — иначе артефакт
+задачи 3 (`ResolvedChecklist`) потребляется старым типом:
 
 - `_config_snapshot` (`pipeline_runner.py:1184`) зовёт `.as_posix()` у
   `spec_path`/`plan_path`, ставших optional. Рендерить по виду: пара — две
   строки и `max_architectural_returns`, документ — `document_path` без него;
-- `_entry_hashes` (`pipeline_runner.py:1236`) итерирует
-  `(documents.spec_path, documents.plan_path)`. Источник — документы вида:
-  `CONTOURS_BY_KIND`-независимый список из `state.documents`;
 - `_checklists_snapshot` (`pipeline_runner.py:1201`) обращается к значению как
   к `Mapping[str, str]` и **сортирует пункты по id**. Оба факта меняются:
   значение теперь `ResolvedChecklist`, а порядок для операторского контура —
@@ -1824,19 +1875,26 @@ git commit -m "test(pipeline): сквозные сценарии вида docume
 | Интерфейс | Владелец | Потребителей |
 |---|---|---|
 | `DocumentPaths` → `PairDocuments` | задача 1 | 4 файла (runner, 3 теста) |
-| `PipelineState.documents` / `doc_sessions` | задача 1 | 4 конструктора |
+| `PipelineState.documents` → union | задача 1 | 4 конструктора **+ 5 читателей полей ветки** |
+| `PipelineState.doc_sessions` | задача 1 | аддитивно |
 | `validate_doc_review(..., checklist=)` | задача 2 | 19 (1 боевой + 18) |
-| `REASON_CHECKLIST_PASS_CONTRADICTS_S1` → … | задача 2 | 6 файлов / 14 мест |
+| `REASON_CHECKLIST_PASS_CONTRADICTS_S1` → … | задача 2 | 4 файла / 14 мест |
 | `DocSessionSpec.checklist` → `ResolvedChecklist` | задача 2 | 1 (`composition.py:493`) |
-| `PipelineConfig.checklists` → `ResolvedChecklist` | задача 3 | 13 индексаций + composition |
+| `PipelineConfig.checklists` → `ResolvedChecklist` | задача 3 | 7 индексаций + composition |
+| `PipelineConfig.spec_path`/`plan_path` → `Path \| None` | задача 3 | **11 читателей** |
 | `PipelineConfig.kind` (обязателен) | задача 3 | 4 прямых конструктора |
 | `build_doc_*_prompt(..., checklist=)` | задача 4 | 20 (2 боевых + 18) |
 | `PipelineRunner.__init__(boundary_policies=)` | задача 5 | 4 (1 боевой + 3 теста) |
-| `_config_snapshot` / `_entry_hashes` / `_checklists_snapshot` | задача 5 | внутренние |
-| `compute_scope(git, *, allowed_paths)` | задача 6 | 3 (2 боевых + 1 тест) |
+| `_config_snapshot` / `_checklists_snapshot` | задача 5 | внутренние |
+| `compute_scope(git, *, allowed_paths)` | задача 6 | 2 (1 боевой + 1 тест) |
 | `OperatorIntents.__init__(router=)` | задача 6 | 2 (composition + стенд) |
 | `PipelineDeps.intents` | задача 6 | 1 (composition) |
-| `render_status` | задача 7 | 2 (cli), тестов сегодня нет |
+| `render_status` | задача 7 | 1 (cli), тестов сегодня нет |
+
+**Правило, выведенное из этой таблицы:** расширение или опционализация типа
+принадлежит той же задаче, что и миграция его читателей. Иначе задача
+заканчивается красным `pyrefly` — и именно так план был устроен до раунда 8
+в двух местах сразу (union документов и опциональные пути конфига).
 
 Правило проверки перед каждой задачей — в «Глобальных ограничениях»: `grep`
 по имени, сверка со списком файлов, расхождение — дефект плана.
