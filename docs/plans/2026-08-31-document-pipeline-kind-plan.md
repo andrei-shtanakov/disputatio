@@ -483,12 +483,27 @@ git commit -m "feat(contracts): вид пайплайна как дискрим�
 - Modify: `src/disputatio/contracts/validation.py:160-245`
 - Modify: `src/disputatio/contracts/__init__.py`
 - Modify: `src/disputatio/runtime/steps.py` — единственный боевой вызов
-  `validate_doc_review`
+  `validate_doc_review` **и тип `DocSessionSpec.checklist`**
+  (`Mapping[str, str]` → `ResolvedChecklist`, `steps.py:130`); `contour`
+  расширяется до `str`
+- Modify: `src/disputatio/runtime/composition.py:493` — собирает
+  `DocSessionSpec.checklist`; сейчас делает `dict(config.checklists[contour])`
 - Modify: `tests/contracts/test_doc_review_validation.py` — **18 существующих
   вызовов** `validate_doc_review`; смена сигнатуры роняет их все
 - Test: `tests/contracts/test_checklist_role.py`
 
 **Интерфейсы (потребляет):** ничего из задачи 1.
+
+**Тип тянется сквозным за один заход, а не оседает на полпути.** Цепочка,
+по которой чеклист доходит до ревьюера, состоит из четырёх звеньев:
+`PipelineConfig.checklists` → `composition.py:493` → `DocSessionSpec.checklist`
+→ промпт и `validate_doc_review`. Задача 2 переводит на `ResolvedChecklist`
+три последних звена, собирая объект в `composition.py:493` из вендоренного
+каталога и текстов конфига (сам конфиг здесь ещё отдаёт `Mapping[str, str]`).
+Задача 3 переводит первое звено и упрощает `composition.py:493` до передачи
+уже разрешённого объекта. Так каждая из двух задач заканчивается зелёным
+suite; оставить `ResolvedChecklist` жить только внутри валидатора значило бы
+собирать его дважды и разойтись между сборками.
 
 **Интерфейсы (производит):**
 
@@ -678,7 +693,7 @@ V8 бездействует, работу делает V7.
 ```bash
 uv run ruff format . && uv run ruff check . && uv run pyrefly check
 git add src/disputatio/contracts/ src/disputatio/runtime/steps.py \
-        tests/contracts/
+        src/disputatio/runtime/composition.py tests/contracts/
 git commit -m "feat(contracts): V8 привязан к роли findings-item, а не к S1"
 ```
 
@@ -688,6 +703,11 @@ git commit -m "feat(contracts): V8 привязан к роли findings-item, �
 
 **Файлы:**
 - Modify: `src/disputatio/runtime/pipeline_config.py`
+- Modify: `src/disputatio/runtime/composition.py:493` — перестаёт собирать
+  `ResolvedChecklist` и передаёт уже разрешённый объект конфига
+- Modify: `tests/runtime/test_pipeline_config.py` — **13 мест индексируют
+  `config.checklists[...][...]` как словарь** (напр. `:127`, `:272`); после
+  смены типа обращение идёт через `.texts[...]`
 - Modify: **четыре места, конструирующие `PipelineConfig` напрямую** —
   `kind` обязателен и дефолта не имеет: `tests/runtime/_pipeline_stand.py:337`,
   `tests/runtime/test_pipeline_runner.py:413`,
@@ -1349,6 +1369,32 @@ Run: `uv run pytest tests/runtime/test_pipeline_runner_document.py -q`
                 lines.append(f"{item_id} = {_toml_string(checklist.texts[item_id])}")
             lines.append("")
         return "\n".join(lines)
+```
+
+- [ ] **Шаг 3-кватер: тест контракта снапшота**
+
+Формат снапшота стал частью критерия сходимости (§5.3), значит его надо
+закрепить, а не оставить следствием реализации:
+
+```python
+def test_doc_snapshot_keeps_declaration_order(document_stand) -> None:
+    """Порядок объявления — часть чеклиста, снапшот обязан его сохранить."""
+    snapshot = document_stand.checklists_snapshot(order=("B3", "B1"))
+    assert snapshot.index("B3 =") < snapshot.index("B1 =")
+
+
+def test_reordering_doc_items_changes_hash(document_stand) -> None:
+    """Два порядка одних условий — разные чеклисты, значит разные байты."""
+    first = document_stand.checklists_snapshot(order=("B3", "B1"))
+    second = document_stand.checklists_snapshot(order=("B1", "B3"))
+    assert first != second
+
+
+def test_snapshot_carries_findings_item_for_every_contour(pair_stand) -> None:
+    """Роль — часть критерия; пустота pair записана, а не подразумевается."""
+    snapshot = pair_stand.checklists_snapshot()
+    assert 'findings_item = "S1"' in snapshot
+    assert "findings_item = false" in snapshot  # контур pair
 ```
 
 - [ ] **Шаг 4: реализация — терминал контура и параметризованное ребро**
