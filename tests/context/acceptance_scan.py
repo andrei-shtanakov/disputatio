@@ -108,15 +108,19 @@ TASK-001 уже прорастал недетерминированный тег
 FORBIDDEN_CALLS: frozenset[str] = frozenset({"open", "__import__"})
 """Вызовы-обходы: файл можно открыть, ничего не импортировав."""
 
-EXEMPT_TEST_MODULES: frozenset[str] = frozenset({"test_doc_prompts.py"})
+EXEMPT_TEST_MODULES: frozenset[str] = frozenset(
+    {"test_doc_prompts.py", "test_doc_prompts_document_kind.py"}
+)
 """Тест-модули, сознательно оставленные вне матрицы покрытия.
 
 Пусто для любого теста воркстрима w-context (TASK-001…008): там
 исключение было бы признанием, что тест ничего не закрывает. Единственное
 легитимное исключение — тест-модуль другого плана: `test_doc_prompts.py`
 закрывает задачу 11 SPEC-002 (`.superpowers/sdd/
-2026-08-28-spec-pair-pipeline-plan/task-11-brief.md`), написанную поверх
-уже сертифицированного волной 1 воркстрима. Матрица REQ-001…011/
+2026-08-28-spec-pair-pipeline-plan/task-11-brief.md`), а
+`test_doc_prompts_document_kind.py` — задачу 4 плана вида `document`
+(`docs/plans/2026-08-31-document-pipeline-kind-plan.md`); оба написаны
+поверх уже сертифицированного волной 1 воркстрима. Матрица REQ-001…011/
 NFR-001…004 фиксирует требования именно того воркстрима — расширять её
 под предмет, которого не существовало на момент её написания, значит
 обесценить трассируемость остальных строк.
