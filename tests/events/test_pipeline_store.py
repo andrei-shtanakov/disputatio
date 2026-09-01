@@ -56,6 +56,34 @@ def make_pipeline_state(**overrides: Any) -> PipelineState:
     return PipelineState.model_validate(payload)
 
 
+def make_document_pipeline_state(**overrides: Any) -> PipelineState:
+    """То же, но вида `document` (§4.2): один документ, коллекция `doc_sessions`.
+
+    Отдельный конструктор, а не флаг у общего: вид пары и вид документа —
+    две взаимоисключающие формы манифеста, и собрать их одним словарём с
+    опциональными ключами значило бы воспроизвести в тесте ровно ту
+    «запись с опциональными полями», от которой §4.2 уходит по построению.
+    """
+    payload: dict[str, Any] = {
+        "schema": "disputatio/pipeline/v2",
+        "pipeline_id": _SLUG,
+        "created_at": "2026-08-28T12:00:00+00:00",
+        "phase": "IDLE",
+        "task": {"path": "task.md", "sha256": _SHA},
+        "config": {"path": "config.toml", "sha256": _SHA},
+        "checklists": {"path": "checklists.toml", "sha256": _SHA},
+        "documents": {"kind": "document", "document_path": "docs/charter.md"},
+        "doc_sessions": [],
+        "transitions": [],
+        "budget_used": {"tokens": 0, "wall_seconds": 0.0, "cost_usd_est": 0.0},
+        "operator_decisions": [],
+        "anchor_id": _SLUG,
+        "next_action": None,
+    }
+    payload.update(overrides)
+    return PipelineState.model_validate(payload)
+
+
 def make_session_record(revision: int = 1, **overrides: Any) -> SessionRecord:
     """Запись о ревизии сессии — груз append-only списков манифеста."""
     fields: dict[str, Any] = {
@@ -282,6 +310,20 @@ def test_pair_sessions_guarded_too(store: Any) -> None:
 
     with pytest.raises(ValueError):
         store.save(make_pipeline_state(pair_sessions=[]))
+
+
+def test_doc_sessions_guarded_too(store: Any) -> None:
+    """`doc_sessions` под тем же guard'ом, что и две прежние коллекции.
+
+    Пятая append-only коллекция не должна была остаться без защиты: guard
+    называл коллекции литералами и обещал докстрингом «все четыре», так что
+    усечённую историю doc-ревизий стор принял бы и записал атомарно.
+    """
+    first = make_session_record(session_id="doc-r1", path="sessions/doc-r1")
+    store.save(make_document_pipeline_state(doc_sessions=[first.model_dump()]))
+
+    with pytest.raises(ValueError):
+        store.save(make_document_pipeline_state(doc_sessions=[]))
 
 
 def test_superseded_by_and_first_outcome_allowed(store: Any) -> None:

@@ -256,9 +256,19 @@ class PipelineResume:
         *,
         decision: Literal["discard_round", "adopt_external"] | None = None,
     ) -> PipelineState:
-        """Продолжает пайплайн `slug`, соблюдая порядок §8.1."""
+        """Продолжает пайплайн `slug`, соблюдая порядок §8.1.
+
+        Сверка вида (P0) стоит **сразу после чтения манифеста** — не раньше
+        и не позже. Раньше нельзя: вид живёт в манифесте, а манифесту нельзя
+        верить, пока не сверена целостность control plane (шаг 0), и её
+        отказ сам мутирует — переводит пайплайн в `FAILED`; §2 P0 объявляет
+        эту мутацию единственной, законно предшествующей проверке вида.
+        Позже нельзя: следом идут `detect_parked`, классификация дерева и
+        мутирующая фаза, а P0 запрещает мутации шагов 3–5 до сверки.
+        """
         anchor = self._verify_integrity(slug)
         state = self._load(slug, anchor)
+        _require_same_kind(state, self._config, slug)
         parked = self._runner.detect_parked(state)
         pending = _pending_operator_intent(state)
         diff = self._git.diff_readonly()
@@ -550,3 +560,20 @@ def missing_manifest_message(
         "Артефакты сессий в каталоге, если они есть, перед удалением стоит "
         "сохранить: пайплайн их уже не прочитает."
     )
+
+
+def _require_same_kind(state: PipelineState, config: PipelineConfig, slug: str) -> None:
+    """Вид пайплайна неизменяем (§2 P0): чужой конфиг — отказ, не переключение.
+
+    Сменить вид значило бы объявить накопленную историю переходов
+    принадлежащей другой механике: рёбра `SPEC_LOOP → PAIR_LOOP` в
+    документном пайплайне не «лишние данные», а нарушение инварианта, и
+    доигрывать такую историю чужим движком нечем.
+    """
+    if state.kind is not config.kind:
+        raise ConfigError(
+            f"пайплайн {slug!r} создан как вид {state.kind.value!r}, а "
+            f"поданный конфиг описывает {config.kind.value!r}: вид неизменяем "
+            "(P0) — сменить его значило бы объявить накопленную историю "
+            "переходов принадлежащей другой механике"
+        )

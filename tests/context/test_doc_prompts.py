@@ -35,6 +35,7 @@ from disputatio.contracts.checklists_catalog import (
     CHECKLIST_TEXT,
     PAIR_CHECKLIST,
     SPEC_CHECKLIST,
+    ResolvedChecklist,
 )
 from disputatio.contracts.review import Issue, Severity
 from disputatio.contracts.verification import (
@@ -101,15 +102,25 @@ def _verification(
     )
 
 
-def _checklist(ids: Sequence[str]) -> dict[str, str]:
-    """Действующий чеклист контура на вендоренных дефолтах (§5.3).
+def _checklist(
+    ids: Sequence[str],
+    *,
+    texts: dict[str, str] | None = None,
+    findings_item: str | None = None,
+) -> ResolvedChecklist:
+    """Разрешённый чеклист контура на вендоренных дефолтах (§5.3).
 
-    Функция, а не константа: `build_doc_reviewer_prompt` принимает пару
-    «id → текст», и большинство тестов интересует набор id, а не
-    формулировки. Тест override'а собирает своё отображение сам — иначе
-    «текст конфига доехал до ревьюера» доказывалось бы на тексте каталога.
+    Функция, а не константа: `build_doc_reviewer_prompt` принимает
+    `ResolvedChecklist`, и большинство тестов интересует набор id, а не
+    формулировки. Тест override'а подаёт свои `texts` — иначе «текст
+    конфига доехал до ревьюера» доказывалось бы на тексте каталога.
     """
-    return {item_id: CHECKLIST_TEXT[item_id] for item_id in ids}
+    order = tuple(ids)
+    return ResolvedChecklist(
+        order=order,
+        texts=texts or {item_id: CHECKLIST_TEXT[item_id] for item_id in order},
+        findings_item=findings_item,
+    )
 
 
 def _inside_artifact_block(prompt: str, needle: str) -> bool:
@@ -318,8 +329,15 @@ def test_pair_contour_checklist_has_all_own_ids_and_no_foreign_ones() -> None:
         assert f"- {item_id}:" not in prompt
 
 
-def test_checklist_ids_mismatched_with_contour_raise() -> None:
-    """Чужой набор id под контуром — `ValueError`, а не молчаливая подмена."""
+def test_checklist_texts_not_covering_declared_order_raise() -> None:
+    """Неполный набор текстов под объявленным составом — `ValueError`.
+
+    После перехода на разрешённый чеклист (§5.3) сверяется уже не «набор id
+    против глобального каталога контура» — у операторского контура `doc`
+    каталога нет вовсе, — а полнота: тексты обязаны покрыть ровно
+    объявленный `order`, иначе промпт показал бы ревьюеру пункт без условия
+    либо условие без пункта.
+    """
     doc_reviewer = _module("doc_reviewer")
 
     with pytest.raises(ValueError) as excinfo:
@@ -327,7 +345,10 @@ def test_checklist_ids_mismatched_with_contour_raise() -> None:
             contour="spec",
             doc_texts={"docs/specs/api.md": "текст"},
             verification=_verification(),
-            checklist=_checklist(PAIR_CHECKLIST),
+            checklist=_checklist(
+                SPEC_CHECKLIST,
+                texts={item_id: CHECKLIST_TEXT[item_id] for item_id in PAIR_CHECKLIST},
+            ),
         )
 
     message = str(excinfo.value)
@@ -450,8 +471,9 @@ def test_checklist_texts_come_from_the_parameter_not_the_catalog() -> None:
     текст того же id — ушёл.
     """
     doc_reviewer = _module("doc_reviewer")
-    overridden = dict(_checklist(SPEC_CHECKLIST))
-    overridden["S1"] = "S1: переопределённое условие сходимости"
+    texts = {item_id: CHECKLIST_TEXT[item_id] for item_id in SPEC_CHECKLIST}
+    texts["S1"] = "S1: переопределённое условие сходимости"
+    overridden = _checklist(SPEC_CHECKLIST, texts=texts)
 
     prompt = doc_reviewer.build_doc_reviewer_prompt(
         contour="spec",
@@ -460,27 +482,29 @@ def test_checklist_texts_come_from_the_parameter_not_the_catalog() -> None:
         checklist=overridden,
     )
 
-    assert overridden["S1"] in prompt
+    assert texts["S1"] in prompt
     assert CHECKLIST_TEXT["S1"] not in prompt
     assert CHECKLIST_TEXT["S2"] in prompt
 
 
-def test_checklist_order_follows_the_contour_not_the_mapping() -> None:
-    """Порядок пунктов канонический — промпт байт-в-байт воспроизводим (NFR-002).
+def test_checklist_order_follows_declared_order_not_the_mapping() -> None:
+    """Порядок пунктов — объявленный, а не порядок ключей текстов (NFR-002).
 
     Отображение приходит из конфига пользователя, где порядок ключей
     произволен; промпт, зависящий от него, давал бы разные байты на одном и
-    том же чеклисте.
+    том же чеклисте. Сам `order` при этом — часть чеклиста: у контура `doc`
+    его объявляет человек (§5.3), и подменять объявленное сортировкой
+    нельзя.
     """
     doc_reviewer = _module("doc_reviewer")
-    forward = _checklist(SPEC_CHECKLIST)
-    reversed_mapping = dict(reversed(list(forward.items())))
+    forward = {item_id: CHECKLIST_TEXT[item_id] for item_id in SPEC_CHECKLIST}
+    reversed_texts = dict(reversed(list(forward.items())))
 
     prompt = doc_reviewer.build_doc_reviewer_prompt(
         contour="spec",
         doc_texts={"docs/specs/api.md": "текст"},
         verification=_verification(),
-        checklist=reversed_mapping,
+        checklist=_checklist(SPEC_CHECKLIST, texts=reversed_texts),
     )
 
     positions = [prompt.index(f"- {item_id}:") for item_id in SPEC_CHECKLIST]

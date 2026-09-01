@@ -28,9 +28,9 @@ import pytest
 
 from disputatio.contracts import (
     BudgetUsed,
-    DocumentPaths,
     EvidenceLink,
     FileRef,
+    PairDocuments,
     PipelinePhase,
     PipelineState,
     SessionOutcome,
@@ -69,7 +69,7 @@ def _base_state() -> PipelineState:
         task=_file_ref("task.md", "a"),
         config=_file_ref("config.toml", "b"),
         checklists=_file_ref("checklists.toml", "c"),
-        documents=DocumentPaths(
+        documents=PairDocuments(
             spec_path="docs/specs/foo.md", plan_path="docs/plans/foo.md"
         ),
         spec_sessions=[
@@ -668,3 +668,41 @@ def test_pr_title_and_body_are_non_empty_and_reference_the_documents(
     assert "docs/specs/foo.md" in title or "docs/specs/foo.md" in body
     assert "docs/plans/foo.md" in body
     assert _PIPELINE_ID in body
+
+
+def test_pair_pr_body_labels_are_untouched(tmp_path: Path) -> None:
+    """Регрессия: `pr_body.md` пары не меняется редакцией v0.2.
+
+    Тест выше (`..._pr_files`) проверяет присутствие ПУТЕЙ, но не подписей,
+    и потому пропустил бы замену «Спека:»/«План:» общим списком документов
+    вида. Ограничение плана называет у пары ровно три допустимых отличия, и
+    все три — в сериализации манифеста, не в пользовательском артефакте.
+    """
+    state = _base_state()
+    export_pipeline(
+        state,
+        workspace_root=tmp_path,
+        remote_url=None,
+        branch="docs/foo",
+        partial=False,
+    )
+
+    body = _read(result_dir(tmp_path, _PIPELINE_ID) / PR_BODY_NAME)
+    assert "Спека: `docs/specs/foo.md`" in body
+    assert "План: `docs/plans/foo.md`" in body
+
+
+def test_pair_pr_title_is_byte_identical_to_v01(tmp_path: Path) -> None:
+    """Заголовок пары после перехода на `documents.paths()` тот же байт-в-байт."""
+    export_pipeline(
+        _base_state(),
+        workspace_root=tmp_path,
+        remote_url=None,
+        branch="docs/foo",
+        partial=False,
+    )
+
+    title = _read(result_dir(tmp_path, _PIPELINE_ID) / PR_TITLE_NAME)
+    # `_base_state` стоит в PAIR_LOOP, поэтому сходимости нет и заголовок
+    # честно несёт пометку частичного исхода — это прежнее поведение (§8.2).
+    assert title == "[partial] docs: docs/specs/foo.md + docs/plans/foo.md\n"

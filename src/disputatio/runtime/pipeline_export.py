@@ -61,7 +61,13 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from disputatio.contracts import PipelinePhase, PipelineState
+from disputatio.contracts import (
+    CONTOURS_BY_KIND,
+    SESSIONS_FIELD_BY_CONTOUR,
+    PairDocuments,
+    PipelinePhase,
+    PipelineState,
+)
 from disputatio.events import atomic_write
 from disputatio.runtime.git import SESSION_DIR_NAME
 from disputatio.runtime.pipeline_config import PIPELINES_DIR_NAME
@@ -286,19 +292,35 @@ def _manifest(
 
 
 def _pr_title(state: PipelineState, *, converged: bool) -> str:
-    """Заголовок draft-PR: пара документов, с пометкой частичного исхода."""
+    """Заголовок draft-PR: документы вида, с пометкой частичного исхода.
+
+    Состав берётся у формы документов (`paths()`), а не выписывается парой
+    полей: у пары строка байт-в-байт прежняя, у одиночного документа —
+    единственный путь без разделителя (§8.2).
+    """
     prefix = "" if converged else "[partial] "
-    return f"{prefix}docs: {state.documents.spec_path} + {state.documents.plan_path}\n"
+    return f"{prefix}docs: {' + '.join(state.documents.paths())}\n"
 
 
 def _pr_body(state: PipelineState, *, converged: bool) -> str:
-    """Тело draft-PR: история контуров, сессии, при партиале — эскалация."""
+    """Тело draft-PR: история контуров, сессии, при партиале — эскалация.
+
+    Контуры перечисляются по ВИДУ (`CONTOURS_BY_KIND`), а не по всем
+    существующим: пустая секция чужого контура в результате документного
+    пайплайна была бы не безобидной — читатель экспорта не обязан знать,
+    означает ли пустота «не было» или «потерялось» (§8.2).
+    """
     partial = not converged
-    lines = [
-        f"# {state.pipeline_id}",
-        "",
-        f"Спека: `{state.documents.spec_path}`",
-        f"План: `{state.documents.plan_path}`",
+    documents = state.documents
+    lines = [f"# {state.pipeline_id}", ""]
+    if isinstance(documents, PairDocuments):
+        lines += [
+            f"Спека: `{documents.spec_path}`",
+            f"План: `{documents.plan_path}`",
+        ]
+    else:
+        lines.append(f"Документ: `{documents.document_path}`")
+    lines += [
         "",
         "Итог: " + ("частичный результат (эскалация)" if partial else "сходимость"),
         "",
@@ -315,10 +337,8 @@ def _pr_body(state: PipelineState, *, converged: bool) -> str:
         )
 
     lines += ["", "## Сессии"]
-    for label, sessions in (
-        ("spec", state.spec_sessions),
-        ("pair", state.pair_sessions),
-    ):
+    for label in CONTOURS_BY_KIND[state.kind]:
+        sessions = getattr(state, SESSIONS_FIELD_BY_CONTOUR[label])
         for record in sessions:
             outcome = record.outcome.value if record.outcome is not None else "n/a"
             lines.append(

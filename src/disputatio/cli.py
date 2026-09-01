@@ -62,6 +62,8 @@ from typing import Final, Literal
 import anyio
 
 from disputatio.contracts import (
+    CONTOURS_BY_KIND,
+    SESSIONS_FIELD_BY_CONTOUR,
     Event,
     EventSource,
     EventType,
@@ -404,18 +406,19 @@ def render_status(state: PipelineState, anchor_path: Path) -> str:
     budget = state.budget_used
     anchor_state = "есть" if anchor_path.is_file() else "нет"
     lines = [
+        # C4 §3.1: вид — ПЕРВОЙ строкой. Команды у обоих видов общие, и
+        # вопрос «какой это пайплайн» человек задаёт раньше всех прочих.
+        f"kind: {state.kind.value}",
         f"pipeline: {state.pipeline_id}",
         f"phase: {state.phase.value}",
-        f"documents: {state.documents.spec_path} + {state.documents.plan_path}",
+        f"documents: {' + '.join(state.documents.paths())}",
         f"budget: tokens={budget.tokens} wall={budget.wall_seconds:g}s",
         f"anchor: {anchor_path} ({anchor_state})",
         f"next_action: {_render_action(state)}",
         "sessions:",
     ]
-    for label, records in (
-        ("spec", state.spec_sessions),
-        ("pair", state.pair_sessions),
-    ):
+    for label in CONTOURS_BY_KIND[state.kind]:
+        records = getattr(state, SESSIONS_FIELD_BY_CONTOUR[label])
         for record in records:
             outcome = "активна" if record.outcome is None else record.outcome.value
             superseded = (
@@ -602,12 +605,25 @@ def _add_pipeline_commands(commands: _SubParsers) -> None:
     репозитории ([REQ-010]). Отказы этих команд уходят строкой в stderr, как
     и требует NFR-003.
     """
+    # C1 §3.1: обе поддерживаемые формы названы одной строкой — и в списке
+    # команд (`help`), и в собственной справке группы (`description`).
+    # `disp pipeline --help` печатает описание своего парсера, а не строку
+    # из родительского списка, поэтому нужны обе.
+    _forms_line = (
+        "пайплайн полировки документов: пара «спека + план» либо "
+        "одиночный документ (вид выводится из конфига, SPEC-002)"
+    )
     pipeline = commands.add_parser(
-        "pipeline", help="пайплайн полировки пары «спека + план» (SPEC-002)"
+        "pipeline", help=_forms_line, description=_forms_line
     )
     actions = pipeline.add_subparsers(dest="pipeline_command", required=True)
 
-    run = actions.add_parser("run", help="запустить новый пайплайн")
+    run = actions.add_parser(
+        "run",
+        help="запустить новый пайплайн",
+        epilog=_PIPELINE_FORMS_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     run.set_defaults(handler=cmd_pipeline_run)
     run.add_argument("--task", required=True, help="задача автору: файл либо строка")
     _add_pipeline_common(run)
@@ -639,6 +655,31 @@ def _add_pipeline_commands(commands: _SubParsers) -> None:
         help="объявить результат частичным (converged: false)",
     )
     _add_pipeline_common(export)
+
+
+#: Обе взаимоисключающие формы секции `[pipeline]` целиком (C2 §3.1).
+#: Вид пайплайна выводится из конфига, отдельной подкоманды у него нет, и
+#: без этого блока второй вид был бы невидим в `--help` — цену решения
+#: гасит нормативное требование, а не документация.
+_PIPELINE_FORMS_EPILOG: Final = """\
+Секция [pipeline] конфига существует в двух взаимоисключающих формах;
+форма и есть объявление вида пайплайна.
+
+пара «спека + план»:
+  [pipeline]
+  spec_path = "docs/specs/2026-08-28-foo-design.md"
+  plan_path = "docs/plans/2026-08-28-foo-plan.md"
+  max_architectural_returns = 2
+
+одиночный документ:
+  [pipeline]
+  document_path = "docs/charter.md"
+  [pipeline.checklists.doc]
+  findings_item = "B3"
+  [pipeline.checklists.doc.items]
+  B1 = "каждый BEH-NN несёт traces:"
+  B3 = "нет blocker/major-находок"
+"""
 
 
 def _add_pipeline_common(command: argparse.ArgumentParser) -> None:

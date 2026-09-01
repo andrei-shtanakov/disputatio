@@ -20,6 +20,12 @@ import pytest
 from pydantic import ValidationError
 
 from disputatio.contracts.checklist import ChecklistItem
+from disputatio.contracts.checklists_catalog import (
+    CHECKLIST_BY_CONTOUR,
+    CHECKLIST_TEXT,
+    FINDINGS_ITEM_BY_CONTOUR,
+    ResolvedChecklist,
+)
 from disputatio.contracts.review import Review
 from disputatio.contracts.verification import VerificationReport
 
@@ -90,6 +96,21 @@ def make_review(
     )
 
 
+def resolved(contour: str) -> ResolvedChecklist:
+    """Разрешённый чеклист встроенного контура — вендоренный состав (§5.3).
+
+    Правила V1 и V8 больше не читают глобальный каталог: набор, порядок и
+    роль findings-item приходят объектом, и у операторского контура `doc`
+    глобальной константы с ними не существует вовсе.
+    """
+    order = CHECKLIST_BY_CONTOUR[contour]
+    return ResolvedChecklist(
+        order=order,
+        texts={item_id: CHECKLIST_TEXT[item_id] for item_id in order},
+        findings_item=FINDINGS_ITEM_BY_CONTOUR[contour],
+    )
+
+
 def make_verification(overall: str = "pass") -> VerificationReport:
     """VerificationReport с заданным overall.
 
@@ -129,7 +150,10 @@ def test_v1_checklist_id_mismatch_rejected() -> None:
     )
     for review in (missing_one, wrong_id):
         errors = validate_doc_review(
-            review, contour="spec", verification=make_verification()
+            review,
+            contour="spec",
+            checklist=resolved("spec"),
+            verification=make_verification(),
         )
         assert REASON_CHECKLIST_ID_MISMATCH in errors
 
@@ -162,7 +186,10 @@ def test_v3_approve_with_checklist_fail_rejected() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_APPROVE_WITH_CHECKLIST_FAIL in errors
 
@@ -183,7 +210,10 @@ def test_v4_fail_without_issue_ids_rejected() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS in errors
 
@@ -204,7 +234,10 @@ def test_v4_fail_referencing_unknown_issue_rejected() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID in errors
 
@@ -225,7 +258,10 @@ def test_v4_fail_referencing_low_severity_issue_rejected() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW in errors
 
@@ -248,7 +284,10 @@ def test_v4_valid_fail_link_passes() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_CHECKLIST_FAIL_WITHOUT_ISSUE_IDS not in errors
     assert REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID not in errors
@@ -271,7 +310,10 @@ def test_v5_pair_contour_requires_defect_class_on_substantive_issue() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="pair", verification=make_verification()
+        review,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
     assert REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS in errors
 
@@ -292,7 +334,10 @@ def test_v5_pair_contour_passes_with_defect_class_set() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="pair", verification=make_verification()
+        review,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
     assert REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS not in errors
 
@@ -313,7 +358,10 @@ def test_v5_spec_contour_not_checked() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS not in errors
 
@@ -331,7 +379,10 @@ def test_v7_approve_with_substantive_issue_rejected() -> None:
         checklist=make_full_checklist(SPEC_IDS),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE in errors
 
@@ -339,7 +390,7 @@ def test_v7_approve_with_substantive_issue_rejected() -> None:
 def test_v8_s1_pass_contradicts_substantive_issue() -> None:
     """V8: `S1: pass` несовместим с blocker/major issues этого ревью."""
     from disputatio.contracts.validation import (
-        REASON_CHECKLIST_PASS_CONTRADICTS_S1,
+        REASON_CHECKLIST_CONTRADICTS_ISSUES,
         validate_doc_review,
     )
 
@@ -352,15 +403,18 @@ def test_v8_s1_pass_contradicts_substantive_issue() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
-    assert REASON_CHECKLIST_PASS_CONTRADICTS_S1 in errors
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES in errors
 
 
 def test_v8_s1_fail_with_substantive_issue_passes() -> None:
     """V8: `S1: fail`, отражающий тот же blocker, — не противоречие."""
     from disputatio.contracts.validation import (
-        REASON_CHECKLIST_PASS_CONTRADICTS_S1,
+        REASON_CHECKLIST_CONTRADICTS_ISSUES,
         validate_doc_review,
     )
 
@@ -373,9 +427,12 @@ def test_v8_s1_fail_with_substantive_issue_passes() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
-    assert REASON_CHECKLIST_PASS_CONTRADICTS_S1 not in errors
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES not in errors
 
 
 @pytest.mark.parametrize(
@@ -401,7 +458,10 @@ def test_v3_property_approve_never_passes_with_any_fail_item(
     ]
     review = make_review(verdict="approve", issues=[], checklist=checklist)
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert REASON_APPROVE_WITH_CHECKLIST_FAIL in errors
 
@@ -416,24 +476,23 @@ def test_doc_rules_see_severity_before_degrade() -> None:
     """
     from disputatio.contracts.validation import (
         REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE,
-        REASON_CHECKLIST_PASS_CONTRADICTS_S1,
+        REASON_CHECKLIST_CONTRADICTS_ISSUES,
         REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS,
         degrade_unevidenced_issues,
         validate_doc_review,
     )
 
-    # V8 машинно завязан на id "S1" независимо от контура (см.
-    # test_v8_s1_check_is_spec_only_id для обратного случая): здесь он
-    # добавлен поверх полного pair-чеклиста ровно для того, чтобы
-    # воспроизвести сценарий брифа буквально — V5, V7 и V8 срабатывают
-    # на одном и том же ревью одновременно.
+    # Чеклист ровно pair-овский: редакция v0.2 привязала V8 к назначенной
+    # РОЛИ пункта, а у контура `pair` роль объявлена пустой (§5.3), и
+    # дописанный сюда чужой `S1` теперь ничего бы не включил — он лишь
+    # нарушил бы V1. Работу «approve при живом blocker'е» у пары делает V7;
+    # что V8 видит severity до деградации, доказывает spec-близнец ниже.
     review = make_review(
         verdict="approve",
         issues=[make_issue("R3-1", "blocker", evidence="", defect_class=None)],
-        checklist=[
-            *make_full_checklist(PAIR_IDS, P1=make_checklist_item("P1", status="pass")),
-            make_checklist_item("S1", status="pass"),
-        ],
+        checklist=make_full_checklist(
+            PAIR_IDS, P1=make_checklist_item("P1", status="pass")
+        ),
     )
     # Санити: деградация действительно понизила бы этот blocker до minor.
     degraded, degraded_ids = degrade_unevidenced_issues(review)
@@ -443,26 +502,73 @@ def test_doc_rules_see_severity_before_degrade() -> None:
     # validate_doc_review получает ИСХОДНЫЙ review (до деградации) — правила
     # обязаны сработать, несмотря на то что деградация сняла бы сигнал.
     errors = validate_doc_review(
-        review, contour="pair", verification=make_verification()
+        review,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
     assert REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE in errors  # V7
     assert REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS in errors  # V5
-    assert REASON_CHECKLIST_PASS_CONTRADICTS_S1 in errors  # V8
+    # V8 у пары молчит, и это ОБЪЯВЛЕННОЕ поведение, а не совпадение:
+    # роль findings-item контура записана как None (§5.3).
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES not in errors
 
     # А вот прогон на уже деградированной копии эти правила бы не поймал —
     # именно поэтому порядок в конвейере зафиксирован §5.2 SPEC-002.
     errors_on_degraded = validate_doc_review(
-        degraded, contour="pair", verification=make_verification()
+        degraded,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
     assert REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE not in errors_on_degraded
     assert REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS not in errors_on_degraded
-    assert REASON_CHECKLIST_PASS_CONTRADICTS_S1 not in errors_on_degraded
 
 
-def test_v8_s1_check_is_spec_only_id() -> None:
-    """V8 машинно завязан на id `S1`; в pair-контуре такого id нет."""
+def test_v8_sees_severity_before_degrade() -> None:
+    """Тот же порядок для V8 — на контуре, у которого роль не пуста.
+
+    Половина сценария брифа, потерянная привязкой V8 к роли: у пары
+    правило молчит по объявлению, поэтому «V8 видит severity до
+    деградации» доказывается там, где V8 вообще работает.
+    """
     from disputatio.contracts.validation import (
-        REASON_CHECKLIST_PASS_CONTRADICTS_S1,
+        REASON_CHECKLIST_CONTRADICTS_ISSUES,
+        degrade_unevidenced_issues,
+        validate_doc_review,
+    )
+
+    review = make_review(
+        verdict="request_changes",
+        issues=[make_issue("R3-1", "blocker", evidence="")],
+        checklist=make_full_checklist(SPEC_IDS),
+    )
+    degraded, _ = degrade_unevidenced_issues(review)
+
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES in validate_doc_review(
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
+    )
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES not in validate_doc_review(
+        degraded,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
+    )
+
+
+def test_v8_is_silent_where_the_role_is_declared_empty() -> None:
+    """V8 не знает имён: у пары роль объявлена пустой, и правило бездействует.
+
+    Редакция v0.1 искала литерал `S1`, которого в `PAIR_CHECKLIST` нет
+    вовсе, — правило было тихим no-op'ом, и это нигде не заявлялось.
+    Теперь пустота записана каталогом, и тест утверждает объявленное
+    поведение, а не наблюдает совпадение (§5.2 V8, §5.3).
+    """
+    from disputatio.contracts.validation import (
+        REASON_CHECKLIST_CONTRADICTS_ISSUES,
         validate_doc_review,
     )
 
@@ -475,9 +581,13 @@ def test_v8_s1_check_is_spec_only_id() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="pair", verification=make_verification()
+        review,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
-    assert REASON_CHECKLIST_PASS_CONTRADICTS_S1 not in errors
+    assert REASON_CHECKLIST_CONTRADICTS_ISSUES not in errors
+    assert FINDINGS_ITEM_BY_CONTOUR["pair"] is None
 
 
 def test_valid_spec_review_passes_doc_validation() -> None:
@@ -498,7 +608,10 @@ def test_valid_spec_review_passes_doc_validation() -> None:
         ),
     )
     errors = validate_doc_review(
-        review, contour="spec", verification=make_verification()
+        review,
+        contour="spec",
+        checklist=resolved("spec"),
+        verification=make_verification(),
     )
     assert errors == []
     assert review.checklist is not None
@@ -515,6 +628,9 @@ def test_valid_pair_review_passes_doc_validation() -> None:
         checklist=make_full_checklist(PAIR_IDS),
     )
     errors = validate_doc_review(
-        review, contour="pair", verification=make_verification()
+        review,
+        contour="pair",
+        checklist=resolved("pair"),
+        verification=make_verification(),
     )
     assert errors == []

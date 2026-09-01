@@ -40,9 +40,12 @@ from disputatio.contracts import (
     Limits,
     Mode,
     Outcome,
+    PipelineKind,
     PipelineState,
+    ResolvedChecklist,
     Review,
     Role,
+    RoundBoundaryPolicy,
     SessionPhase,
     SessionState,
     Severity,
@@ -71,14 +74,31 @@ from disputatio.runtime.layout import (
     REVIEW_NAME,
     round_dir,
 )
-from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_adopt import (
+    OperatorIntents,
+    PairAdoptionRouter,
+    SingleContourAdoptionRouter,
+)
 from disputatio.runtime.pipeline_config import DEFAULT_MAX_ARCHITECTURAL_RETURNS
 from disputatio.runtime.pipeline_resume import PipelineResume
-from disputatio.runtime.pipeline_runner import PipelineRunner, SessionCreation
+from disputatio.runtime.pipeline_runner import (
+    CONTOUR_PAIR,
+    ArchitecturalDefectPolicy,
+    PipelineRunner,
+    SessionCreation,
+)
 
 SLUG: Final = "pair-docs"
 SPEC_PATH: Final = "docs/spec.md"
 PLAN_PATH: Final = "docs/plan.md"
+DOCUMENT_PATH: Final = "docs/charter.md"
+
+#: Операторский чеклист контура `doc` для стенда (§5.3): состав и роль
+#: объявляет конфиг, вендоренного дефолта у контура нет.
+DOC_CHECKLIST_TEXTS: Final[dict[str, str]] = {
+    "B1": "каждый BEH-NN несёт traces:",
+    "B3": "нет blocker/major-находок",
+}
 TASK_TEXT: Final = "ЗАДАЧА: отполировать пару «спека + план»"
 WORK_BRANCH: Final = "docs/pair"
 
@@ -280,6 +300,7 @@ class Stand:
     store: FilePipelineStateStore
     runner: PipelineRunner
     resume: PipelineResume
+    boundary_policies: dict[str, RoundBoundaryPolicy] = field(default_factory=dict)
     scripts: dict[str, Script] = field(default_factory=dict)
 
     def manifest(self) -> PipelineState:
@@ -304,41 +325,97 @@ class Stand:
         self.resume = _resume(self)
         return self
 
+    def start(self) -> None:
+        """Заводит пайплайн штатным `run`; инжектированный крах — не провал."""
+        start(self)
+
+    def config_of_kind(self, kind: PipelineKind) -> PipelineConfig:
+        """Конфиг ДРУГОГО вида поверх того же анкера — вход проверки P0."""
+        return _config_of_kind(
+            kind,
+            anchor_path=self.anchor_root,
+            max_architectural_returns=DEFAULT_MAX_ARCHITECTURAL_RETURNS,
+            doc_checklist_order=("B1", "B3"),
+        )
+
+    def resume_with(self, config: PipelineConfig) -> PipelineResume:
+        """`PipelineResume` поверх того же диска, но с поданным конфигом."""
+        return PipelineResume(
+            runner=self.runner,
+            store=self.store,
+            git=self.git,
+            config=config,
+            workspace_root=self.workspace,
+            intents=OperatorIntents(
+                router=SingleContourAdoptionRouter(),
+                store=self.store,
+                sink=self.sink,
+                git=self.git,
+                config=config,
+                workspace_root=self.workspace,
+                now=_clock(),
+            ),
+        )
+
+    def mutable_surfaces(self) -> dict[str, object]:
+        """Байты и состояние всех поверхностей, мутируемых resume (§8.1).
+
+        Один снимок, а не перечень утверждений по месту: список, который
+        можно тихо сократить, доказывал бы неизменность ровно того, что
+        реализация не тронула, — и молчал бы о том, что тронула.
+        """
+        return {
+            "manifest": (self.pipeline_dir() / "pipeline.json").read_bytes(),
+            "events": _read_optional(self.pipeline_dir() / "events.jsonl"),
+            "anchor": _read_optional(self.anchor().path),
+            "adoptions": sorted(
+                path.name for path in (self.pipeline_dir() / "adoptions").glob("*")
+            ),
+            "head": self.git.head_sha(),
+            "status": porcelain(self.workspace),
+            "tree": sorted(
+                str(path.relative_to(self.workspace))
+                for path in self.workspace.rglob("*")
+                if path.is_file()
+            ),
+        }
+
 
 def build_stand(
     tmp_path: Path,
     scripts: dict[str, Script],
     *,
+    kind: PipelineKind = PipelineKind.PAIR,
     plan_present: bool = True,
     max_architectural_returns: int = DEFAULT_MAX_ARCHITECTURAL_RETURNS,
+    doc_checklist_order: tuple[str, ...] = ("B1", "B3"),
+    boundary_policies: dict[str, RoundBoundaryPolicy] | None = None,
 ) -> Stand:
-    """Репозиторий с парой документов на рабочей ветке + собранный пайплайн."""
+    """Репозиторий с документами вида на рабочей ветке + собранный пайплайн.
+
+    `boundary_policies` подменяемы, потому что таблица политик — вход
+    runner'а, а не его внутренность (§7.1): тест обязан уметь подсунуть
+    свою реализацию, иначе «обнаружение спрашивает ТУ ЖЕ политику»
+    доказывалось бы совпадением двух одинаковых объектов.
+    """
     workspace = tmp_path / REPO_DIR_NAME
     (workspace / "docs").mkdir(parents=True)
     git(workspace, "init", "--quiet", "-b", "master")
     git(workspace, "config", "user.name", "disputatio-tests")
     git(workspace, "config", "user.email", "tests@disputatio.local")
-    (workspace / SPEC_PATH).write_text(
-        "# спека\n\nисходная редакция\n", encoding="utf-8"
-    )
-    tracked = [SPEC_PATH]
-    if plan_present:
-        (workspace / PLAN_PATH).write_text(
-            "# план\n\nисходная редакция\n", encoding="utf-8"
-        )
-        tracked.append(PLAN_PATH)
+    tracked = _seed_documents(workspace, kind, plan_present=plan_present)
     git(workspace, "add", *tracked)
-    git(workspace, "commit", "--quiet", "-m", "исходная пара")
+    git(workspace, "commit", "--quiet", "-m", "исходные документы")
     git(workspace, "switch", "--quiet", "-c", WORK_BRANCH)
 
     stand = Stand(
         workspace=workspace,
         anchor_root=tmp_path / "anchors",
-        config=PipelineConfig(
-            spec_path=Path(SPEC_PATH),
-            plan_path=Path(PLAN_PATH),
+        config=_config_of_kind(
+            kind,
             anchor_path=tmp_path / "anchors",
             max_architectural_returns=max_architectural_returns,
+            doc_checklist_order=doc_checklist_order,
         ),
         git=GitCli(workspace),
         driver=ScriptedDriver(scripts),
@@ -348,11 +425,83 @@ def build_stand(
         store=FilePipelineStateStore(workspace),
         runner=None,  # type: ignore[arg-type]
         resume=None,  # type: ignore[arg-type]
+        boundary_policies=(
+            _default_policies(kind) if boundary_policies is None else boundary_policies
+        ),
         scripts=scripts,
     )
     stand.runner = _runner(stand)
     stand.resume = _resume(stand)
     return stand
+
+
+def _default_policies(kind: PipelineKind) -> dict[str, RoundBoundaryPolicy]:
+    """Та же таблица, что собрал бы composition root (§7.1, P10)."""
+    if kind is PipelineKind.PAIR:
+        return {CONTOUR_PAIR: ArchitecturalDefectPolicy()}
+    return {}
+
+
+def _seed_documents(
+    workspace: Path, kind: PipelineKind, *, plan_present: bool
+) -> list[str]:
+    """Исходные документы вида в рабочем дереве; возвращает пути для `add`."""
+    if kind is PipelineKind.DOCUMENT:
+        (workspace / DOCUMENT_PATH).write_text(
+            "# чартер\n\nисходная редакция\n", encoding="utf-8"
+        )
+        return [DOCUMENT_PATH]
+    (workspace / SPEC_PATH).write_text(
+        "# спека\n\nисходная редакция\n", encoding="utf-8"
+    )
+    tracked = [SPEC_PATH]
+    if plan_present:
+        (workspace / PLAN_PATH).write_text(
+            "# план\n\nисходная редакция\n", encoding="utf-8"
+        )
+        tracked.append(PLAN_PATH)
+    return tracked
+
+
+def _config_of_kind(
+    kind: PipelineKind,
+    *,
+    anchor_path: Path,
+    max_architectural_returns: int,
+    doc_checklist_order: tuple[str, ...],
+) -> PipelineConfig:
+    """Конфиг вида — ровно той формы, которую допускает разбор §3.2."""
+    if kind is PipelineKind.DOCUMENT:
+        return PipelineConfig(
+            kind=kind,
+            document_path=Path(DOCUMENT_PATH),
+            anchor_path=anchor_path,
+            checklists={
+                "doc": ResolvedChecklist(
+                    order=doc_checklist_order,
+                    texts={
+                        item_id: DOC_CHECKLIST_TEXTS[item_id]
+                        for item_id in doc_checklist_order
+                    },
+                    findings_item="B3",
+                )
+            },
+        )
+    return PipelineConfig(
+        kind=kind,
+        spec_path=Path(SPEC_PATH),
+        plan_path=Path(PLAN_PATH),
+        anchor_path=anchor_path,
+        max_architectural_returns=max_architectural_returns,
+    )
+
+
+def _read_optional(path: Path) -> bytes | None:
+    """Байты файла либо `None`, если его ещё нет: отсутствие — тоже состояние."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def start(stand: Stand) -> None:
@@ -366,6 +515,7 @@ def start(stand: Stand) -> None:
 def _runner(stand: Stand) -> PipelineRunner:
     """Runner поверх стенда — тот же, что собрал бы composition root."""
     return PipelineRunner(
+        boundary_policies=stand.boundary_policies,
         store=stand.store,
         sink=stand.sink,
         git=stand.git,
@@ -387,6 +537,7 @@ def _resume(stand: Stand) -> PipelineResume:
         config=stand.config,
         workspace_root=stand.workspace,
         intents=OperatorIntents(
+            router=_router_of(stand.config),
             store=stand.store,
             sink=stand.sink,
             git=stand.git,
@@ -395,6 +546,14 @@ def _resume(stand: Stand) -> PipelineResume:
             now=_clock(),
         ),
     )
+
+
+def _router_of(config: PipelineConfig) -> Any:
+    """Тот же выбор реализации порта, что делает composition root (§3.1)."""
+    if config.kind is PipelineKind.DOCUMENT:
+        return SingleContourAdoptionRouter()
+    (spec_path, _) = config.documents()
+    return PairAdoptionRouter(spec_path=spec_path)
 
 
 def _clock() -> Any:

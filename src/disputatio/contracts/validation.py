@@ -9,12 +9,10 @@ SPEC-001. Схемная валидация (pydantic, review.py) и прото�
 сравнивают по константам, без строкового дублирования.
 """
 
-from typing import Literal
-
 from pydantic import Field
 
 from disputatio.contracts.base import ArtifactChild, semantic_text
-from disputatio.contracts.checklists_catalog import CHECKLIST_BY_CONTOUR
+from disputatio.contracts.checklists_catalog import ResolvedChecklist
 from disputatio.contracts.review import Issue, Review, Severity, Verdict
 from disputatio.contracts.verification import OverallStatus, VerificationReport
 
@@ -30,7 +28,7 @@ REASON_CHECKLIST_FAIL_UNKNOWN_ISSUE_ID = "checklist_fail_unknown_issue_id"
 REASON_CHECKLIST_FAIL_ISSUE_SEVERITY_TOO_LOW = "checklist_fail_issue_severity_too_low"
 REASON_PAIR_ISSUE_MISSING_DEFECT_CLASS = "pair_issue_missing_defect_class"
 REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE = "approve_with_substantive_issue"
-REASON_CHECKLIST_PASS_CONTRADICTS_S1 = "checklist_pass_contradicts_s1"
+REASON_CHECKLIST_CONTRADICTS_ISSUES = "checklist_pass_contradicts_issues"
 
 _NEGATIVE_VERDICTS = (Verdict.REQUEST_CHANGES, Verdict.REJECT)
 _SUBSTANTIVE_SEVERITIES = (Severity.BLOCKER, Severity.MAJOR)
@@ -161,13 +159,14 @@ def check_checked_nonempty(review: Review) -> str | None:
 def validate_doc_review(
     review: Review,
     *,
-    contour: Literal["spec", "pair"],
+    contour: str,
+    checklist: ResolvedChecklist,
     verification: VerificationReport,
 ) -> list[str]:
     """SPEC-002 §5.2, правила V1–V4, V5, V7, V8 doc-ревью (Mode.DOCUMENT).
 
     Анти-галлюцинационное ядро §4.4 SPEC-001, специализация для doc-сессий:
-    `checklist` обязан покрыть ровно контурный набор id (V1), быть
+    `review.checklist` обязан покрыть ровно РАЗРЕШЁННЫЙ набор id (V1), быть
     непротиворечив с вердиктом (V3, V7) и с issues этого же ревью (V4, V8);
     pair-контур дополнительно требует `defect_class` на каждой существенной
     находке (V5). V2 (evidence непуст) закрыта типом `ChecklistItem` (задача
@@ -182,6 +181,13 @@ def validate_doc_review(
     вызывает и не мутирует вход — она читает `review` таким, каким его
     получила; ответственность за порядок — на вызывающем коде.
 
+    `checklist` — разрешённый чеклист контура (§5.3): состав, порядок и
+    назначенная роль findings-item. Приходит параметром, а не читается из
+    вендоренного каталога: у операторского контура `doc` глобальной
+    константы с набором не существует вовсе, а у встроенных судить по коду
+    вместо снапшота значило бы проверять ревью по критерию, отличному от
+    записанного в манифесте прогона.
+
     `verification` — для симметрии с конвейером §4.4 (`validate_review`) и
     будущих doc-гейтов, привязанных к результатам verification; V1–V8 её не
     используют.
@@ -191,9 +197,9 @@ def validate_doc_review(
     """
     del verification  # не используется V1-V8 (см. докстринг)
     errors: list[str] = []
-    checklist = list(review.checklist or [])
-    expected_ids = set(CHECKLIST_BY_CONTOUR[contour])
-    actual_ids = [item.id for item in checklist]
+    items = list(review.checklist or [])
+    expected_ids = set(checklist.order)
+    actual_ids = [item.id for item in items]
 
     if set(actual_ids) != expected_ids or len(actual_ids) != len(expected_ids):
         errors.append(REASON_CHECKLIST_ID_MISMATCH)
@@ -204,11 +210,11 @@ def validate_doc_review(
     ]
 
     if review.verdict == Verdict.APPROVE and any(
-        item.status == "fail" for item in checklist
+        item.status == "fail" for item in items
     ):
         errors.append(REASON_APPROVE_WITH_CHECKLIST_FAIL)
 
-    for item in checklist:
+    for item in items:
         if item.status != "fail":
             continue
         if not item.issue_ids:
@@ -231,8 +237,13 @@ def validate_doc_review(
     if review.verdict == Verdict.APPROVE and substantive_issues:
         errors.append(REASON_APPROVE_WITH_SUBSTANTIVE_ISSUE)
 
-    s1 = next((item for item in checklist if item.id == "S1"), None)
-    if s1 is not None and s1.status == "pass" and substantive_issues:
-        errors.append(REASON_CHECKLIST_PASS_CONTRADICTS_S1)
+    # V8 спрашивает у контура его findings-item и проверяет тот пункт,
+    # который контур назвал; литералов `S1`/`B3` и списка контуров в правиле
+    # нет. Пустая роль — законное бездействие, объявленное каталогом (§5.3).
+    role_id = checklist.findings_item
+    if role_id is not None:
+        role = next((item for item in items if item.id == role_id), None)
+        if role is not None and role.status == "pass" and substantive_issues:
+            errors.append(REASON_CHECKLIST_CONTRADICTS_ISSUES)
 
     return errors

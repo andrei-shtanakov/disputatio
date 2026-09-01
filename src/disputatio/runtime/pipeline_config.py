@@ -32,6 +32,9 @@ from typing import Any, Final
 from disputatio.contracts import (
     CHECKLIST_BY_CONTOUR,
     CHECKLIST_TEXT,
+    FINDINGS_ITEM_BY_CONTOUR,
+    PipelineKind,
+    ResolvedChecklist,
     validate_relative_path,
 )
 from disputatio.runtime import _toml
@@ -53,10 +56,19 @@ DEFAULT_PROTECTED_BRANCHES: Final[tuple[str, ...]] = ("master", "main")
 DEFAULT_MAX_ARCHITECTURAL_RETURNS: Final = 2
 
 
-def _default_checklists() -> dict[str, dict[str, str]]:
-    """Вендоренный дефолт §5.3 (задача 2): id → текст, по контурам."""
+def _default_checklists() -> dict[str, ResolvedChecklist]:
+    """Вендоренный дефолт §5.3 встроенных контуров — разрешёнными объектами.
+
+    Только `spec` и `pair`: у операторского контура `doc` вендоренного
+    набора нет и быть не может — флотского правила «что такое сошедшийся
+    чартер» не существует, копировать нечего (§5.3).
+    """
     return {
-        contour: {item_id: CHECKLIST_TEXT[item_id] for item_id in ids}
+        contour: ResolvedChecklist(
+            order=ids,
+            texts={item_id: CHECKLIST_TEXT[item_id] for item_id in ids},
+            findings_item=FINDINGS_ITEM_BY_CONTOUR[contour],
+        )
         for contour, ids in CHECKLIST_BY_CONTOUR.items()
     }
 
@@ -80,9 +92,18 @@ def _default_anchor_root() -> Path:
 class PipelineConfig:
     """Снапшот секции `[pipeline]` (§3.2 SPEC-002).
 
-    `checklists` — `{contour: {item_id: text}}`; дефолт — вендоренная копия
-    задачи 2 (`contracts.checklists_catalog`), override — из `[pipeline.
-    checklists.<contour>]` конфига, снапшотится и хешируется отдельно (§3.2).
+    `kind` обязателен и дефолта не имеет: вид выводится из ФОРМЫ секции и
+    объявляется ею (P0), а «вид по умолчанию» сделал бы неполный конфиг
+    молча парным. `spec_path`/`plan_path`/`document_path` опциональны
+    порознь, но не произвольно: разбор (`_resolve_kind`) допускает ровно две
+    комбинации, и наружу поля идут через аксессоры `documents()`,
+    `contour_documents()`, `scope_paths()`.
+
+    `checklists` — `{contour: ResolvedChecklist}`; для встроенных контуров
+    дефолт вендоренный (`contracts.checklists_catalog`), а override из
+    `[pipeline.checklists.<contour>]` переписывает только ТЕКСТЫ; для
+    операторского контура `doc` конфиг объявляет весь набор вместе с ролью
+    (§5.3). Снапшотится и хешируется отдельно (§3.2).
 
     `extra_gates` — только ДОБАВЛЕННЫЕ гейты: baseline §6 (`doc-paths`,
     `doc-links`, `doc-anchors`, `doc-line-refs`, `doc-scope`) неотключаем, и
@@ -102,17 +123,72 @@ class PipelineConfig:
     `resume`.
     """
 
-    spec_path: Path
-    plan_path: Path
+    kind: PipelineKind
+    spec_path: Path | None = None
+    plan_path: Path | None = None
+    document_path: Path | None = None
     max_architectural_returns: int = DEFAULT_MAX_ARCHITECTURAL_RETURNS
     soft_max_pipeline_tokens: int = 0
     soft_max_pipeline_wall_seconds: int = 0
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
-    checklists: Mapping[str, Mapping[str, str]] = field(
+    checklists: Mapping[str, ResolvedChecklist] = field(
         default_factory=_default_checklists
     )
     extra_gates: tuple[GateSpec, ...] = ()
     anchor_path: Path = field(default_factory=_default_anchor_root)
+
+    def documents(self) -> tuple[str, ...]:
+        """Все редактируемые документы пайплайна в каноническом порядке.
+
+        Опциональность трёх полей выше — не отступление от P10:
+        `PipelineConfig` это РАЗОБРАННЫЙ конфиг, и он обязан уметь
+        представить обе формы. Невыразимость чужой формы держат манифест
+        (union `documents`) и fail-closed разбор `_resolve_kind`; сырые поля
+        наружу не выходят — их закрывают эти три аксессора.
+        """
+        if self.kind is PipelineKind.DOCUMENT:
+            return (self._require(self.document_path, "document_path"),)
+        return (
+            self._require(self.spec_path, "spec_path"),
+            self._require(self.plan_path, "plan_path"),
+        )
+
+    def contour_documents(self, contour: str) -> tuple[str, ...]:
+        """Документы, которые ВИДИТ ревизия контура (§5.1).
+
+        У пары: spec-контур смотрит спеку, pair-контур сверяет план со
+        спекой. У вида document читаемое и правимое совпадают — документ
+        ровно один.
+        """
+        if contour == "spec":
+            return (self._require(self.spec_path, "spec_path"),)
+        return self.documents()
+
+    def scope_paths(self, contour: str) -> tuple[str, ...]:
+        """Граница `doc-scope`: что ревизия контура вправе ПРАВИТЬ (§6).
+
+        У́же набора читаемых документов и вычисляется от контура, а не от
+        вида: pair-контур читает спеку, но правит только план, поэтому
+        правка спеки автором пары обязана валить гейт.
+        """
+        if contour == "pair":
+            return (self._require(self.plan_path, "plan_path"),)
+        return self.contour_documents(contour)
+
+    @staticmethod
+    def _require(value: Path | None, name: str) -> str:
+        """POSIX-вид пути, обязательного для этой формы конфига.
+
+        Отсутствие здесь — не пользовательская ошибка, а нарушение
+        инварианта `_resolve_kind`: он не выпускает наружу ни пары
+        наполовину, ни документа без пути. Поэтому `AssertionError`, а не
+        `ConfigError`.
+        """
+        assert value is not None, (
+            f"{name} не задан у вида, которому он обязателен: "
+            "форму проверяет `_resolve_kind` до конструирования конфига (§3.2)"
+        )
+        return value.as_posix()
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,14 +454,18 @@ def _from_pipeline_table(table: Mapping[str, Any]) -> PipelineConfig:
     `load_pipeline_config` переводит в `ConfigError` с именем файла.
     """
     where = "pipeline"
-    kwargs: dict[str, Any] = {
-        "spec_path": Path(
-            validate_relative_path(_toml.text(table, "spec_path", where=where))
-        ),
-        "plan_path": Path(
-            validate_relative_path(_toml.text(table, "plan_path", where=where))
-        ),
-    }
+    kind = _resolve_kind(table)
+    if kind is PipelineKind.DOCUMENT and "max_architectural_returns" in table:
+        raise ConfigError(
+            _both_forms(
+                "max_architectural_returns не применим к виду document: "
+                "возвратов у него нет. Ключ отвергается, а не игнорируется — "
+                "молча проигнорированная настройка оператора хуже отказа"
+            )
+        )
+    kwargs: dict[str, Any] = {"kind": kind}
+    for key in _PATH_KEYS_BY_KIND[kind]:
+        kwargs[key] = Path(validate_relative_path(_toml.text(table, key, where=where)))
     if "max_architectural_returns" in table:
         kwargs["max_architectural_returns"] = _toml.integer(
             table, "max_architectural_returns", where=where
@@ -402,10 +482,73 @@ def _from_pipeline_table(table: Mapping[str, Any]) -> PipelineConfig:
         kwargs["protected_branches"] = _toml.texts(table, "protected_branches")
     if "anchor_path" in table:
         kwargs["anchor_path"] = Path(_toml.text(table, "anchor_path", where=where))
-    if "checklists" in table:
-        kwargs["checklists"] = _checklists(table["checklists"])
+    kwargs["checklists"] = _checklists(table.get("checklists"), kind)
     kwargs["extra_gates"] = _extra_gates(table)
     return PipelineConfig(**kwargs)
+
+
+#: Ключи путей, обязательные для каждой формы (§3.2). Читаются циклом, а не
+#: двумя ветками: форма уже установлена `_resolve_kind`, и второе её
+#: перечисление разошлось бы с первым.
+_PATH_KEYS_BY_KIND: Final[dict[PipelineKind, tuple[str, ...]]] = {
+    PipelineKind.PAIR: ("spec_path", "plan_path"),
+    PipelineKind.DOCUMENT: ("document_path",),
+}
+
+_PAIR_FORM: Final = (
+    "  [pipeline]\n"
+    '  spec_path = "docs/specs/…-design.md"\n'
+    '  plan_path = "docs/plans/…-plan.md"'
+)
+_DOCUMENT_FORM: Final = (
+    "  [pipeline]\n"
+    '  document_path = "docs/charter.md"\n'
+    "  [pipeline.checklists.doc]\n"
+    '  findings_item = "B3"\n'
+    "  [pipeline.checklists.doc.items]\n"
+    '  B3 = "нет blocker/major-находок"'
+)
+
+
+def _both_forms(problem: str) -> str:
+    """Текст отказа обязан назвать ОБЕ схемы, а не только нарушенную (C3).
+
+    Оператор, написавший `document_path` рядом со `spec_path`, обязан из
+    текста ошибки узнать, какие две формы существуют: причина отказа без
+    альтернативы оставляет его гадать, что именно исправлять.
+    """
+    return (
+        f"{problem}\n\nСекция [pipeline] существует в двух "
+        f"взаимоисключающих формах:\n\nпара «спека + план»:\n{_PAIR_FORM}\n\n"
+        f"одиночный документ:\n{_DOCUMENT_FORM}"
+    )
+
+
+def _resolve_kind(table: Mapping[str, Any]) -> PipelineKind:
+    """Вид пайплайна по форме секции — fail-closed, без «побеждает первый».
+
+    Форма И ЕСТЬ объявление вида (P0), поэтому неполная и смешанная формы
+    отвергаются, а не доопределяются: конфиг, из которого вид выводится
+    догадкой, объявлял бы механику, которой оператор не просил.
+    """
+    has_document = "document_path" in table
+    has_spec = "spec_path" in table
+    has_plan = "plan_path" in table
+    if has_document and (has_spec or has_plan):
+        raise ConfigError(
+            _both_forms(
+                "[pipeline] смешивает формы: document_path задан вместе с путями пары"
+            )
+        )
+    if has_document:
+        return PipelineKind.DOCUMENT
+    if has_spec and has_plan:
+        return PipelineKind.PAIR
+    if has_spec or has_plan:
+        raise ConfigError(
+            _both_forms("[pipeline] задаёт пару наполовину: нужны оба пути")
+        )
+    raise ConfigError(_both_forms("[pipeline] не задаёт ни одной из форм"))
 
 
 def _extra_gates(table: Mapping[str, Any]) -> tuple[GateSpec, ...]:
@@ -431,9 +574,81 @@ def _extra_gates(table: Mapping[str, Any]) -> tuple[GateSpec, ...]:
     return gates
 
 
-def _checklists(value: Any) -> dict[str, dict[str, str]]:
-    """`[pipeline.checklists.<contour>]` — merge поверх вендоренного дефолта
-    задачи 2, по контуру и по id (§5.3, фикс-раунд 1, Important-1).
+def _checklists(value: Any, kind: PipelineKind) -> dict[str, ResolvedChecklist]:
+    """Два происхождения набора, две формы таблицы (§5.3 SPEC-002).
+
+    Для встроенных контуров конфиг переписывает ТЕКСТЫ вендоренного набора;
+    для операторского `doc` объявляет набор целиком вместе с ролью. Разная
+    форма отражает разную природу: критерий сходимости чартера знает автор
+    документа, а не это репо.
+
+    Собираются чеклисты ровно своего вида (P10): у документного пайплайна
+    `spec`/`pair` не конструируются вовсе, а не лежат неиспользованными.
+    """
+    if value is not None and not isinstance(value, Mapping):
+        raise TypeError("pipeline.checklists обязана быть таблицей")
+    table: Mapping[str, Any] = value or {}
+    if kind is PipelineKind.DOCUMENT:
+        return {"doc": _operator_checklist(table.get("doc"))}
+    return _builtin_checklists(table)
+
+
+def _operator_checklist(table: Any) -> ResolvedChecklist:
+    """`[pipeline.checklists.doc]` — состав, порядок и роль от оператора (§5.3).
+
+    Вендоренного дефолта у контура нет: флотского правила «что такое
+    сошедшийся чартер» не существует, копировать нечего, а навязанные пять
+    слотов заставляли бы автора выдумывать условия под чужой состав.
+    Поэтому все три отказа явные, включая обязательность самой таблицы.
+
+    Порядок — `tuple(items)`: `tomllib` сохраняет порядок объявления файла,
+    и этот же порядок уходит в снапшот `checklists.toml` при `run`.
+
+    **Известное ограничение (issue #65): на `resume` порядок и состав
+    берутся из ЖИВОГО конфига, а не из снапшота.** `resume` сверяет с
+    манифестом только вид пайплайна (P0, §8.1 шаг 1), поэтому конфиг,
+    изменённый между запусками, доедет до ревьюера, хотя манифест
+    удостоверяет хеш прежнего снапшота. Детерминизм порядка на всю жизнь
+    пайплайна здесь пока НЕ обещается — обещание станет правдой, когда
+    SPEC-002 назовёт неизменяемую половину `[pipeline]` и `resume` начнёт
+    сверять её fail-closed. Ограничение общее для видов `pair` и
+    `document`.
+    """
+    if not isinstance(table, Mapping):
+        raise ConfigError(
+            "[pipeline.checklists.doc] обязательна для вида document: "
+            "вендоренного набора у операторского контура нет"
+        )
+    items = table.get("items")
+    if not isinstance(items, Mapping) or not items:
+        raise ConfigError(
+            "[pipeline.checklists.doc.items] пуст: критерий сходимости "
+            "документа обязан быть объявлен"
+        )
+    role = table.get("findings_item")
+    if not isinstance(role, str):
+        raise ConfigError(
+            "[pipeline.checklists.doc] обязана назначить findings_item — "
+            "пункт со смыслом «нет blocker/major-находок». Без него правило "
+            "V8 стало бы тихим no-op'ом через конфигурацию (§5.3)"
+        )
+    if role not in items:
+        raise ConfigError(
+            f"[pipeline.checklists.doc] findings_item = {role!r} не назван "
+            f"среди items: {sorted(items)}"
+        )
+    texts: dict[str, str] = {}
+    for item_id, text in items.items():
+        if not isinstance(text, str):
+            raise TypeError(
+                f"pipeline.checklists.doc.items.{item_id} обязан быть строкой"
+            )
+        texts[item_id] = text
+    return ResolvedChecklist(order=tuple(texts), texts=texts, findings_item=role)
+
+
+def _builtin_checklists(value: Mapping[str, Any]) -> dict[str, ResolvedChecklist]:
+    """`[pipeline.checklists.<contour>]` — merge ТЕКСТОВ поверх вендоренного набора.
 
     Merge, а не замена: override одного `S1` не вправе тихо унести остальные
     пункты `spec` и весь контур `pair` — чеклист сходимости определяет
@@ -442,30 +657,37 @@ def _checklists(value: Any) -> dict[str, dict[str, str]]:
     Неизвестный контур или id — тоже `ConfigError`, а не тихое добавление:
     опечатка в имени контура иначе дала бы конфиг без обоих контуров молча,
     а опечатка в id — чеклист с пунктом, которого ревьюер никогда не увидит
-    покрытым ни дефолтом, ни override.
+    покрытым ни дефолтом, ни override. Состав менять нельзя вовсе: он задан
+    флотским правилом, и «одна строка override выключает P1–P5» была бы
+    дырой ровно там, где критерий и определяется.
     """
-    if not isinstance(value, Mapping):
-        raise TypeError("pipeline.checklists обязана быть таблицей")
-    merged = _default_checklists()
+    defaults = _default_checklists()
+    texts = {contour: dict(item.texts) for contour, item in defaults.items()}
     for contour, items in value.items():
-        if contour not in merged:
+        if contour not in texts:
             raise ConfigError(
                 f"[pipeline.checklists.{contour}] называет неизвестный "
-                f"контур {contour!r} — допустимые контуры: "
-                f"{sorted(merged)}"
+                f"контур {contour!r} — допустимые контуры: {sorted(texts)}"
             )
         if not isinstance(items, Mapping):
             raise TypeError(f"pipeline.checklists.{contour} обязана быть таблицей")
         for item_id, text in items.items():
-            if item_id not in merged[contour]:
+            if item_id not in texts[contour]:
                 raise ConfigError(
                     f"[pipeline.checklists.{contour}] называет неизвестный "
                     f"пункт {item_id!r} — допустимые id: "
-                    f"{sorted(merged[contour])}"
+                    f"{sorted(texts[contour])}"
                 )
             if not isinstance(text, str):
                 raise TypeError(
                     f"pipeline.checklists.{contour}.{item_id} обязан быть строкой"
                 )
-            merged[contour][item_id] = text
-    return merged
+            texts[contour][item_id] = text
+    return {
+        contour: ResolvedChecklist(
+            order=default.order,
+            texts=texts[contour],
+            findings_item=default.findings_item,
+        )
+        for contour, default in defaults.items()
+    }

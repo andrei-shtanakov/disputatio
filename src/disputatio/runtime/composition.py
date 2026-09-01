@@ -28,7 +28,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 import anyio
 
@@ -37,6 +36,7 @@ from disputatio.contracts import (
     AgentAdapter,
     EventSink,
     Mode,
+    PipelineKind,
     Role,
     RoundBoundaryPolicy,
     SessionState,
@@ -59,7 +59,12 @@ from disputatio.runtime.errors import ConfigError, UnknownAdapterError
 from disputatio.runtime.git import GitOps
 from disputatio.runtime.history import load_patch
 from disputatio.runtime.layout import adopted_findings_json
-from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_adopt import (
+    AdoptionRouter,
+    OperatorIntents,
+    PairAdoptionRouter,
+    SingleContourAdoptionRouter,
+)
 from disputatio.runtime.pipeline_config import (
     PipelineConfig,
     SessionProfile,
@@ -69,7 +74,8 @@ from disputatio.runtime.pipeline_export import ExportFn, export_pipeline
 from disputatio.runtime.pipeline_integrity import ControlPlane, PipelineIntegrityPolicy
 from disputatio.runtime.pipeline_resume import PipelineResume
 from disputatio.runtime.pipeline_runner import (
-    CONTOUR_SPEC,
+    CONTOUR_PAIR,
+    ArchitecturalDefectPolicy,
     PipelineRunner,
     SessionCreation,
     load_session_state,
@@ -336,6 +342,11 @@ class PipelineDeps:
     которого вправе продолжить `runner`, и передаёт управление ему. Наружу
     отдаются оба плюс хранилище манифеста — ровно то, что нужно четырём
     командам §3.1, и ни одной операции сверх.
+
+    `intents` публикуется, чтобы ВЫБОР реализации маршрутизатора был
+    наблюдаем тестом сборки (P10, §10): «у документного вида своя реализация
+    порта» — свойство composition root, и доказывать его поведением значило
+    бы не отличить «не конструируется» от запрещённого «не срабатывает».
     """
 
     workspace_root: Path
@@ -343,6 +354,7 @@ class PipelineDeps:
     store: FilePipelineStateStore
     runner: PipelineRunner
     resume: PipelineResume
+    intents: OperatorIntents
 
 
 def build_pipeline(
@@ -362,6 +374,13 @@ def build_pipeline(
     ним: каждая ревизия — обычная сессия SPEC-001, и собирает её тот же
     `build_runtime` внутри `resume_session`. Пайплайн добавляет к ней ровно
     четыре вещи, и все четыре живут здесь, а не в runner'е:
+
+    **Политику границы раунда выбирает ЭТОТ код, а не runner** (§7.1, P10).
+    У вида `pair` таблица несёт одну запись — для контура `pair`; у вида
+    `document` она пуста, и объекта политики в таком пайплайне не существует
+    вовсе. Пока политика создавалась внутри runner'а по имени контура, P10
+    был невыполним: механика вида `pair` физически присутствовала в каждом
+    пайплайне и отделялась от работы одним условием.
 
     1. **Фабрика ревизии** — `bootstrap` каталога, снапшот `config.toml` с
        `Mode.DOCUMENT` и durable-набор архитектурных находок (§7.3). Находки
@@ -486,11 +505,12 @@ def build_pipeline(
                 lifecycle=lifecycle,
                 documents=DocSessionSpec(
                     contour=contour,
-                    doc_paths=_doc_paths(config, contour),
-                    # Действующие формулировки, а не вендоренные: §5.3
-                    # разрешает переопределить их конфигом, манифест хеширует
-                    # именно их снапшот, и другого канала до ревьюера нет.
-                    checklist=dict(config.checklists[contour]),
+                    doc_paths=config.contour_documents(contour),
+                    # Разрешённый чеклист конфига целиком, а не собранный
+                    # здесь заново: §5.3 разрешает переопределить формулировки
+                    # (а у контура `doc` — и весь состав), манифест хеширует
+                    # именно его снапшот, и другого канала до ревьюера нет.
+                    checklist=config.checklists[contour],
                 ),
                 git=git,
                 sink=session_sink,
@@ -507,7 +527,13 @@ def build_pipeline(
                 return settled
             raise
 
+    boundary_policies: dict[str, RoundBoundaryPolicy] = (
+        {CONTOUR_PAIR: ArchitecturalDefectPolicy()}
+        if config.kind is PipelineKind.PAIR
+        else {}
+    )
     runner = PipelineRunner(
+        boundary_policies=boundary_policies,
         store=store,
         sink=sink,
         git=git,
@@ -518,27 +544,44 @@ def build_pipeline(
         config=config,
         workspace_root=workspace,
     )
+    intents = OperatorIntents(
+        router=_adoption_router(config),
+        store=store,
+        sink=sink,
+        git=git,
+        config=config,
+        workspace_root=workspace,
+        now=now,
+    )
     return PipelineDeps(
         workspace_root=workspace,
         slug=slug,
         store=store,
         runner=runner,
+        intents=intents,
         resume=PipelineResume(
             runner=runner,
             store=store,
             git=git,
             config=config,
             workspace_root=workspace,
-            intents=OperatorIntents(
-                store=store,
-                sink=sink,
-                git=git,
-                config=config,
-                workspace_root=workspace,
-                now=now,
-            ),
+            intents=intents,
         ),
     )
+
+
+def _adoption_router(config: PipelineConfig) -> AdoptionRouter:
+    """Реализация порта маршрутизации adoption — по виду (§3.1, P10).
+
+    Общая функция, возвращающая для документного вида тривиальный ответ,
+    была бы запрещённым «не срабатывает»: механика пары присутствовала бы в
+    документном пайплайне и ждала, пока условие в ней однажды разойдётся с
+    реальностью. Поэтому реализации две, и выбирает их сборка.
+    """
+    if config.kind is PipelineKind.DOCUMENT:
+        return SingleContourAdoptionRouter()
+    (spec_path, _) = config.documents()
+    return PairAdoptionRouter(spec_path=spec_path)
 
 
 def _require_toplevel(git: GitOps, workspace: Path) -> None:
@@ -577,31 +620,21 @@ def _require_toplevel(git: GitOps, workspace: Path) -> None:
     )
 
 
-def _contour_of(session_id: str) -> Literal["spec", "pair"]:
+def _contour_of(session_id: str) -> str:
     """Контур ревизии по её имени (`spec-r2` → `spec`, §4.1 SPEC-002).
 
     Имя ревизии — durable-факт манифеста и каталога, а не догадка: его
     строит `revision_id`, и обратная операция `split_revision` живёт рядом с
-    ним. Здесь только сужение до `Literal`, которого требуют промпты §5.1/
-    §5.2 и `validate_doc_review`.
+    ним. Возвращается как есть: контуров три, и сужение до пары `spec|pair`
+    отправляло бы ревизию `doc-r1` в чужой контур молча.
     """
     contour, _ = split_revision(session_id)
-    return "spec" if contour == CONTOUR_SPEC else "pair"
-
-
-def _doc_paths(
-    config: PipelineConfig, contour: Literal["spec", "pair"]
-) -> tuple[str, ...]:
-    """Документы, которые ревизия ВИДИТ (§5.1): spec — спеку, pair — оба."""
-    spec = config.spec_path.as_posix()
-    if contour == "spec":
-        return (spec,)
-    return (spec, config.plan_path.as_posix())
+    return contour
 
 
 def _doc_verifier(
     config: PipelineConfig,
-    contour: Literal["spec", "pair"],
+    contour: str,
     workspace: Path,
     artifact_root: Path,
 ) -> Verifier:
@@ -616,12 +649,10 @@ def _doc_verifier(
     runtime: `doc-scope` судит по `changes.patch` раунда, и второй читатель
     того же файла разошёлся бы с первым на пустом раунде ([REQ-013]).
     """
-    documents = tuple(workspace / relative for relative in _doc_paths(config, contour))
-    allowed = (
-        (config.spec_path.as_posix(),)
-        if contour == "spec"
-        else (config.plan_path.as_posix(),)
+    documents = tuple(
+        workspace / relative for relative in config.contour_documents(contour)
     )
+    allowed = config.scope_paths(contour)
     return DocVerifier(
         doc_paths=documents,
         allowed=allowed,

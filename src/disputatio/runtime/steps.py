@@ -24,7 +24,7 @@ FSM обнулила бы лимит schema-повторов (ADR-004).
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final
 
 from disputatio.context import (
     build_author_prompt,
@@ -41,6 +41,7 @@ from disputatio.contracts import (
     EventSource,
     EventType,
     Mode,
+    ResolvedChecklist,
     Review,
     Role,
     SessionLifecyclePolicy,
@@ -116,17 +117,20 @@ class DocSessionSpec:
     сборки портов: сессия develop/analyze их не имеет вовсе, и дефолт `None`
     оставляет её путь байт-в-байт прежним.
 
-    `checklist` несёт тексты, а не только id, потому что §5.3 разрешает
-    переопределить формулировки конфигом, и другого канала до ревьюера у
-    override'а нет. Набор ключей при этом остаётся производным от контура и
-    проверяется на равенство `CHECKLIST_BY_CONTOUR[contour]` там, где
-    собирается промпт (V1 §5.2): id закреплены за контуром, конфиг вправе
-    менять только формулировки.
+    `checklist` — РАЗРЕШЁННЫЙ чеклист (`ResolvedChecklist`), а не карта
+    «id → текст»: состав, порядок и назначенная роль findings-item приходят
+    одним объектом. Иначе состав пришлось бы восстанавливать по имени
+    контура из глобального каталога — а у операторского контура `doc`
+    такого каталога нет вовсе, и порядок его пунктов задаёт конфиг (§5.3).
+
+    `contour` — свободная строка: контуров три (`spec`, `pair`, `doc`), и
+    закрытый `Literal` здесь только повторял бы таблицу, которая живёт в
+    `CONTOURS_BY_KIND`.
     """
 
-    contour: Literal["spec", "pair"]
+    contour: str
     doc_paths: tuple[str, ...]
-    checklist: Mapping[str, str]
+    checklist: ResolvedChecklist
 
 
 @dataclass(frozen=True, slots=True)
@@ -705,7 +709,10 @@ def _accepted_review(
         ()
         if spec is None
         else validate_doc_review(
-            parsed, contour=spec.contour, verification=verification
+            parsed,
+            contour=spec.contour,
+            checklist=spec.checklist,
+            verification=verification,
         )
     )
     acceptance = validate_review(parsed, verification)

@@ -18,13 +18,14 @@ from pydantic import ValidationError
 from disputatio.contracts.pipeline import (
     ALLOWED_TRANSITIONS,
     SCHEMA_PIPELINE_V1,
+    SCHEMA_PIPELINE_V2,
     AppendOnlyEntry,
-    DocumentPaths,
     EvidenceLink,
     FileRef,
     IntegritySnapshot,
     NextAction,
     OperatorDecision,
+    PairDocuments,
     PipelinePhase,
     PipelineState,
     SessionOutcome,
@@ -99,10 +100,15 @@ def test_round_trip_serialization() -> None:
 
 
 def test_serialization_contains_schema_and_from_keys() -> None:
-    """Сериализация несёт `"schema"` и алиас `"from"` у переходов."""
+    """Сериализация несёт `"schema"` и алиас `"from"` у переходов.
+
+    Тег на выходе — v2, а не тот v1, с которым payload прочитан: редакция
+    v0.2 пишет v2 для ОБОИХ видов, а v1 только читает (§4.2). Подробности
+    миграции — `test_pipeline_kind.py`.
+    """
     state = PipelineState.model_validate(_pipeline_state_payload())
     dumped = state.model_dump(by_alias=True)
-    assert dumped["schema"] == SCHEMA_PIPELINE_V1
+    assert dumped["schema"] == SCHEMA_PIPELINE_V2
     assert dumped["transitions"][0]["from"] == "IDLE"
     assert "from_" not in dumped["transitions"][0]
 
@@ -122,18 +128,26 @@ def test_model_validate_with_schema_key_accepted() -> None:
     """С явным корректным тегом `model_validate` проходит и отдаёт данные."""
     payload = _pipeline_state_payload()
     state = PipelineState.model_validate(payload)
-    assert state.schema_ == SCHEMA_PIPELINE_V1
+    assert state.schema_ == SCHEMA_PIPELINE_V2
     assert state.pipeline_id == "pipe-1"
     assert state.phase == PipelinePhase.SPEC_LOOP
 
 
 def test_constructor_still_defaults_schema() -> None:
     """Конструктор (не `model_validate`) по-прежнему подставляет схему сам —
-    удобство для программного кода пайплайна сохранено (§4.2 PipelineState)."""
+    удобство для программного кода пайплайна сохранено (§4.2 PipelineState).
+
+    `documents` здесь несёт дискриминатор явно: подстановка тега — про
+    `schema`, а не про форму документов, и «манифест без тега» после неё
+    объявлен как v2, где `kind` обязателен. Совместимость v1 чинит
+    нормализация по тегу, и подменять её дефолтом внутри union'а нельзя
+    (§4.2) — иначе payload без дискриминатора проходил бы под любым тегом.
+    """
     payload = _pipeline_state_payload()
     del payload["schema"]
+    payload["documents"] = {**payload["documents"], "kind": "pair"}
     state = PipelineState(**payload)
-    assert state.schema_ == SCHEMA_PIPELINE_V1
+    assert state.schema_ == SCHEMA_PIPELINE_V2
 
 
 # --- transition table ---------------------------------------------------
@@ -335,9 +349,9 @@ def test_relative_paths_only_session_record() -> None:
 
 
 def test_relative_paths_only_documents() -> None:
-    """Абсолютный путь в `DocumentPaths` — ValidationError."""
+    """Абсолютный путь в `PairDocuments` — ValidationError."""
     with pytest.raises(ValidationError):
-        DocumentPaths.model_validate(
+        PairDocuments.model_validate(
             {"spec_path": "/abs/spec.md", "plan_path": "spec/tasks.md"}
         )
 
@@ -369,7 +383,7 @@ def test_paths_leaving_the_root_or_non_canonical_rejected(bad: str) -> None:
     с `workspace_root`, читал и хешировал файл за пределами репозитория.
     """
     with pytest.raises(ValidationError):
-        DocumentPaths.model_validate({"spec_path": bad, "plan_path": "spec/tasks.md"})
+        PairDocuments.model_validate({"spec_path": bad, "plan_path": "spec/tasks.md"})
 
 
 @pytest.mark.parametrize(
@@ -378,7 +392,7 @@ def test_paths_leaving_the_root_or_non_canonical_rejected(bad: str) -> None:
 def test_ordinary_relative_paths_accepted(good: str) -> None:
     """Обычный путь внутрь репозитория проверку проходит — она не глухая."""
     assert (
-        DocumentPaths.model_validate(
+        PairDocuments.model_validate(
             {"spec_path": good, "plan_path": "spec/tasks.md"}
         ).spec_path
         == good

@@ -1,0 +1,72 @@
+{
+  "schema": "disputatio/pipeline/v1",
+  "pipeline_id": "legacy",
+  "created_at": "2026-08-29T12:00:00Z",
+  "phase": "PAIR_LOOP",
+  "task": {
+    "path": "task.md",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "config": {
+    "path": "config.toml",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "checklists": {
+    "path": "checklists.toml",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "documents": {
+    "spec_path": "docs/spec.md",
+    "plan_path": "docs/plan.md"
+  },
+  "spec_sessions": [
+    {
+      "revision": 1,
+      "session_id": "spec-r1",
+      "path": "sessions/spec-r1",
+      "entry_hashes": {
+        "docs/spec.md": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "docs/plan.md": "absent"
+      },
+      "outcome": "converged",
+      "superseded_by": null
+    }
+  ],
+  "pair_sessions": [
+    {
+      "revision": 1,
+      "session_id": "pair-r1",
+      "path": "sessions/pair-r1",
+      "entry_hashes": {
+        "docs/spec.md": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "docs/plan.md": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": null,
+      "superseded_by": null
+    }
+  ],
+  "transitions": [
+    {
+      "from": "IDLE",
+      "to": "SPEC_LOOP",
+      "reason": "started",
+      "evidence": [],
+      "at": "2026-08-29T12:00:01Z"
+    },
+    {
+      "from": "SPEC_LOOP",
+      "to": "PAIR_LOOP",
+      "reason": "spec_converged",
+      "evidence": [],
+      "at": "2026-08-29T12:00:02Z"
+    }
+  ],
+  "budget_used": {
+    "tokens": 1234,
+    "wall_seconds": 12.5,
+    "cost_usd_est": 0.02
+  },
+  "operator_decisions": [],
+  "anchor_id": "legacy",
+  "next_action": null
+}
