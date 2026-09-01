@@ -376,7 +376,19 @@
   очереди. Verifier-стадию детерминированных проверок документов (якоря строк,
   линки) смотреть в связке с research-bench `bench-verify` (link-resolve перед
   LLM-критиком).
-- [ ] Режим полировки одиночного документа @id:single-document-polish-mode
+- [x] Режим полировки одиночного документа @id:single-document-polish-mode
+  — **реализовано 2026-09-01**: выбрана форма **(а)** — одноконтурный вид
+  пайплайна `document`. Спека (SPEC-002 v0.2) и план влиты парой PR #54,
+  реализация — 8 задач плана `docs/plans/2026-08-31-document-pipeline-kind-plan.md`
+  (ветка `feat/document-pipeline-kind`). CLI-способ, который просил
+  заказчик: форма `[pipeline] document_path = …` + операторский чеклист
+  `[pipeline.checklists.doc]`, команды прежние (`disp pipeline run/resume/
+  status/export`); сквозной пример — `docs/document-pipeline.md`.
+  Осталось: закрыть inbox-issue #52 после мержа и сообщить devtools, что
+  узел авторинга можно переключать с `run --mode develop`.
+  Гейт под DSL devtools (`#### BEH-NN`, `traces:`, `checked_by`) в объём не
+  входил — §11 держит его отдельным doc-гейтом сверх baseline, он не
+  зависит от вида пайплайна и приедет своим PR.
   — inbox-запрос devtools #52 (принят 2026-08-31,
   `from: devtools#disp-document-mode-issue`). Спека behaviour-конвейера devtools
   (§5, OQ-1) закладывала авторинг документов бандла через `disp --mode document`.
