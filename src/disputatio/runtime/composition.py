@@ -28,7 +28,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 import anyio
 
@@ -60,7 +59,12 @@ from disputatio.runtime.errors import ConfigError, UnknownAdapterError
 from disputatio.runtime.git import GitOps
 from disputatio.runtime.history import load_patch
 from disputatio.runtime.layout import adopted_findings_json
-from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_adopt import (
+    AdoptionRouter,
+    OperatorIntents,
+    PairAdoptionRouter,
+    SingleContourAdoptionRouter,
+)
 from disputatio.runtime.pipeline_config import (
     PipelineConfig,
     SessionProfile,
@@ -71,7 +75,6 @@ from disputatio.runtime.pipeline_integrity import ControlPlane, PipelineIntegrit
 from disputatio.runtime.pipeline_resume import PipelineResume
 from disputatio.runtime.pipeline_runner import (
     CONTOUR_PAIR,
-    CONTOUR_SPEC,
     ArchitecturalDefectPolicy,
     PipelineRunner,
     SessionCreation,
@@ -339,6 +342,11 @@ class PipelineDeps:
     которого вправе продолжить `runner`, и передаёт управление ему. Наружу
     отдаются оба плюс хранилище манифеста — ровно то, что нужно четырём
     командам §3.1, и ни одной операции сверх.
+
+    `intents` публикуется, чтобы ВЫБОР реализации маршрутизатора был
+    наблюдаем тестом сборки (P10, §10): «у документного вида своя реализация
+    порта» — свойство composition root, и доказывать его поведением значило
+    бы не отличить «не конструируется» от запрещённого «не срабатывает».
     """
 
     workspace_root: Path
@@ -346,6 +354,7 @@ class PipelineDeps:
     store: FilePipelineStateStore
     runner: PipelineRunner
     resume: PipelineResume
+    intents: OperatorIntents
 
 
 def build_pipeline(
@@ -535,27 +544,44 @@ def build_pipeline(
         config=config,
         workspace_root=workspace,
     )
+    intents = OperatorIntents(
+        router=_adoption_router(config),
+        store=store,
+        sink=sink,
+        git=git,
+        config=config,
+        workspace_root=workspace,
+        now=now,
+    )
     return PipelineDeps(
         workspace_root=workspace,
         slug=slug,
         store=store,
         runner=runner,
+        intents=intents,
         resume=PipelineResume(
             runner=runner,
             store=store,
             git=git,
             config=config,
             workspace_root=workspace,
-            intents=OperatorIntents(
-                store=store,
-                sink=sink,
-                git=git,
-                config=config,
-                workspace_root=workspace,
-                now=now,
-            ),
+            intents=intents,
         ),
     )
+
+
+def _adoption_router(config: PipelineConfig) -> AdoptionRouter:
+    """Реализация порта маршрутизации adoption — по виду (§3.1, P10).
+
+    Общая функция, возвращающая для документного вида тривиальный ответ,
+    была бы запрещённым «не срабатывает»: механика пары присутствовала бы в
+    документном пайплайне и ждала, пока условие в ней однажды разойдётся с
+    реальностью. Поэтому реализации две, и выбирает их сборка.
+    """
+    if config.kind is PipelineKind.DOCUMENT:
+        return SingleContourAdoptionRouter()
+    (spec_path, _) = config.documents()
+    return PairAdoptionRouter(spec_path=spec_path)
 
 
 def _require_toplevel(git: GitOps, workspace: Path) -> None:
@@ -594,16 +620,16 @@ def _require_toplevel(git: GitOps, workspace: Path) -> None:
     )
 
 
-def _contour_of(session_id: str) -> Literal["spec", "pair"]:
+def _contour_of(session_id: str) -> str:
     """Контур ревизии по её имени (`spec-r2` → `spec`, §4.1 SPEC-002).
 
     Имя ревизии — durable-факт манифеста и каталога, а не догадка: его
     строит `revision_id`, и обратная операция `split_revision` живёт рядом с
-    ним. Здесь только сужение до `Literal`, которого требуют промпты §5.1/
-    §5.2 и `validate_doc_review`.
+    ним. Возвращается как есть: контуров три, и сужение до пары `spec|pair`
+    отправляло бы ревизию `doc-r1` в чужой контур молча.
     """
     contour, _ = split_revision(session_id)
-    return "spec" if contour == CONTOUR_SPEC else "pair"
+    return contour
 
 
 def _doc_verifier(

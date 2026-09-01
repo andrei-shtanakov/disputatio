@@ -74,7 +74,11 @@ from disputatio.runtime.layout import (
     REVIEW_NAME,
     round_dir,
 )
-from disputatio.runtime.pipeline_adopt import OperatorIntents
+from disputatio.runtime.pipeline_adopt import (
+    OperatorIntents,
+    PairAdoptionRouter,
+    SingleContourAdoptionRouter,
+)
 from disputatio.runtime.pipeline_config import DEFAULT_MAX_ARCHITECTURAL_RETURNS
 from disputatio.runtime.pipeline_resume import PipelineResume
 from disputatio.runtime.pipeline_runner import (
@@ -325,6 +329,57 @@ class Stand:
         """Заводит пайплайн штатным `run`; инжектированный крах — не провал."""
         start(self)
 
+    def config_of_kind(self, kind: PipelineKind) -> PipelineConfig:
+        """Конфиг ДРУГОГО вида поверх того же анкера — вход проверки P0."""
+        return _config_of_kind(
+            kind,
+            anchor_path=self.anchor_root,
+            max_architectural_returns=DEFAULT_MAX_ARCHITECTURAL_RETURNS,
+            doc_checklist_order=("B1", "B3"),
+        )
+
+    def resume_with(self, config: PipelineConfig) -> PipelineResume:
+        """`PipelineResume` поверх того же диска, но с поданным конфигом."""
+        return PipelineResume(
+            runner=self.runner,
+            store=self.store,
+            git=self.git,
+            config=config,
+            workspace_root=self.workspace,
+            intents=OperatorIntents(
+                router=SingleContourAdoptionRouter(),
+                store=self.store,
+                sink=self.sink,
+                git=self.git,
+                config=config,
+                workspace_root=self.workspace,
+                now=_clock(),
+            ),
+        )
+
+    def mutable_surfaces(self) -> dict[str, object]:
+        """Байты и состояние всех поверхностей, мутируемых resume (§8.1).
+
+        Один снимок, а не перечень утверждений по месту: список, который
+        можно тихо сократить, доказывал бы неизменность ровно того, что
+        реализация не тронула, — и молчал бы о том, что тронула.
+        """
+        return {
+            "manifest": (self.pipeline_dir() / "pipeline.json").read_bytes(),
+            "events": _read_optional(self.pipeline_dir() / "events.jsonl"),
+            "anchor": _read_optional(self.anchor().path),
+            "adoptions": sorted(
+                path.name for path in (self.pipeline_dir() / "adoptions").glob("*")
+            ),
+            "head": self.git.head_sha(),
+            "status": porcelain(self.workspace),
+            "tree": sorted(
+                str(path.relative_to(self.workspace))
+                for path in self.workspace.rglob("*")
+                if path.is_file()
+            ),
+        }
+
 
 def build_stand(
     tmp_path: Path,
@@ -441,6 +496,14 @@ def _config_of_kind(
     )
 
 
+def _read_optional(path: Path) -> bytes | None:
+    """Байты файла либо `None`, если его ещё нет: отсутствие — тоже состояние."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
 def start(stand: Stand) -> None:
     """Заводит пайплайн штатным `run`; инжектированный крах — не провал теста."""
     try:
@@ -474,6 +537,7 @@ def _resume(stand: Stand) -> PipelineResume:
         config=stand.config,
         workspace_root=stand.workspace,
         intents=OperatorIntents(
+            router=_router_of(stand.config),
             store=stand.store,
             sink=stand.sink,
             git=stand.git,
@@ -482,6 +546,14 @@ def _resume(stand: Stand) -> PipelineResume:
             now=_clock(),
         ),
     )
+
+
+def _router_of(config: PipelineConfig) -> Any:
+    """Тот же выбор реализации порта, что делает composition root (§3.1)."""
+    if config.kind is PipelineKind.DOCUMENT:
+        return SingleContourAdoptionRouter()
+    (spec_path, _) = config.documents()
+    return PairAdoptionRouter(spec_path=spec_path)
 
 
 def _clock() -> Any:

@@ -128,6 +128,7 @@ PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("SPEC-002 §3.1", "runtime/test_pipeline_adopt.py"),
     ("SPEC-002 §3.2", "runtime/test_pipeline_config_kinds.py"),
     ("SPEC-002 §7.1", "runtime/test_pipeline_runner_document.py"),
+    ("SPEC-002 §2 P0", "runtime/test_document_composition.py"),
     ("SPEC-002 §10", "integration/test_pipeline_e2e.py"),
 )
 

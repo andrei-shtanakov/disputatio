@@ -54,9 +54,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from disputatio.contracts import (
+    SESSIONS_FIELD_BY_CONTOUR,
     EvidenceLink,
     NextAction,
     OperatorDecision,
@@ -160,6 +161,117 @@ def compute_scope(git: GitOps, *, allowed_paths: Sequence[str]) -> AdoptionScope
     return AdoptionScope(paths=tuple(sorted(touched)))
 
 
+class AdoptionRouter(Protocol):
+    """Порт маршрутизации adoption: контур-преемник и причина перехода (§3.1).
+
+    Порт, а не общая функция с тривиальным исходом для одного из видов:
+    маршрутизатор, всегда возвращающий один и тот же ответ, — это
+    запрещённое «не срабатывает» (P10). Механика пары присутствовала бы в
+    документном пайплайне и ждала, пока условие в ней однажды разойдётся с
+    реальностью.
+    """
+
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> "AdoptionRoute":
+        """Контур-преемник и причина pipeline-перехода, если он нужен."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class AdoptionRoute:
+    """Куда уходит adoption: контур преемника и причина перехода (или её нет)."""
+
+    contour: str
+    reason: TransitionReason | None
+
+
+@dataclass(frozen=True, slots=True)
+class PairAdoptionRouter:
+    """Маршрутизация вида `pair`: по путям дифа, затем по P6 (§3.1).
+
+    Порядок ветвей и есть норма §3.1: правка спеки ведёт в spec-контур
+    независимо от находок ревьюера, а обнаруженный дефект — независимо от
+    того, что диф трогал только план. Обе причины сразу дают
+    `external_spec_adopt`: он основной, а находки уходят в evidence того же
+    перехода, без второй записи исхода.
+
+    `returns_exhausted` — исчерпанный потолок §7.2 — перекрывает обе причины
+    сразу, и по одной причине: обе ведут по ребру `PAIR_LOOP → SPEC_LOOP`, а
+    лимит назначен именно ребру. Возврата тогда не будет вовсе, и commit
+    point уводит пайплайн в честный частичный результат (§7.2 дословно:
+    «Превышение → `ESCALATED`»). Отказать вместо этого значило бы оставить
+    правку человека в дереве, из которого пайплайн уже не выйдет.
+
+    `spec_path` в конструкторе — СТАТИЧЕСКИЙ факт пайплайна, а не
+    динамический: он не меняется от одного adoption к другому. Динамические
+    (`parked`, `returns_exhausted`) приходят аргументами вызова — зашить их
+    при сборке значило бы заморозить в объекте состояние, которое к
+    следующему вызову уже ложь.
+    """
+
+    spec_path: str
+
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> AdoptionRoute:
+        """Контур-преемник вида `pair` и причина перехода."""
+        if contour == CONTOUR_SPEC:
+            return AdoptionRoute(contour=CONTOUR_SPEC, reason=None)
+        spec_touched = self.spec_path in scope.paths
+        if spec_touched or parked is not None:
+            if returns_exhausted:
+                return AdoptionRoute(
+                    contour=CONTOUR_SPEC,
+                    reason=TransitionReason.MAX_ARCHITECTURAL_RETURNS,
+                )
+            if spec_touched:
+                return AdoptionRoute(
+                    contour=CONTOUR_SPEC,
+                    reason=TransitionReason.EXTERNAL_SPEC_ADOPT,
+                )
+            return AdoptionRoute(
+                contour=CONTOUR_SPEC, reason=TransitionReason.ARCHITECTURAL_DEFECT
+            )
+        return AdoptionRoute(contour=CONTOUR_PAIR, reason=None)
+
+
+@dataclass(frozen=True, slots=True)
+class SingleContourAdoptionRouter:
+    """Контур один — преемник им и определён (вид `document`, §3.1).
+
+    Сигнатуру Protocol'а реализация несёт целиком, но pair-факты игнорирует
+    и назвать их в теле не может: их там нет. Отдельный узкий Protocol был бы
+    честнее по типам, ценой двух портов у одного шва — выбран общий Protocol
+    и явное `del` неиспользуемых входов, как в `validate_doc_review`.
+
+    Pipeline-перехода adoption этого вида не пишет вовсе: новая ревизия
+    создаётся внутри той же фазы `DOC_LOOP`.
+    """
+
+    def successor(
+        self,
+        *,
+        scope: AdoptionScope,
+        contour: str,
+        parked: tuple[str, int] | None,
+        returns_exhausted: bool,
+    ) -> AdoptionRoute:
+        """Преемник — тот же контур; причины перехода нет."""
+        del scope, parked, returns_exhausted
+        return AdoptionRoute(contour=contour, reason=None)
+
+
 class OperatorIntents:
     """Исполнитель интентов §3.1: write-ahead, идемпотентность, commit point.
 
@@ -172,6 +284,7 @@ class OperatorIntents:
     def __init__(
         self,
         *,
+        router: AdoptionRouter,
         store: PipelineStateStore,
         sink: PipelineSink,
         git: GitOps,
@@ -179,6 +292,7 @@ class OperatorIntents:
         workspace_root: Path,
         now: Callable[[], datetime],
     ) -> None:
+        self.router = router
         self._store = store
         self._sink = sink
         self._git = git
@@ -208,12 +322,15 @@ class OperatorIntents:
             self._git, allowed_paths=self._config.contour_documents(contour)
         )
         round_no = self._round_of(state, record)
-        successor_contour, reason = _route(
-            contour,
-            parked,
-            exhausted=returns_exhausted(state, self._config.max_architectural_returns),
-            spec_touched=self._spec_touched(scope),
+        route = self.router.successor(
+            scope=scope,
+            contour=contour,
+            parked=parked,
+            returns_exhausted=returns_exhausted(
+                state, self._config.max_architectural_returns
+            ),
         )
+        successor_contour, reason = route.contour, route.reason
         args: dict[str, Any] = {
             "session_id": record.session_id,
             "round": round_no,
@@ -500,16 +617,6 @@ class OperatorIntents:
             )
         return persisted
 
-    def _spec_touched(self, scope: AdoptionScope) -> bool:
-        """Затронул ли диф спеку — факт вида `pair` и только его (§3.1).
-
-        У вида `document` спеки не существует, и вопрос не имеет смысла:
-        `spec_path` там `None`, ответ — всегда `False`, и никакой ветки
-        pair-механики за этим не стоит.
-        """
-        spec_path = self._config.spec_path
-        return spec_path is not None and spec_path.as_posix() in scope.paths
-
     def _require_active(self, state: PipelineState) -> SessionRecord:
         """Активная ревизия; без неё решение оператора не к чему привязать."""
         record = active_session(state)
@@ -545,40 +652,6 @@ class OperatorIntents:
             EvidenceLink(session_id=session_id, round=round_no, finding_id=issue.id)
             for issue in architectural_findings(review)
         ]
-
-
-def _route(
-    contour: str,
-    parked: tuple[str, int] | None,
-    *,
-    exhausted: bool,
-    spec_touched: bool,
-) -> tuple[str, TransitionReason | None]:
-    """Контур преемника и причина перехода — по путям дифа, затем по P6.
-
-    Порядок ветвей и есть норма §3.1: правка спеки ведёт в spec-контур
-    независимо от находок ревьюера, а обнаруженный дефект — независимо от
-    того, что диф трогал только план. Обе причины сразу дают
-    `external_spec_adopt`: он основной, а находки уходят в evidence того же
-    перехода, без второй записи исхода.
-
-    `exhausted` — исчерпанный потолок §7.2 — перекрывает обе причины сразу,
-    и по одной причине: обе ведут по ребру `PAIR_LOOP → SPEC_LOOP`, а лимит
-    назначен именно ребру. Возврата тогда не будет вовсе — вместо контура
-    преемника возвращается `max_architectural_returns`, и commit point
-    уводит пайплайн в честный частичный результат (§7.2 дословно:
-    «Превышение → `ESCALATED`»). Отказать вместо этого значило бы оставить
-    правку человека в дереве, из которого пайплайн уже не выйдет.
-    """
-    if contour == CONTOUR_SPEC:
-        return CONTOUR_SPEC, None
-    if spec_touched or parked is not None:
-        if exhausted:
-            return CONTOUR_SPEC, TransitionReason.MAX_ARCHITECTURAL_RETURNS
-        if spec_touched:
-            return CONTOUR_SPEC, TransitionReason.EXTERNAL_SPEC_ADOPT
-        return CONTOUR_SPEC, TransitionReason.ARCHITECTURAL_DEFECT
-    return CONTOUR_PAIR, None
 
 
 def _create_args(
@@ -621,14 +694,22 @@ def _supersede_spec(state: PipelineState, successor_id: str) -> list[SessionReco
 
 
 def _records(state: PipelineState, contour: str) -> Sequence[SessionRecord]:
-    """Список ревизий нужного контура (§4.2)."""
-    return state.spec_sessions if contour == CONTOUR_SPEC else state.pair_sessions
+    """Список ревизий нужного контура (§4.2).
+
+    Имя коллекции — из `SESSIONS_FIELD_BY_CONTOUR`, а не из тернарника
+    «spec или pair»: контуров три, и adoption вида `document` тернарник
+    отправил бы писать ревизии в `pair_sessions` — то есть в коллекцию,
+    непустота которой у этого вида и есть `invariant_violation` (§4.2).
+    """
+    records: Sequence[SessionRecord] = getattr(
+        state, SESSIONS_FIELD_BY_CONTOUR[contour]
+    )
+    return records
 
 
 def _records_update(contour: str, records: Sequence[SessionRecord]) -> dict[str, Any]:
     """`model_copy(update=…)` для списка ревизий нужного контура."""
-    key = "spec_sessions" if contour == CONTOUR_SPEC else "pair_sessions"
-    return {key: list(records)}
+    return {SESSIONS_FIELD_BY_CONTOUR[contour]: list(records)}
 
 
 def _adopt_operation_id(args: Mapping[str, Any]) -> str:
