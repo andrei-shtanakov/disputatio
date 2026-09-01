@@ -60,6 +60,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Protocol
 
 from disputatio.contracts import (
@@ -391,8 +392,14 @@ class PipelineRunner:
         приватные поля (§10 SPEC-002). Поведенческий тест «drive() ведёт
         себя как без политики» здесь недостаточен: он прошёл бы и у
         политики, всегда отвечающей `proceed`.
+
+        Отдаётся неизменяемое представление, а не сам словарь: «собранная
+        ПРИ ПОСТРОЕНИИ» — половина утверждения P10, и аксессор, сквозь
+        который таблицу можно дописать после сборки, эту половину отменял бы.
+        Тип возврата (`Mapping`) запрещает мутацию только на бумаге —
+        `MappingProxyType` запрещает её на исполнении.
         """
-        return self._boundary_policies
+        return MappingProxyType(self._boundary_policies)
 
     def run(self, slug: str, task_text: str) -> PipelineState:
         """Заводит новый пайплайн и крутит его до остановки (§3.1, §4.3).

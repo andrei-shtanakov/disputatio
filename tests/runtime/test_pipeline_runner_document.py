@@ -241,3 +241,19 @@ def test_snapshot_carries_findings_item_for_every_contour(tmp_path: Path) -> Non
     snapshot = (stand.pipeline_dir() / "checklists.toml").read_text(encoding="utf-8")
     assert 'findings_item = "S1"' in snapshot
     assert "findings_item = false" in snapshot
+
+
+def test_boundary_policies_cannot_be_extended_after_build(tmp_path: Path) -> None:
+    """Таблица политик собрана ПРИ ПОСТРОЕНИИ и после него не дописывается.
+
+    Половина утверждения P10 — про момент: аксессор, сквозь который в
+    документный пайплайн можно доложить политику после сборки, отменял бы
+    «объекта этой механики здесь не существует». Тип `Mapping` запрещает
+    мутацию только на бумаге, поэтому проверяется отказ на исполнении.
+    """
+    stand = _document_stand(tmp_path)
+
+    with pytest.raises(TypeError):
+        stand.runner.boundary_policies["pair"] = _ParksEverything()  # type: ignore[index]
+
+    assert dict(stand.runner.boundary_policies) == {}

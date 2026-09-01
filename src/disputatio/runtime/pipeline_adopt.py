@@ -148,15 +148,16 @@ def compute_scope(git: GitOps, *, allowed_paths: Sequence[str]) -> AdoptionScope
     if foreign:
         listing = "\n".join(f"  - {path}" for path in sorted(foreign))
         raise AdoptionScopeError(
-            "`--adopt-external` отклонён: диф выходит за пару документов "
-            f"пайплайна ({', '.join(sorted(allowed.values()))}) — такие правки "
+            "`--adopt-external` отклонён: диф выходит за документы контура "
+            f"({', '.join(sorted(allowed.values()))}) — такие правки "
             "пайплайн не принимает, они разбираются вне его:\n"
             f"{listing}"
         )
     if not touched:
         raise AdoptionScopeError(
-            "`--adopt-external` отклонён: в дифе нет ни одного документа пары "
-            "— принимать как внешнюю правку нечего"
+            "`--adopt-external` отклонён: в дифе нет ни одного документа "
+            f"контура ({', '.join(sorted(allowed.values()))}) — принимать "
+            "как внешнюю правку нечего"
         )
     return AdoptionScope(paths=tuple(sorted(touched)))
 
