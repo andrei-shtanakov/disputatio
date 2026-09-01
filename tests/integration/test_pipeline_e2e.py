@@ -1457,3 +1457,59 @@ def test_pipeline_refuses_a_root_that_is_not_the_repository_toplevel(
     assert str(stand.workspace) in refusal
     assert not (nested / ".disputatio").exists()
     assert not stand.anchor_root.exists()
+
+
+def _downgrade_manifest_to_v1(stand: Stand) -> None:
+    """Приводит манифест к форме, которую писала реализация v0.1 (§4.2 К2).
+
+    Именно приведение живого пайплайна, а не подложенный файл-фикстура:
+    манифест не самостоятелен — с ним обязаны сойтись снапшоты, каталоги
+    ревизий, `session.json` каждой из них и анкер P9. Фикстура, вырванная из
+    этого окружения, проверяла бы только чтение схемы (это делает
+    `tests/contracts/test_pipeline_kind.py` на
+    `tests/fixtures/pipeline_v1_pair.json`), а здесь проверяется, что такой
+    манифест ПРОДОЛЖАЕТСЯ.
+    """
+    path = stand.pipeline_dir() / "pipeline.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema"] = "disputatio/pipeline/v1"
+    payload["documents"].pop("kind")
+    payload.pop("doc_sessions")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_pre_v02_pair_manifest_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Регрессия К2: манифест пары, записанный до v0.2, читается и продолжается.
+
+    Живой пайплайн, заведённый реализацией v0.1, обязан пережить обновление:
+    новая реализация читает его нормализацией по тегу, доигрывает и при
+    первой же записи объявляет форму честно — тегом v2 (§4.2).
+    """
+    # Крах на ходе РЕВЬЮЕРА, а не автора: ход автора к этому моменту
+    # завершён штатно, и последняя запись анкера — `turn_completed`, то есть
+    # сверять нечего (§8.1 шаг 0). Обрыв посреди хода автора оставил бы
+    # `pre_turn`, и правка манифеста тестом честно читалась бы как подмена
+    # control plane — P9 сработал бы раньше, чем совместимость версий.
+    turns = happy_path_turns()
+    turns[("spec-r1", "reviewer")] = [
+        Turn(text="", boom=True),
+        *converging_reviews("spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+    _downgrade_manifest_to_v1(stand)
+    assert "kind" not in stand.manifest()["documents"]
+
+    assert run_cli(stand, "resume") == EXIT_OK
+
+    manifest = stand.manifest()
+    assert manifest["phase"] == PipelinePhase.DONE.value
+    # Форма объявлена честно при первой же записи, а не подложена под
+    # старый тег: содержание пары при этом то же самое.
+    assert manifest["schema"] == "disputatio/pipeline/v2"
+    assert manifest["documents"]["kind"] == "pair"
+    assert manifest["doc_sessions"] == []
