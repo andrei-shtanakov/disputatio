@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from disputatio.contracts.pipeline import (
+    SESSIONS_FIELD_BY_CONTOUR,
     OperatorDecision,
     PipelineState,
     SessionRecord,
@@ -107,9 +108,18 @@ def _guard_sessions(
 
 
 def _guard_history(previous: PipelineState, current: PipelineState) -> None:
-    """Сверяет все четыре append-only коллекции манифеста (§4.2)."""
-    _guard_sessions(previous.spec_sessions, current.spec_sessions, "spec_sessions")
-    _guard_sessions(previous.pair_sessions, current.pair_sessions, "pair_sessions")
+    """Сверяет все append-only коллекции манифеста (§4.2).
+
+    Коллекции сессий обходятся по `SESSIONS_FIELD_BY_CONTOUR`, а не
+    перечисляются литералами: третий контур уже показал, что перечисление
+    забывают дополнить, и забытая коллекция теряет защиту молча — стор
+    принял бы усечённую или переписанную историю её ревизий и записал бы её
+    атомарно.
+    """
+    for field_name in SESSIONS_FIELD_BY_CONTOUR.values():
+        _guard_sessions(
+            getattr(previous, field_name), getattr(current, field_name), field_name
+        )
     _guard_immutable(previous.transitions, current.transitions, "transitions")
     _guard_immutable(
         previous.operator_decisions, current.operator_decisions, "operator_decisions"

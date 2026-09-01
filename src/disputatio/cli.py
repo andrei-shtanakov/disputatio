@@ -406,7 +406,7 @@ def render_status(state: PipelineState, anchor_path: Path) -> str:
     lines = [
         f"pipeline: {state.pipeline_id}",
         f"phase: {state.phase.value}",
-        f"documents: {state.documents.spec_path} + {state.documents.plan_path}",
+        f"documents: {' + '.join(state.documents.paths())}",
         f"budget: tokens={budget.tokens} wall={budget.wall_seconds:g}s",
         f"anchor: {anchor_path} ({anchor_state})",
         f"next_action: {_render_action(state)}",

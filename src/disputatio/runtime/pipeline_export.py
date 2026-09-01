@@ -61,7 +61,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from disputatio.contracts import PipelinePhase, PipelineState
+from disputatio.contracts import PairDocuments, PipelinePhase, PipelineState
 from disputatio.events import atomic_write
 from disputatio.runtime.git import SESSION_DIR_NAME
 from disputatio.runtime.pipeline_config import PIPELINES_DIR_NAME
@@ -286,19 +286,27 @@ def _manifest(
 
 
 def _pr_title(state: PipelineState, *, converged: bool) -> str:
-    """Заголовок draft-PR: пара документов, с пометкой частичного исхода."""
+    """Заголовок draft-PR: документы вида, с пометкой частичного исхода.
+
+    Состав берётся у формы документов (`paths()`), а не выписывается парой
+    полей: у пары строка байт-в-байт прежняя, у одиночного документа —
+    единственный путь без разделителя (§8.2).
+    """
     prefix = "" if converged else "[partial] "
-    return f"{prefix}docs: {state.documents.spec_path} + {state.documents.plan_path}\n"
+    return f"{prefix}docs: {' + '.join(state.documents.paths())}\n"
 
 
 def _pr_body(state: PipelineState, *, converged: bool) -> str:
     """Тело draft-PR: история контуров, сессии, при партиале — эскалация."""
     partial = not converged
-    lines = [
-        f"# {state.pipeline_id}",
-        "",
-        f"Спека: `{state.documents.spec_path}`",
-        f"План: `{state.documents.plan_path}`",
+    documents = state.documents
+    lines = [f"# {state.pipeline_id}", ""]
+    if isinstance(documents, PairDocuments):
+        lines += [
+            f"Спека: `{documents.spec_path}`",
+            f"План: `{documents.plan_path}`",
+        ]
+    lines += [
         "",
         "Итог: " + ("частичный результат (эскалация)" if partial else "сходимость"),
         "",

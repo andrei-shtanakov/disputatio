@@ -65,12 +65,12 @@ from typing import Any, Final, Protocol
 from disputatio.contracts import (
     BoundaryVerdict,
     BudgetUsed,
-    DocumentPaths,
     EvidenceLink,
     FileRef,
     Issue,
     NextAction,
     Outcome,
+    PairDocuments,
     PipelinePhase,
     PipelineState,
     PipelineStateStore,
@@ -406,7 +406,7 @@ class PipelineRunner:
             task=task,
             config=config,
             checklists=checklists,
-            documents=DocumentPaths(
+            documents=PairDocuments(
                 spec_path=self._config.spec_path.as_posix(),
                 plan_path=self._config.plan_path.as_posix(),
             ),
@@ -1226,14 +1226,18 @@ class PipelineRunner:
         )
 
     def _entry_hashes(self, state: PipelineState) -> dict[str, str]:
-        """Состояние пары документов на входе сессии (§4.2 `entry_hashes`).
+        """Состояние документов вида на входе сессии (§4.2 `entry_hashes`).
 
         Отсутствующий файл — явный маркер `absent`, а не пропуск ключа: план
-        законно отсутствует в spec-r1, и молчание не отличалось бы от «файл
+        законно отсутствует в spec-r1 (и так же законно отсутствует ещё не
+        написанный документ в doc-r1), и молчание не отличалось бы от «файл
         был, но мы его не прочли».
+
+        Состав документов спрашивается у самой формы (`documents.paths()`),
+        а не выписывается парой полей: у ветки `SingleDocument` их нет.
         """
         hashes: dict[str, str] = {}
-        for relative in (state.documents.spec_path, state.documents.plan_path):
+        for relative in state.documents.paths():
             path = self._resolve_document(relative)
             hashes[relative] = (
                 hashlib.sha256(path.read_bytes()).hexdigest()
