@@ -58,6 +58,7 @@ from disputatio.contracts import (
     Limits,
     Mode,
     Outcome,
+    PipelineKind,
     PipelinePhase,
     PipelineState,
     Review,
@@ -411,6 +412,7 @@ def build_harness(
 
     anchor_root = tmp_path / "anchors"
     config = PipelineConfig(
+        kind=PipelineKind.PAIR,
         spec_path=Path(SPEC_PATH),
         plan_path=Path(PLAN_PATH),
         anchor_path=anchor_root,

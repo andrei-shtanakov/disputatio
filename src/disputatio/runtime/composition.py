@@ -34,12 +34,9 @@ import anyio
 
 from disputatio.adapters import ClaudeCodeAdapter, CodexAdapter
 from disputatio.contracts import (
-    CHECKLIST_BY_CONTOUR,
-    FINDINGS_ITEM_BY_CONTOUR,
     AgentAdapter,
     EventSink,
     Mode,
-    ResolvedChecklist,
     Role,
     RoundBoundaryPolicy,
     SessionState,
@@ -489,11 +486,12 @@ def build_pipeline(
                 lifecycle=lifecycle,
                 documents=DocSessionSpec(
                     contour=contour,
-                    doc_paths=_doc_paths(config, contour),
-                    # Действующие формулировки, а не вендоренные: §5.3
-                    # разрешает переопределить их конфигом, манифест хеширует
-                    # именно их снапшот, и другого канала до ревьюера нет.
-                    checklist=_resolved_checklist(config, contour),
+                    doc_paths=config.contour_documents(contour),
+                    # Разрешённый чеклист конфига целиком, а не собранный
+                    # здесь заново: §5.3 разрешает переопределить формулировки
+                    # (а у контура `doc` — и весь состав), манифест хеширует
+                    # именно его снапшот, и другого канала до ревьюера нет.
+                    checklist=config.checklists[contour],
                 ),
                 git=git,
                 sink=session_sink,
@@ -592,35 +590,9 @@ def _contour_of(session_id: str) -> Literal["spec", "pair"]:
     return "spec" if contour == CONTOUR_SPEC else "pair"
 
 
-def _resolved_checklist(config: PipelineConfig, contour: str) -> ResolvedChecklist:
-    """Разрешённый чеклист контура: состав из каталога, тексты из конфига (§5.3).
-
-    Собирается здесь, в composition root, а не внутри валидатора и не внутри
-    сборщика промпта: обоим он нужен один и тот же, и вторая сборка
-    разошлась бы с первой — а расходятся они ровно в критерии, по которому
-    объявлена сходимость.
-    """
-    order = CHECKLIST_BY_CONTOUR[contour]
-    return ResolvedChecklist(
-        order=order,
-        texts=dict(config.checklists[contour]),
-        findings_item=FINDINGS_ITEM_BY_CONTOUR[contour],
-    )
-
-
-def _doc_paths(
-    config: PipelineConfig, contour: Literal["spec", "pair"]
-) -> tuple[str, ...]:
-    """Документы, которые ревизия ВИДИТ (§5.1): spec — спеку, pair — оба."""
-    spec = config.spec_path.as_posix()
-    if contour == "spec":
-        return (spec,)
-    return (spec, config.plan_path.as_posix())
-
-
 def _doc_verifier(
     config: PipelineConfig,
-    contour: Literal["spec", "pair"],
+    contour: str,
     workspace: Path,
     artifact_root: Path,
 ) -> Verifier:
@@ -635,12 +607,10 @@ def _doc_verifier(
     runtime: `doc-scope` судит по `changes.patch` раунда, и второй читатель
     того же файла разошёлся бы с первым на пустом раунде ([REQ-013]).
     """
-    documents = tuple(workspace / relative for relative in _doc_paths(config, contour))
-    allowed = (
-        (config.spec_path.as_posix(),)
-        if contour == "spec"
-        else (config.plan_path.as_posix(),)
+    documents = tuple(
+        workspace / relative for relative in config.contour_documents(contour)
     )
+    allowed = config.scope_paths(contour)
     return DocVerifier(
         doc_paths=documents,
         allowed=allowed,

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from disputatio.contracts import CHECKLIST_TEXT
+from disputatio.contracts import CHECKLIST_TEXT, PipelineKind
 from disputatio.events.paths import SESSION_DIR_NAME
 from disputatio.runtime import (
     ConfigError,
@@ -124,8 +124,8 @@ def test_load_pipeline_config_applies_task_2_vendored_checklists_by_default(
 
     config = load_pipeline_config(path)
 
-    assert config.checklists["spec"]["S1"] == CHECKLIST_TEXT["S1"]
-    assert config.checklists["pair"]["P5"] == CHECKLIST_TEXT["P5"]
+    assert config.checklists["spec"].texts["S1"] == CHECKLIST_TEXT["S1"]
+    assert config.checklists["pair"].texts["P5"] == CHECKLIST_TEXT["P5"]
 
 
 def test_load_pipeline_config_default_anchor_path_is_outside_workspace_root(
@@ -269,11 +269,11 @@ def test_load_pipeline_config_checklist_override_merges_not_replaces(
 
     config = load_pipeline_config(path)
 
-    assert config.checklists["spec"]["S1"] == "кастомная формулировка S1"
-    assert config.checklists["spec"]["S2"] == CHECKLIST_TEXT["S2"]
-    assert config.checklists["spec"]["S5"] == CHECKLIST_TEXT["S5"]
-    assert config.checklists["pair"]["P1"] == CHECKLIST_TEXT["P1"]
-    assert config.checklists["pair"]["P5"] == CHECKLIST_TEXT["P5"]
+    assert config.checklists["spec"].texts["S1"] == "кастомная формулировка S1"
+    assert config.checklists["spec"].texts["S2"] == CHECKLIST_TEXT["S2"]
+    assert config.checklists["spec"].texts["S5"] == CHECKLIST_TEXT["S5"]
+    assert config.checklists["pair"].texts["P1"] == CHECKLIST_TEXT["P1"]
+    assert config.checklists["pair"].texts["P5"] == CHECKLIST_TEXT["P5"]
 
 
 def test_load_pipeline_config_rejects_unknown_checklist_contour(
@@ -313,6 +313,7 @@ def _config(*, anchor_path: Path) -> PipelineConfig:
     """`PipelineConfig` минимальный для предусловий: дефолтные protected
     branches (`master`, `main`) совпадают с веткой `git_repo`."""
     return PipelineConfig(
+        kind=PipelineKind.PAIR,
         spec_path=Path("spec/pair.md"),
         plan_path=Path("plan/pair.md"),
         anchor_path=anchor_path,

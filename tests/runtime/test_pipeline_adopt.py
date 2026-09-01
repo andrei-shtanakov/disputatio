@@ -36,6 +36,7 @@ from typing import Final
 import pytest
 
 from disputatio.contracts import (
+    PipelineKind,
     PipelinePhase,
     PipelineState,
     SessionOutcome,
@@ -751,15 +752,16 @@ def test_scope_compares_paths_from_the_repository_toplevel(tmp_path: Path) -> No
         ),
     )
     config = PipelineConfig(
+        kind=PipelineKind.PAIR,
         spec_path=Path(SPEC_PATH),
         plan_path=Path(PLAN_PATH),
         anchor_path=tmp_path / "anchors",
     )
 
-    scope = compute_scope(git, config, allow_plan=True)
+    scope = compute_scope(git, allowed_paths=config.contour_documents("pair"))
 
     assert scope.paths == (PLAN_PATH,)
-    assert not scope.spec_touched
+    assert SPEC_PATH not in scope.paths
 
 
 def _commit_count(stand: Stand) -> int:

@@ -106,26 +106,30 @@ CHECKPOINT_SUBJECT: Final = "disputatio: operator adopt {slug}"
 
 @dataclass(frozen=True, slots=True)
 class AdoptionScope:
-    """Что именно принимает решение оператора: пути пары и маршрут по ним."""
+    """Что именно принимает решение оператора: затронутые документы контура.
+
+    Только пути. «Затронута ли спека» — факт вида `pair`, и живёт он там,
+    где принимается решение о маршруте: держать его здесь значило бы нести
+    механику пары внутри общей структуры, которой пользуется и вид
+    `document` (P10).
+    """
 
     paths: tuple[str, ...]
-    spec_touched: bool
 
 
-def compute_scope(
-    git: GitOps, config: PipelineConfig, *, allow_plan: bool
-) -> AdoptionScope:
+def compute_scope(git: GitOps, *, allowed_paths: Sequence[str]) -> AdoptionScope:
     """Fail-closed область принимаемого дифа (§3.1); нарушение — отказ целиком.
 
-    `allow_plan` выключен в spec-контуре: там §3.1 допускает только
-    `spec_path`, и правка плана посреди полировки спеки — тот же выход за
-    документную дисциплину, что и посторонний файл.
+    Разрешённые пути приходят параметром, а не выводятся из конфига здесь:
+    их состав — свойство КОНТУРА (spec-контур допускает только спеку;
+    pair-контур — оба документа, потому что правка спеки после её
+    сходимости обязана вернуть пайплайн в spec-ревизию; контур `doc` —
+    единственный документ), и знание о формах живёт в конфиге, а не
+    размазано по исполнителю решений.
     """
     prefix = git.toplevel_prefix()
     control_prefix = f"{prefix}{SESSION_DIR_NAME}/"
-    allowed = {f"{prefix}{config.spec_path.as_posix()}": config.spec_path.as_posix()}
-    if allow_plan:
-        allowed[f"{prefix}{config.plan_path.as_posix()}"] = config.plan_path.as_posix()
+    allowed = {f"{prefix}{path}": path for path in allowed_paths}
 
     touched: list[str] = []
     foreign: list[str] = []
@@ -153,10 +157,7 @@ def compute_scope(
             "`--adopt-external` отклонён: в дифе нет ни одного документа пары "
             "— принимать как внешнюю правку нечего"
         )
-    return AdoptionScope(
-        paths=tuple(sorted(touched)),
-        spec_touched=config.spec_path.as_posix() in touched,
-    )
+    return AdoptionScope(paths=tuple(sorted(touched)))
 
 
 class OperatorIntents:
@@ -204,14 +205,14 @@ class OperatorIntents:
         record = self._require_active(state)
         contour, revision = split_revision(record.session_id)
         scope = compute_scope(
-            self._git, self._config, allow_plan=contour == CONTOUR_PAIR
+            self._git, allowed_paths=self._config.contour_documents(contour)
         )
         round_no = self._round_of(state, record)
         successor_contour, reason = _route(
             contour,
-            scope,
             parked,
             exhausted=returns_exhausted(state, self._config.max_architectural_returns),
+            spec_touched=self._spec_touched(scope),
         )
         args: dict[str, Any] = {
             "session_id": record.session_id,
@@ -499,6 +500,16 @@ class OperatorIntents:
             )
         return persisted
 
+    def _spec_touched(self, scope: AdoptionScope) -> bool:
+        """Затронул ли диф спеку — факт вида `pair` и только его (§3.1).
+
+        У вида `document` спеки не существует, и вопрос не имеет смысла:
+        `spec_path` там `None`, ответ — всегда `False`, и никакой ветки
+        pair-механики за этим не стоит.
+        """
+        spec_path = self._config.spec_path
+        return spec_path is not None and spec_path.as_posix() in scope.paths
+
     def _require_active(self, state: PipelineState) -> SessionRecord:
         """Активная ревизия; без неё решение оператора не к чему привязать."""
         record = active_session(state)
@@ -538,10 +549,10 @@ class OperatorIntents:
 
 def _route(
     contour: str,
-    scope: AdoptionScope,
     parked: tuple[str, int] | None,
     *,
     exhausted: bool,
+    spec_touched: bool,
 ) -> tuple[str, TransitionReason | None]:
     """Контур преемника и причина перехода — по путям дифа, затем по P6.
 
@@ -561,10 +572,10 @@ def _route(
     """
     if contour == CONTOUR_SPEC:
         return CONTOUR_SPEC, None
-    if scope.spec_touched or parked is not None:
+    if spec_touched or parked is not None:
         if exhausted:
             return CONTOUR_SPEC, TransitionReason.MAX_ARCHITECTURAL_RETURNS
-        if scope.spec_touched:
+        if spec_touched:
             return CONTOUR_SPEC, TransitionReason.EXTERNAL_SPEC_ADOPT
         return CONTOUR_SPEC, TransitionReason.ARCHITECTURAL_DEFECT
     return CONTOUR_PAIR, None

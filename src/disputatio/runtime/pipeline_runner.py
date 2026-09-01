@@ -65,12 +65,14 @@ from typing import Any, Final, Protocol
 from disputatio.contracts import (
     BoundaryVerdict,
     BudgetUsed,
+    Documents,
     EvidenceLink,
     FileRef,
     Issue,
     NextAction,
     Outcome,
     PairDocuments,
+    PipelineKind,
     PipelinePhase,
     PipelineState,
     PipelineStateStore,
@@ -81,6 +83,7 @@ from disputatio.contracts import (
     SessionRecord,
     SessionState,
     Severity,
+    SingleDocument,
     Transition,
     TransitionReason,
 )
@@ -104,9 +107,11 @@ from disputatio.runtime.pipeline_config import (
 from disputatio.runtime.pipeline_export import ExportFn
 from disputatio.verifier import resolve_inside
 
-#: Имена контуров (§2): spec — полировка спеки, pair — перепроверка пары.
+#: Имена контуров (§2): spec — полировка спеки, pair — перепроверка пары,
+#: doc — единственный контур вида `document`.
 CONTOUR_SPEC: Final = "spec"
 CONTOUR_PAIR: Final = "pair"
+CONTOUR_DOC: Final = "doc"
 
 #: Каталог ревизий внутри `pipelines/<slug>/` (§4.1).
 SESSIONS_DIR_NAME: Final = "sessions"
@@ -406,10 +411,7 @@ class PipelineRunner:
             task=task,
             config=config,
             checklists=checklists,
-            documents=PairDocuments(
-                spec_path=self._config.spec_path.as_posix(),
-                plan_path=self._config.plan_path.as_posix(),
-            ),
+            documents=self._documents(),
             transitions=[
                 Transition(
                     from_=PipelinePhase.IDLE,
@@ -1166,6 +1168,20 @@ class PipelineRunner:
                     "состояние, которое допроигрывается"
                 )
 
+    def _documents(self) -> Documents:
+        """Артефактная форма документов вида (§4.2).
+
+        Ветвление здесь, а не в схеме: манифест обязан делать чужую форму
+        невыразимой, и union это уже обеспечивает. Задача метода — выбрать
+        ветку по РАЗОБРАННОМУ конфигу, чья форма установлена fail-closed
+        разбором `_resolve_kind` (§3.2).
+        """
+        if self._config.kind is PipelineKind.DOCUMENT:
+            (document_path,) = self._config.documents()
+            return SingleDocument(kind="document", document_path=document_path)
+        spec_path, plan_path = self._config.documents()
+        return PairDocuments(spec_path=spec_path, plan_path=plan_path)
+
     def _config_snapshot(self) -> str:
         """Детерминированный TOML секции `[pipeline]` (§4.1 `config.toml`).
 
@@ -1179,11 +1195,15 @@ class PipelineRunner:
             _toml_string(branch) for branch in self._config.protected_branches
         )
         wall = self._config.soft_max_pipeline_wall_seconds
-        lines = [
-            "[pipeline]",
-            f"spec_path = {_toml_string(self._config.spec_path.as_posix())}",
-            f"plan_path = {_toml_string(self._config.plan_path.as_posix())}",
-            f"max_architectural_returns = {self._config.max_architectural_returns}",
+        lines = ["[pipeline]", *self._document_lines()]
+        if self._config.kind is PipelineKind.PAIR:
+            # `max_architectural_returns` принадлежит форме пары и у вида
+            # document отвергается загрузкой (§3.2). Написать его в снапшот
+            # значило бы удостоверить настройку, которой у пайплайна нет.
+            lines.append(
+                f"max_architectural_returns = {self._config.max_architectural_returns}"
+            )
+        lines += [
             f"soft_max_pipeline_tokens = {self._config.soft_max_pipeline_tokens}",
             f"soft_max_pipeline_wall_seconds = {wall}",
             f"protected_branches = [{branches}]",
@@ -1198,19 +1218,55 @@ class PipelineRunner:
             ]
         return "\n".join(lines) + "\n"
 
+    def _document_lines(self) -> list[str]:
+        """Строки путей секции `[pipeline]` снапшота — по форме вида (§3.2)."""
+        if self._config.kind is PipelineKind.DOCUMENT:
+            (document_path,) = self._config.documents()
+            return [f"document_path = {_toml_string(document_path)}"]
+        spec_path, plan_path = self._config.documents()
+        return [
+            f"spec_path = {_toml_string(spec_path)}",
+            f"plan_path = {_toml_string(plan_path)}",
+        ]
+
     def _checklists_snapshot(self) -> str:
         """Детерминированный TOML действующих чеклистов (§5.3).
 
-        Сортировка по контуру и по id — не косметика: манифест хранит sha256
-        этих байтов, и порядок словаря, зависящий от порядка ключей конфига,
+        Сортировка по контуру — не косметика: манифест хранит sha256 этих
+        байтов, и порядок словаря, зависящий от порядка ключей конфига,
         давал бы разный хеш для одного и того же чеклиста.
+
+        Внутри контура правило разное, и это тоже не косметика. У встроенных
+        состав фиксирован вендоренным набором, поэтому пункты сортируются по
+        id — сортировка защищает хеш от случайного порядка ключей конфига.
+        У операторского контура `doc` так делать НЕЛЬЗЯ: порядок объявления
+        входит в identity чеклиста, отсортированный снапшот его бы потерял, и
+        при resume порядок пришлось бы брать из живого конфига — то есть из
+        файла, который с момента `run` мог измениться, и промпт перестал бы
+        быть воспроизводимым.
+
+        Назначенный `findings_item` несут ВСЕ контуры: роль — часть критерия,
+        и вопрос «по какому пункту судил V8 в этом прогоне» обязан иметь
+        ответ из артефакта, а не из версии кода. Пустая роль пишется явным
+        `false`, а не пропуском строки: пропуск неотличим от потери.
         """
         lines: list[str] = []
         for contour in sorted(self._config.checklists):
+            checklist = self._config.checklists[contour]
             lines.append(f"[{contour}]")
-            items = self._config.checklists[contour]
-            for item_id in sorted(items):
-                lines.append(f"{item_id} = {_toml_string(items[item_id])}")
+            role = checklist.findings_item
+            lines.append(
+                f"findings_item = {_toml_string(role)}"
+                if role is not None
+                else "findings_item = false"
+            )
+            order = (
+                checklist.order
+                if contour == CONTOUR_DOC
+                else tuple(sorted(checklist.order))
+            )
+            for item_id in order:
+                lines.append(f"{item_id} = {_toml_string(checklist.texts[item_id])}")
             lines.append("")
         return "\n".join(lines)
 

@@ -40,6 +40,7 @@ from disputatio.contracts import (
     Limits,
     Mode,
     Outcome,
+    PipelineKind,
     PipelineState,
     Review,
     Role,
@@ -335,6 +336,7 @@ def build_stand(
         workspace=workspace,
         anchor_root=tmp_path / "anchors",
         config=PipelineConfig(
+            kind=PipelineKind.PAIR,
             spec_path=Path(SPEC_PATH),
             plan_path=Path(PLAN_PATH),
             anchor_path=tmp_path / "anchors",
