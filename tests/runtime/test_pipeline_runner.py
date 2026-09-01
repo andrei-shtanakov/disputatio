@@ -90,6 +90,7 @@ from disputatio.runtime import (
     StatusEntry,
 )
 from disputatio.runtime.pipeline_runner import (
+    CONTOUR_PAIR,
     ArchitecturalDefectPolicy,
     PipelineRunner,
     SessionCreation,
@@ -429,6 +430,7 @@ def build_harness(
     factory = _FakeFactory()
     exporter = _FakeExporter()
     runner = PipelineRunner(
+        boundary_policies={CONTOUR_PAIR: ArchitecturalDefectPolicy()},
         store=store,
         sink=_LazySink(workspace),
         git=git,
@@ -473,6 +475,7 @@ class _LazySink:
 def rebuild(harness: Harness, **kwargs: Any) -> Harness:
     """Новый runner поверх того же диска — второй процесс после краха."""
     fresh = PipelineRunner(
+        boundary_policies={CONTOUR_PAIR: ArchitecturalDefectPolicy()},
         store=harness.store,
         sink=_LazySink(harness.workspace),
         git=harness.git,

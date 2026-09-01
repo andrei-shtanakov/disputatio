@@ -37,6 +37,7 @@ from disputatio.contracts import (
     AgentAdapter,
     EventSink,
     Mode,
+    PipelineKind,
     Role,
     RoundBoundaryPolicy,
     SessionState,
@@ -69,7 +70,9 @@ from disputatio.runtime.pipeline_export import ExportFn, export_pipeline
 from disputatio.runtime.pipeline_integrity import ControlPlane, PipelineIntegrityPolicy
 from disputatio.runtime.pipeline_resume import PipelineResume
 from disputatio.runtime.pipeline_runner import (
+    CONTOUR_PAIR,
     CONTOUR_SPEC,
+    ArchitecturalDefectPolicy,
     PipelineRunner,
     SessionCreation,
     load_session_state,
@@ -363,6 +366,13 @@ def build_pipeline(
     `build_runtime` внутри `resume_session`. Пайплайн добавляет к ней ровно
     четыре вещи, и все четыре живут здесь, а не в runner'е:
 
+    **Политику границы раунда выбирает ЭТОТ код, а не runner** (§7.1, P10).
+    У вида `pair` таблица несёт одну запись — для контура `pair`; у вида
+    `document` она пуста, и объекта политики в таком пайплайне не существует
+    вовсе. Пока политика создавалась внутри runner'а по имени контура, P10
+    был невыполним: механика вида `pair` физически присутствовала в каждом
+    пайплайне и отделялась от работы одним условием.
+
     1. **Фабрика ревизии** — `bootstrap` каталога, снапшот `config.toml` с
        `Mode.DOCUMENT` и durable-набор архитектурных находок (§7.3). Находки
        пишутся файлом, а не передаются в память: интент `create_session`
@@ -508,7 +518,13 @@ def build_pipeline(
                 return settled
             raise
 
+    boundary_policies: dict[str, RoundBoundaryPolicy] = (
+        {CONTOUR_PAIR: ArchitecturalDefectPolicy()}
+        if config.kind is PipelineKind.PAIR
+        else {}
+    )
     runner = PipelineRunner(
+        boundary_policies=boundary_policies,
         store=store,
         sink=sink,
         git=git,

@@ -63,6 +63,10 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 from disputatio.contracts import (
+    CONTOURS_BY_KIND,
+    ENTRY_PHASE,
+    SESSIONS_FIELD_BY_CONTOUR,
+    TERMINAL_CONTOUR,
     BoundaryVerdict,
     BudgetUsed,
     Documents,
@@ -123,6 +127,12 @@ CHECKLISTS_SNAPSHOT_NAME: Final = "checklists.toml"
 
 #: Серьёзности, с которых находка считается существенной (§7.1).
 _SUBSTANTIVE: Final = frozenset({Severity.BLOCKER, Severity.MAJOR})
+
+#: Причина ребра «терминальный контур сошёлся → EXPORTING» по виду (§2).
+_CONVERGED_REASON: Final[dict[PipelineKind, TransitionReason]] = {
+    PipelineKind.PAIR: TransitionReason.PAIR_CONVERGED,
+    PipelineKind.DOCUMENT: TransitionReason.DOCUMENT_CONVERGED,
+}
 
 #: Потолок числа интентов на один `advance`. Цикл пайплайна конечен сам по
 #: себе (возвраты ограничены `max_architectural_returns`, остальные фазы
@@ -235,6 +245,22 @@ def load_session_state(artifact_root: Path, session_id: str) -> SessionState | N
         return None
 
 
+def all_session_records(state: PipelineState) -> tuple[SessionRecord, ...]:
+    """Ревизии ВСЕХ коллекций манифеста в порядке контуров (§4.2).
+
+    Обход по `SESSIONS_FIELD_BY_CONTOUR`, а не по паре полей: коллекций
+    три, и перечисление, которое забывают дополнить, теряет ревизии молча —
+    а на этом обходе стоят и «активная сессия», и пересчёт бюджета.
+    Пустые коллекции чужого вида вклада не вносят по построению: их
+    непустота отвергается схемой как `invariant_violation`.
+    """
+    return tuple(
+        record
+        for field_name in SESSIONS_FIELD_BY_CONTOUR.values()
+        for record in getattr(state, field_name)
+    )
+
+
 def active_session(state: PipelineState) -> SessionRecord | None:
     """Единственная незакрытая ревизия манифеста либо `None` (§4.2, §8.1).
 
@@ -245,7 +271,7 @@ def active_session(state: PipelineState) -> SessionRecord | None:
     """
     live = [
         record
-        for record in (*state.spec_sessions, *state.pair_sessions)
+        for record in all_session_records(state)
         if record.outcome is None and record.superseded_by is None
     ]
     return live[-1] if live else None
@@ -263,7 +289,7 @@ def recompute_budget(pipeline_dir: Path, state: PipelineState) -> BudgetUsed:
     tokens = 0
     wall_seconds = 0.0
     cost = 0.0
-    for record in (*state.spec_sessions, *state.pair_sessions):
+    for record in all_session_records(state):
         session = load_session_state(pipeline_dir / record.path, record.session_id)
         if session is None:
             continue
@@ -321,6 +347,7 @@ class PipelineRunner:
     def __init__(
         self,
         *,
+        boundary_policies: Mapping[str, RoundBoundaryPolicy],
         store: PipelineStateStore,
         sink: PipelineSink,
         git: GitOps,
@@ -331,6 +358,7 @@ class PipelineRunner:
         config: PipelineConfig,
         workspace_root: Path,
     ) -> None:
+        self._boundary_policies = dict(boundary_policies)
         self._store = store
         self._sink = sink
         self._git = git
@@ -354,6 +382,18 @@ class PipelineRunner:
     # Публичный вход
     # ------------------------------------------------------------------
 
+    @property
+    def boundary_policies(self) -> Mapping[str, RoundBoundaryPolicy]:
+        """Таблица политик по контурам, собранная при построении (§7.1).
+
+        Публично — потому что пустота таблицы у вида `document` это
+        наблюдаемое свойство СБОРКИ, а тест на неё не вправе лезть в
+        приватные поля (§10 SPEC-002). Поведенческий тест «drive() ведёт
+        себя как без политики» здесь недостаточен: он прошёл бы и у
+        политики, всегда отвечающей `proceed`.
+        """
+        return self._boundary_policies
+
     def run(self, slug: str, task_text: str) -> PipelineState:
         """Заводит новый пайплайн и крутит его до остановки (§3.1, §4.3).
 
@@ -369,8 +409,10 @@ class PipelineRunner:
            при повторном запуске;
         3. **снапшоты** task/config/checklists — до манифеста, потому что
            манифест несёт их sha256 и обязан описывать то, что уже лежит;
-        4. **манифест** с фазой `SPEC_LOOP`, переходом `started` и первым
-           intent'ом — дальше работает `advance`.
+        4. **манифест** с входной фазой ВИДА, переходом `started` и первым
+           intent'ом — дальше работает `advance`. Ни фаза, ни имя первого
+           контура здесь не зашиты: они читаются из `ENTRY_PHASE` и
+           `CONTOURS_BY_KIND`, потому что вид — свойство конфига (P0).
 
         Окно между созданием каталога и первой записью манифеста не
         восстановимо и не притворяется таковым: манифеста нет, `resume` его
@@ -399,15 +441,18 @@ class PipelineRunner:
             directory, CHECKLISTS_SNAPSHOT_NAME, self._checklists_snapshot()
         )
 
+        kind = self._config.kind
+        first_contour = CONTOURS_BY_KIND[kind][0]
+        entry = ENTRY_PHASE[kind]
         first = NextAction(
-            operation_id=f"create-{revision_id(CONTOUR_SPEC, 1)}",
+            operation_id=f"create-{revision_id(first_contour, 1)}",
             kind="create_session",
-            args={"contour": CONTOUR_SPEC, "revision": 1},
+            args={"contour": first_contour, "revision": 1},
         )
         state = PipelineState(
             pipeline_id=slug,
             created_at=self._now(),
-            phase=PipelinePhase.SPEC_LOOP,
+            phase=entry,
             task=task,
             config=config,
             checklists=checklists,
@@ -415,7 +460,7 @@ class PipelineRunner:
             transitions=[
                 Transition(
                     from_=PipelinePhase.IDLE,
-                    to=PipelinePhase.SPEC_LOOP,
+                    to=entry,
                     reason=TransitionReason.STARTED,
                     at=self._now(),
                 )
@@ -572,16 +617,19 @@ class PipelineRunner:
         терминальную (или припаркованную) сессию, и прогнать её второй раз
         значило бы переиграть уже сыгранные раунды.
 
-        Политика границы раунда передаётся только pair-контуру (§7.1);
-        spec-сессия гонится до собственного терминала.
+        Политика границы раунда берётся ИЗ ТАБЛИЦЫ по контуру ревизии
+        (§7.1): её выбрал composition root, и runner о видах не знает. У
+        контура без записи (spec, doc) политики нет — сессия гонится до
+        собственного терминала.
         """
         session_id = str(action.args["session_id"])
         contour, _ = split_revision(session_id)
         artifact_root = self._artifact_root(state.pipeline_id, session_id)
         session = self._session_state(artifact_root, session_id)
         if session is None or not self._is_settled(artifact_root, session, contour):
-            policy = ArchitecturalDefectPolicy() if contour == CONTOUR_PAIR else None
-            self._session_driver(artifact_root, session_id, policy)
+            self._session_driver(
+                artifact_root, session_id, self._boundary_policies.get(contour)
+            )
         successor = NextAction(
             operation_id=f"finish-{session_id}",
             kind="finish_session",
@@ -656,8 +704,14 @@ class PipelineRunner:
                 outcome=SessionOutcome.CONVERGED,
             ),
         )
-        if contour == CONTOUR_PAIR:
-            return self._enter_export(state, records_update, finished)
+        if contour == TERMINAL_CONTOUR[state.kind]:
+            return self._enter_export(
+                state,
+                records_update,
+                finished,
+                from_phase=state.phase,
+                reason=_CONVERGED_REASON[state.kind],
+            )
         return self._start_pair(state, revision, records_update, finished, action)
 
     def _do_record_return(
@@ -847,12 +901,21 @@ class PipelineRunner:
         state: PipelineState,
         records_update: dict[str, Any],
         finished: PipelineEvent,
+        *,
+        from_phase: PipelinePhase,
+        reason: TransitionReason,
     ) -> PipelineState:
-        """Пара сошлась → `EXPORTING` с интентом полного экспорта."""
+        """Терминальный контур вида сошёлся → `EXPORTING` (§7.2).
+
+        Фаза и причина приходят параметрами, а не зашиты: у пары это
+        `PAIR_LOOP → EXPORTING (pair_converged)`, у документного вида —
+        `DOC_LOOP → EXPORTING (document_converged)`, и общая таблица §2
+        различает эти рёбра по виду.
+        """
         transition = Transition(
-            from_=PipelinePhase.PAIR_LOOP,
+            from_=from_phase,
             to=PipelinePhase.EXPORTING,
-            reason=TransitionReason.PAIR_CONVERGED,
+            reason=reason,
             at=self._now(),
         )
         successor = NextAction(
@@ -1053,11 +1116,17 @@ class PipelineRunner:
         даёт `PARK`. Двух первых мало: обрыв процесса сразу после записи
         `review.json` даёт ровно ту же пару, и принять его за парковку значило
         бы объявить архитектурный дефект там, где его никто не находил.
-        Третий факт — та же самая политика, которой опрашивался `drive()`,
-        поэтому расхождения между «почему припарковали» и «что мы прочли» нет
-        по построению.
+        Третий факт — та же самая политика, которой опрашивался `drive()`:
+        она берётся из ОДНОЙ таблицы, а не создаётся здесь заново. Второй
+        экземпляр развёл бы два источника истины — подменённая реализация
+        паркует по своему условию, а обнаружение её парковку не признаёт, и
+        resume продолжил бы сессию, которую надлежит вернуть.
         """
-        if contour != CONTOUR_PAIR:
+        policy = self._boundary_policies.get(contour)
+        if policy is None:
+            # У контура без политики парковки не бывает: парковать нечем, и
+            # «не припарковано» здесь единственный правдивый ответ. Это не
+            # оптимизация — у вида `document` таблица пуста целиком (P10).
             return None
         if session.state in TERMINAL_PHASES:
             return None
@@ -1069,10 +1138,7 @@ class PipelineRunner:
             return None
         if load_decision(artifact_root, round_no) is not None:
             return None
-        if (
-            ArchitecturalDefectPolicy().after_deciding(review)
-            is not BoundaryVerdict.PARK
-        ):
+        if policy.after_deciding(review) is not BoundaryVerdict.PARK:
             return None
         return round_no
 
@@ -1393,16 +1459,23 @@ class PipelineRunner:
 
     @staticmethod
     def _records(state: PipelineState, contour: str) -> Sequence[SessionRecord]:
-        """Список ревизий нужного контура (§4.2)."""
-        return state.spec_sessions if contour == CONTOUR_SPEC else state.pair_sessions
+        """Список ревизий нужного контура (§4.2).
+
+        Имя коллекции берётся из `SESSIONS_FIELD_BY_CONTOUR` — единственного
+        места, где оно записано. Тернарник «spec или pair» третий контур
+        молча отправил бы в чужую коллекцию.
+        """
+        records: Sequence[SessionRecord] = getattr(
+            state, SESSIONS_FIELD_BY_CONTOUR[contour]
+        )
+        return records
 
     @staticmethod
     def _records_update(
         contour: str, records: Sequence[SessionRecord]
     ) -> dict[str, Any]:
         """`model_copy(update=…)` для списка ревизий нужного контура."""
-        key = "spec_sessions" if contour == CONTOUR_SPEC else "pair_sessions"
-        return {key: list(records)}
+        return {SESSIONS_FIELD_BY_CONTOUR[contour]: list(records)}
 
 
 def _broken(what: str) -> _Interpretation:
