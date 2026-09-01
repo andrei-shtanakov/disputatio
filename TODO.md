@@ -384,8 +384,13 @@
   заказчик: форма `[pipeline] document_path = …` + операторский чеклист
   `[pipeline.checklists.doc]`, команды прежние (`disp pipeline run/resume/
   status/export`); сквозной пример — `docs/document-pipeline.md`.
-  Осталось: закрыть inbox-issue #52 после мержа и сообщить devtools, что
-  узел авторинга можно переключать с `run --mode develop`.
+  **Оба хвоста закрыты 2026-09-01.** Inbox-issue #52 закрыт как COMPLETED
+  после мержа PR #64. Отдельного уведомления devtools не потребовалось:
+  их пункт `todo://devtools/behaviour-authoring-document-mode` уже нёс
+  `@blocked_by:disputatio#52`, и закрытие issue само и есть сигнал — вторая
+  половина ритуала ADR-ECO-006 отработала без ручного сообщения. Ход теперь
+  их: снять доставленное ожидание и переключить узел авторинга с
+  `run --mode develop`.
   Гейт под DSL devtools (`#### BEH-NN`, `traces:`, `checked_by`) в объём не
   входил — §11 держит его отдельным doc-гейтом сверх baseline, он не
   зависит от вида пайплайна и приедет своим PR.
@@ -423,8 +428,7 @@
   потребителя». devtools — он и есть, но одиночный документ дешевле N-stage DSL:
   §11 просила оснований для модели, а не сам DSL. Гейт под DSL devtools —
   обычный doc-гейт сверх baseline (§6), ядро и runner не трогает.
-- [ ] `resume` сверяет только вид: дрейф конфига относительно снапшота
-  @id:resume-config-drift-vs-snapshot
+- [ ] `resume` сверяет только вид: дрейф конфига относительно снапшота @id:resume-config-drift-vs-snapshot
   — issue #65, находка терминального ревью PR #64 (major, подтверждена по
   коду). `resume` сверяет с манифестом ровно `documents.kind` (P0, §8.1
   шаг 1); всё остальное содержимое `[pipeline]` берётся из ЖИВОГО конфига,
