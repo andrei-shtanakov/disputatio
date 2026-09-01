@@ -25,7 +25,7 @@ pair-ревью доходит до автора spec-rN+1, — `adopted_finding
 """
 
 from collections.abc import Sequence
-from typing import Final, Literal
+from typing import Final
 
 from disputatio.context.sections import render_directive_section, render_issues_section
 from disputatio.context.tags import wrap_artifact_data
@@ -61,7 +61,7 @@ _INTRO_BY_CONTOUR: Final[dict[str, str]] = {
 
 def build_doc_author_prompt(
     *,
-    contour: Literal["spec", "pair"],
+    contour: str,
     task_text: str,
     doc_paths: Sequence[str],
     directive: str | None,

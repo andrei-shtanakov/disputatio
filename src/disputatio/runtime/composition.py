@@ -34,9 +34,12 @@ import anyio
 
 from disputatio.adapters import ClaudeCodeAdapter, CodexAdapter
 from disputatio.contracts import (
+    CHECKLIST_BY_CONTOUR,
+    FINDINGS_ITEM_BY_CONTOUR,
     AgentAdapter,
     EventSink,
     Mode,
+    ResolvedChecklist,
     Role,
     RoundBoundaryPolicy,
     SessionState,
@@ -490,7 +493,7 @@ def build_pipeline(
                     # Действующие формулировки, а не вендоренные: §5.3
                     # разрешает переопределить их конфигом, манифест хеширует
                     # именно их снапшот, и другого канала до ревьюера нет.
-                    checklist=dict(config.checklists[contour]),
+                    checklist=_resolved_checklist(config, contour),
                 ),
                 git=git,
                 sink=session_sink,
@@ -587,6 +590,22 @@ def _contour_of(session_id: str) -> Literal["spec", "pair"]:
     """
     contour, _ = split_revision(session_id)
     return "spec" if contour == CONTOUR_SPEC else "pair"
+
+
+def _resolved_checklist(config: PipelineConfig, contour: str) -> ResolvedChecklist:
+    """Разрешённый чеклист контура: состав из каталога, тексты из конфига (§5.3).
+
+    Собирается здесь, в composition root, а не внутри валидатора и не внутри
+    сборщика промпта: обоим он нужен один и тот же, и вторая сборка
+    разошлась бы с первой — а расходятся они ровно в критерии, по которому
+    объявлена сходимость.
+    """
+    order = CHECKLIST_BY_CONTOUR[contour]
+    return ResolvedChecklist(
+        order=order,
+        texts=dict(config.checklists[contour]),
+        findings_item=FINDINGS_ITEM_BY_CONTOUR[contour],
+    )
 
 
 def _doc_paths(
