@@ -229,7 +229,7 @@ test_scan_package_purity_only_wraps_unicode_decode_error.
 **Traces to:** [FR-13]
 
 ### TASK-014: Публичные сигнатуры и границы зависимостей сохраняются
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ⏸️ BLOCKED   Est: 0.5d
 
 Реализовать сценарии BEH-14.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-14
