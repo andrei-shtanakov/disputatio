@@ -1,0 +1,83 @@
+{
+  "claims": [
+    {
+      "blob_sha": "b678624f8048fbabbf208b2f8bc09b001f4ff410",
+      "checkpoint_sha": "c97af9c3ccc5bca8518382d6b280a689eb1f314a",
+      "created_at": "2026-09-02T14:30:30.086187",
+      "path": "tests/test_task_005_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "79ab9d05f96270630307d1fa8b5d0842f6cf47de",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review passed of review checkpoint 79ab9d05f96270630307d1fa8b5d0842f6cf47de at merge candidate 79ab9d05f96270630307d1fa8b5d0842f6cf47de",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T14:38:25.228825"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "79ab9d05f96270630307d1fa8b5d0842f6cf47de",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T14:38:25.284124"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "79ab9d05f96270630307d1fa8b5d0842f6cf47de",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_005_red.py::test_changed_lines_preserves_added_metadata_like_content at c97af9c3ccc5 in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T14:38:25.247677"
+    }
+  },
+  "judged_commit": "79ab9d05f96270630307d1fa8b5d0842f6cf47de",
+  "namespace": "a5b6a41bc40a1c96",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-02T14:26:15.926330"
+    },
+    {
+      "detail": "tests/test_task_005_red.py::test_changed_lines_preserves_added_metadata_like_content",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-02T14:30:26.584148"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-02T14:30:30.136793"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-02T14:38:25.210207"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-02T14:38:25.285158"
+    }
+  ],
+  "red": {
+    "baseline_sha": "3723fc16765b73f65efc527b4619ed7cd2292aed",
+    "commit_sha": "c97af9c3ccc5bca8518382d6b280a689eb1f314a",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_005_red.py::test_changed_lines_preserves_added_metadata_like_content",
+    "status": "active",
+    "timestamp": "2026-09-02T14:30:30.084771"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "a5b6a41bc40a1c96",
+  "task_id": "TASK-005",
+  "waivers": []
+}
