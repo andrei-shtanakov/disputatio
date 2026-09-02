@@ -242,15 +242,15 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-14
 **Traces to:** [FR-08, FR-13]
 
 ### TASK-015: Документация сообщает новые граничные контракты
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-15.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-15
 **Depends on:** [TASK-014]
 
 **Checklist:**
-- [ ] реализовать BEH-15: Документация сообщает новые граничные контракты
-- [ ] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_documents_invalid_utf8_contract (kind: manual) зелёные на BEH-15
+- [x] реализовать BEH-15: Документация сообщает новые граничные контракты
+- [x] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_documents_invalid_utf8_contract (kind: manual) зелёные на BEH-15
 
 **Traces to:** [FR-14]
 
