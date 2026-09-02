@@ -193,15 +193,20 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-11
 **Traces to:** [FR-10, FR-11]
 
 ### TASK-012: Ошибка декодирования атомарно прекращает весь scan
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-12.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-12
 **Depends on:** [TASK-011]
 
+Закрыто waiver-ом (стоячая санкция владельца 2026-09-02; tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-012.json): атомарность
+дана по построению реализацией TASK-011; регрессия — зелёный тест
+test_scan_package_purity_fails_atomically_on_invalid_utf8.
+
 **Checklist:**
-- [ ] реализовать BEH-12: Ошибка декодирования атомарно прекращает весь scan
-- [ ] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_fails_atomically_on_invalid_utf8 (kind: integration) зелёные на BEH-12
+- [x] реализовать BEH-12: Ошибка декодирования атомарно прекращает весь scan
+- [x] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_fails_atomically_on_invalid_utf8 (kind: integration) зелёные на BEH-12
 
 **Traces to:** [FR-10, FR-12]
 
