@@ -180,15 +180,15 @@ spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-010.json):
 **Traces to:** [FR-01, FR-02, FR-05]
 
 ### TASK-011: Невалидный UTF-8 преобразуется в SyntaxError с диагностикой
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-11.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-11
 **Depends on:** [TASK-010]
 
 **Checklist:**
-- [ ] реализовать BEH-11: Невалидный UTF-8 преобразуется в SyntaxError с диагностикой
-- [ ] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_wraps_unicode_decode_error (kind: integration) зелёные на BEH-11
+- [x] реализовать BEH-11: Невалидный UTF-8 преобразуется в SyntaxError с диагностикой
+- [x] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_wraps_unicode_decode_error (kind: integration) зелёные на BEH-11
 
 **Traces to:** [FR-10, FR-11]
 
