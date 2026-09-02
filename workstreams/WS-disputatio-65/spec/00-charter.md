@@ -1,7 +1,10 @@
 ---
 spec_stage: charter
-status: draft
+status: approved
 owner_role: product
+approved_by: ai-prosto
+approved_at: '2026-09-02T23:42:48Z'
+version: 2
 ---
 
 # Charter: неизменяемая семантика сессий при resume пайплайна
