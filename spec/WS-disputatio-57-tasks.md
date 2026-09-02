@@ -59,15 +59,20 @@ spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-003.json): BEH-03 уже
 **Traces to:** [FR-02, FR-07]
 
 ### TASK-004: Служебные и контекстные строки исключаются
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-04.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-04
 **Depends on:** [TASK-003]
 
+Закрыто батч-waiver-ом владельца 2026-09-02 (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-004.json):
+поведение уже обеспечено TASK-001/002, честный RED невозможен;
+регрессия — зелёный тест test_changed_lines_excludes_metadata_context_and_no_newline_marker.
+
 **Checklist:**
-- [ ] реализовать BEH-04: Служебные и контекстные строки исключаются
-- [ ] проверка группы: tests/core/test_oscillation.py::test_changed_lines_excludes_metadata_context_and_no_newline_marker (kind: atp) зелёные на BEH-04
+- [x] реализовать BEH-04: Служебные и контекстные строки исключаются
+- [x] проверка группы: tests/core/test_oscillation.py::test_changed_lines_excludes_metadata_context_and_no_newline_marker (kind: atp) зелёные на BEH-04
 
 **Traces to:** [FR-03]
 
@@ -98,54 +103,74 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-06
 **Traces to:** [FR-04, FR-05]
 
 ### TASK-007: Нормализация ограничена маркером и хвостовыми пробелами
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-07.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-07
 **Depends on:** [TASK-006]
 
+Закрыто батч-waiver-ом владельца 2026-09-02 (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-007.json):
+поведение уже обеспечено TASK-001/002, честный RED невозможен;
+регрессия — зелёный тест test_changed_lines_normalizes_to_unique_content_set.
+
 **Checklist:**
-- [ ] реализовать BEH-07: Нормализация ограничена маркером и хвостовыми пробелами
-- [ ] проверка группы: tests/core/test_oscillation.py::test_changed_lines_normalizes_to_unique_content_set (kind: atp) зелёные на BEH-07
+- [x] реализовать BEH-07: Нормализация ограничена маркером и хвостовыми пробелами
+- [x] проверка группы: tests/core/test_oscillation.py::test_changed_lines_normalizes_to_unique_content_set (kind: atp) зелёные на BEH-07
 
 **Traces to:** [FR-05]
 
 ### TASK-008: Служебные различия патчей не меняют похожесть
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-08.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-08
 **Depends on:** [TASK-007]
 
+Закрыто батч-waiver-ом владельца 2026-09-02 (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-008.json):
+поведение уже обеспечено TASK-001/002, честный RED невозможен;
+регрессия — зелёный тест test_patch_similarity_ignores_all_service_line_differences.
+
 **Checklist:**
-- [ ] реализовать BEH-08: Служебные различия патчей не меняют похожесть
-- [ ] проверка группы: tests/core/test_oscillation.py::test_patch_similarity_ignores_all_service_line_differences (kind: contract) зелёные на BEH-08
+- [x] реализовать BEH-08: Служебные различия патчей не меняют похожесть
+- [x] проверка группы: tests/core/test_oscillation.py::test_patch_similarity_ignores_all_service_line_differences (kind: contract) зелёные на BEH-08
 
 **Traces to:** [FR-08, FR-09]
 
 ### TASK-009: Формула Жаккара и пороги детектора остаются прежними
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-09.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-09
 **Depends on:** [TASK-008]
 
+Закрыто батч-waiver-ом владельца 2026-09-02 (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-009.json):
+поведение уже обеспечено TASK-001/002, честный RED невозможен;
+регрессия — зелёный тест test_stateful_changed_lines_preserves_oscillation_contract.
+
 **Checklist:**
-- [ ] реализовать BEH-09: Формула Жаккара и пороги детектора остаются прежними
-- [ ] проверка группы: tests/core/test_oscillation.py::test_stateful_changed_lines_preserves_oscillation_contract (kind: integration) зелёные на BEH-09
+- [x] реализовать BEH-09: Формула Жаккара и пороги детектора остаются прежними
+- [x] проверка группы: tests/core/test_oscillation.py::test_stateful_changed_lines_preserves_oscillation_contract (kind: integration) зелёные на BEH-09
 
 **Traces to:** [FR-08]
 
 ### TASK-010: Вызовы разбора детерминированы и изолированы
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-10.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-10
 **Depends on:** [TASK-009]
 
+Закрыто батч-waiver-ом владельца 2026-09-02 (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-010.json):
+поведение уже обеспечено TASK-001/002, честный RED невозможен;
+регрессия — зелёный тест test_changed_lines_has_no_state_between_calls.
+
 **Checklist:**
-- [ ] реализовать BEH-10: Вызовы разбора детерминированы и изолированы
-- [ ] проверка группы: tests/core/test_oscillation.py::test_changed_lines_has_no_state_between_calls (kind: contract) зелёные на BEH-10
+- [x] реализовать BEH-10: Вызовы разбора детерминированы и изолированы
+- [x] проверка группы: tests/core/test_oscillation.py::test_changed_lines_has_no_state_between_calls (kind: contract) зелёные на BEH-10
 
 **Traces to:** [FR-01, FR-02, FR-05]
 
