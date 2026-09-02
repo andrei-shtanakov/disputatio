@@ -205,6 +205,29 @@ def test_violation_exposes_module_lineno_imported_and_kind(tmp_path: Path) -> No
     assert violation.kind == "import"
 
 
+def test_scan_package_purity_wraps_unicode_decode_error(tmp_path: Path) -> None:
+    """BEH-11 [FR-10, FR-11]: невалидный UTF-8 всплывает как `SyntaxError`."""
+    core = _core_copy(tmp_path)
+    bad_file = _write_module(core, "broken_encoding.py", "")
+    bad_file.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+
+    try:
+        _scan(core)
+    except SyntaxError as exc:
+        assert str(bad_file) in str(exc), (
+            f"SyntaxError message should mention {bad_file}, got: {exc}"
+        )
+        assert isinstance(exc.__cause__, UnicodeDecodeError), (
+            f"SyntaxError.__cause__ should be the UnicodeDecodeError, "
+            f"got: {exc.__cause__!r}"
+        )
+    else:
+        raise AssertionError(
+            "scan_package_purity() should raise SyntaxError on invalid UTF-8, "
+            "not propagate UnicodeDecodeError or succeed silently"
+        )
+
+
 def test_forbidden_collection_is_a_parameter(tmp_path: Path) -> None:
     """Набор запрещённых корней — параметр, а не захардкоженная константа."""
     core = _core_copy(tmp_path)
