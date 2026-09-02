@@ -274,14 +274,18 @@ def test_scan_package_purity_fails_atomically_on_invalid_utf8(
     assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
 
 
-def test_scan_package_purity_only_wraps_unicode_decode_error(tmp_path) -> None:
+def test_scan_package_purity_only_wraps_unicode_decode_error(
+    tmp_path, monkeypatch
+) -> None:
     """BEH-13: новая ветвь преобразует ровно `UnicodeDecodeError` — прочие
-    ошибки сохраняют тип (waiver TASK-013: дано по построению TASK-011)."""
+    ошибки сохраняют тип и экземпляр (waiver TASK-013: дано по построению
+    TASK-011). Ошибки чтения возбуждаются детерминированно подменой
+    `Path.read_text`, без зависимости от UID и файловой системы."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
 
-    # синтаксическая ошибка в валидном UTF-8 — SyntaxError AST-разбора,
+    # 1) синтаксическая ошибка в валидном UTF-8 — SyntaxError AST-разбора,
     # НЕ ветви декодирования (без __cause__ UnicodeDecodeError)
     (pkg / "bad_syntax.py").write_text("def broken(:\n")
     with pytest.raises(SyntaxError) as ast_exc:
@@ -289,12 +293,19 @@ def test_scan_package_purity_only_wraps_unicode_decode_error(tmp_path) -> None:
     assert not isinstance(ast_exc.value.__cause__, UnicodeDecodeError)
     (pkg / "bad_syntax.py").unlink()
 
-    # недоступный файл — файловая ошибка наружу как есть, без маскировки
-    no_access = pkg / "no_access.py"
-    no_access.write_text("x = 1\n")
-    no_access.chmod(0o000)
-    try:
-        with pytest.raises(PermissionError):
+    # 2) и 3) файловая и произвольная ошибка чтения выходят как есть —
+    # тем же экземпляром, без обёртывания в SyntaxError
+    (pkg / "target.py").write_text("x = 1\n")
+    original_read_text = Path.read_text
+    for raised in (PermissionError("denied"), ValueError("odd reader")):
+
+        def fake_read_text(self, *args, _raised=raised, **kwargs):
+            if self.name == "target.py":
+                raise _raised
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        with pytest.raises(type(raised)) as exc_info:
             _purity().scan_package_purity(pkg, package_name="pkg")
-    finally:
-        no_access.chmod(0o644)
+        assert exc_info.value is raised
+        monkeypatch.setattr(Path, "read_text", original_read_text)
