@@ -29,7 +29,7 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-01
 **Traces to:** [FR-01, FR-02, FR-06]
 
 ### TASK-002: Заголовок следующего файла закрывает открытый ханк
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-02.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-02
