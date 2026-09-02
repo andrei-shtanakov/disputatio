@@ -24,10 +24,17 @@ def _changed_lines(patch: str) -> set[str]:
     пробел после маркера заголовка — так отличаем их от строк содержимого,
     начинающихся с `+`/`-` и совпадающих по первым символам, например
     добавленной строки `++foo`, которая целиком выглядит как `+++foo`);
-    нормализация — strip маркера и хвостовых пробелов.
+    нормализация — strip маркера и хвостовых пробелов. Строки `+`/`-` до
+    первого заголовка ханка `@@` не учитываются (BEH-01).
     """
     changed: set[str] = set()
+    in_hunk = False
     for line in patch.splitlines():
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
         if line.startswith(("+++ ", "--- ")):
             continue
         if line.startswith(("+", "-")):
