@@ -1,16 +1,17 @@
 ---
-spec_stage: tasks
-status: draft
-version: 1
-generated_by: fleet-agent
-generated_at: 2026-09-03T03:53:05
-source_prompt_version: ""
-validation: ""
-approved_by: ""
 traces_to:
 - behaviour-spec
 upstream_hashes:
   behaviour-spec: cd5ac77984be516d3c2f6bd08f3858670daf0dd1
+spec_stage: tasks
+status: approved
+version: 2
+generated_by: fleet-agent
+generated_at: '2026-09-03T03:53:05'
+source_prompt_version: ''
+validation: warn
+approved_by: verifier-tests
+approved_at: '2026-09-02T23:58:37Z'
 ---
 
 ## Milestone 1: Immutable session semantics: resume сверяет неизменяемую половину [pipeline] со снапшотом fail-closed (disputatio#65)
