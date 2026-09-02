@@ -42,15 +42,19 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-02
 **Traces to:** [FR-02, FR-07]
 
 ### TASK-003: Новый заголовок ханка продолжает разбор того же файла
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-03.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-03
 **Depends on:** [TASK-002]
+Закрыто waiver-ом владельца (tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-003.json): BEH-03 уже
+обеспечен реализацией TASK-001/002, честный RED невозможен; регрессионный
+тест добавлен зелёным, вне TDD-цикла.
 
 **Checklist:**
-- [ ] реализовать BEH-03: Новый заголовок ханка продолжает разбор того же файла
-- [ ] проверка группы: tests/core/test_oscillation.py::test_changed_lines_tracks_consecutive_hunks (kind: atp) зелёные на BEH-03
+- [x] реализовать BEH-03: Новый заголовок ханка продолжает разбор того же файла
+- [x] проверка группы: tests/core/test_oscillation.py::test_changed_lines_tracks_consecutive_hunks (kind: atp) зелёные на BEH-03
 
 **Traces to:** [FR-02, FR-07]
 
