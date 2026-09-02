@@ -318,3 +318,26 @@ def test_scan_package_purity_only_wraps_unicode_decode_error(
             _purity().scan_package_purity(pkg, package_name="pkg")
         assert exc_info.value is raised
         monkeypatch.setattr(Path, "read_text", original_read_text)
+
+
+def test_scan_package_purity_documents_invalid_utf8_contract() -> None:
+    """BEH-15 [FR-14]: докстрока называет fail-closed контракт на невалидном
+    UTF-8 — `SyntaxError`, путь проблемного файла и сохранённый
+    `UnicodeDecodeError` в `__cause__`, а не только упоминает кодировку."""
+    doc = _purity().scan_package_purity.__doc__
+    assert doc is not None
+    assert "fail-closed" in doc.lower(), (
+        "докстрока должна называть свойство fail-closed"
+    )
+    assert "syntaxerror" in doc.lower(), (
+        "докстрока должна называть тип возбуждаемой ошибки — SyntaxError"
+    )
+    assert "путь" in doc.lower(), (
+        "докстрока должна называть, что ошибка называет путь проблемного файла"
+    )
+    assert "__cause__" in doc, (
+        "докстрока должна называть сохранение исходной ошибки в __cause__"
+    )
+    assert "unicodedecodeerror" in doc.lower(), (
+        "докстрока должна называть исходную ошибку — UnicodeDecodeError"
+    )
