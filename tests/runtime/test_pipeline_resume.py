@@ -611,14 +611,24 @@ def _calls_for(stand: Stand, session_id: str) -> int:
 
 
 def _spy_reads(monkeypatch: pytest.MonkeyPatch, watched: Sequence[Path]) -> list[Path]:
-    """Журналирует чтения интересующих файлов в порядке обращений."""
-    seen: list[Path] = []
-    original = Path.read_text
+    """Журналирует чтения интересующих файлов в порядке обращений.
 
-    def spy(self: Path, *args: object, **kwargs: object) -> str:
+    Хукаются оба канала чтения: якорь после disputatio#57 К2 читается
+    побайтово (`read_bytes`), манифест — текстом (`read_text`)."""
+    seen: list[Path] = []
+    original_text = Path.read_text
+    original_bytes = Path.read_bytes
+
+    def spy_text(self: Path, *args: object, **kwargs: object) -> str:
         if self in watched:
             seen.append(self)
-        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+        return original_text(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_text", spy)
+    def spy_bytes(self: Path) -> bytes:
+        if self in watched:
+            seen.append(self)
+        return original_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", spy_text)
+    monkeypatch.setattr(Path, "read_bytes", spy_bytes)
     return seen
