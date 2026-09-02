@@ -270,3 +270,97 @@ def test_changed_lines_tracks_consecutive_hunks() -> None:
     assert "first hunk line" in got
     assert "second hunk line" in got
     assert "removed in second" in got
+
+
+def test_changed_lines_excludes_metadata_context_and_no_newline_marker() -> None:
+    """BEH-04: служебные и контекстные строки исключаются (waiver TASK-004)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = (
+        "diff --git a/f b/f\n"
+        "index 1111111..2222222 100644\n"
+        "old mode 100644\n"
+        "--- a/f\n"
+        "+++ b/f\n"
+        "@@ -1,2 +1,2 @@\n"
+        " context line\n"
+        "+added\n"
+        "\\ No newline at end of file\n"
+    )
+
+    assert _changed_lines(patch) == {"added"}
+
+
+def test_changed_lines_normalizes_to_unique_content_set() -> None:
+    """BEH-07: ровно один маркер + rstrip; регистр/пробелы сохранены,
+    дубликаты схлопнуты, пустая строка допустима (waiver TASK-007)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = "@@ -1,4 +1,4 @@\n+  Keep  Inner \n+  Keep  Inner\n+\n-\n"
+
+    assert _changed_lines(patch) == {"  Keep  Inner", ""}
+
+
+def test_patch_similarity_ignores_all_service_line_differences() -> None:
+    """BEH-08: пути, index, mode, заголовки и объём служебных строк не
+    влияют на множество и похожесть (waiver TASK-008)."""
+    from disputatio.core.oscillation import _changed_lines, patch_similarity
+
+    a = (
+        "diff --git a/x b/x\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/x\n"
+        "+++ b/x\n"
+        "@@ -1 +1 @@\n"
+        "+same\n"
+    )
+    b = (
+        "diff --git a/y b/y\n"
+        "index 9999999..8888888 100755\n"
+        "old mode 100644\n"
+        "new mode 100755\n"
+        "--- a/y\n"
+        "+++ b/y\n"
+        "@@ -5,1 +5,1 @@\n"
+        "+same\n"
+    )
+    third = "@@ -1,2 +1,2 @@\n+same\n-other\n"
+
+    assert _changed_lines(a) == _changed_lines(b)
+    assert patch_similarity(a, third) == patch_similarity(b, third)
+
+
+def test_stateful_changed_lines_preserves_oscillation_contract() -> None:
+    """BEH-09: формула Жаккара, случай двух пустых множеств и пороги
+    детектора не изменены (waiver TASK-009)."""
+    from disputatio.core.oscillation import (
+        CLAIM_SIMILARITY_THRESHOLD,
+        OSCILLATION_DIFF_THRESHOLD,
+        patch_similarity,
+    )
+
+    assert patch_similarity("", "") == 1.0
+    similarity = patch_similarity(
+        "@@ -1,2 +1,2 @@\n+x\n+y\n", "@@ -1,2 +1,2 @@\n+y\n+z\n"
+    )
+    assert similarity == 1 / 3  # |{y}| / |{x, y, z}|
+    assert OSCILLATION_DIFF_THRESHOLD == 0.8
+    assert CLAIM_SIMILARITY_THRESHOLD == 0.7
+
+
+def test_changed_lines_has_no_state_between_calls() -> None:
+    """BEH-10: вызовы детерминированы и изолированы — состояние ханка не
+    переносится, аргументы не мутируются (waiver TASK-010)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    with_hunk = "@@ -1 +1 @@\n+q\n"
+    without_hunk = "+no hunk\n"
+    with_before = with_hunk
+
+    first = _changed_lines(with_hunk)
+    middle = _changed_lines(without_hunk)
+    second = _changed_lines(with_hunk)
+
+    assert first == second == {"q"}
+    assert middle == set()
+    assert with_hunk == with_before
