@@ -27,7 +27,7 @@ def test_patch_similarity_identical_patches_is_one() -> None:
             "src/disputatio/core/oscillation.py ещё не создан"
         ) from exc
 
-    patch = "+++ b/a.py\n--- a/a.py\n+line one\n-line two\n"
+    patch = "+++ b/a.py\n--- a/a.py\n@@ -1,2 +1,2 @@\n+line one\n-line two\n"
     assert patch_similarity(patch, patch) == 1.0
 
 

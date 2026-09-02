@@ -304,7 +304,7 @@ def test_decide_budget_hit_wins_over_oscillation() -> None:
     """budget_hit и осцилляция истинны одновременно → BUDGET_HIT побеждает [REQ-006]."""
     from disputatio.core.deciding import decide
 
-    patch = "+line one\n-line two\n"
+    patch = "@@ -1,2 +1,2 @@\n+line one\n-line two\n"
     inputs = make_inputs(
         round=3,
         review=make_request_changes_review(),
@@ -324,7 +324,7 @@ def test_decide_oscillation_wins_over_max_rounds() -> None:
     """Осцилляция и max_rounds истинны одновременно → DEADLOCK с причиной осцилляции [REQ-006]."""
     from disputatio.core.deciding import REASON_OSCILLATION_DIFF, decide
 
-    patch = "+line one\n-line two\n"
+    patch = "@@ -1,2 +1,2 @@\n+line one\n-line two\n"
     inputs = make_inputs(
         round=4,
         review=make_request_changes_review(),
@@ -424,7 +424,7 @@ def test_decide_oscillation_diff_similarity_triggers_deadlock() -> None:
     """`similarity > 0.8` при доступном `patch_two_back` → `DEADLOCK`/`REASON_OSCILLATION_DIFF` [REQ-011]."""
     from disputatio.core.deciding import REASON_OSCILLATION_DIFF, decide
 
-    patch = "+line one\n-line two\n"
+    patch = "@@ -1,2 +1,2 @@\n+line one\n-line two\n"
     inputs = make_inputs(
         round=3,
         review=make_request_changes_review(),

@@ -17,7 +17,7 @@ approved_at: '2026-09-02T06:03:08Z'
 Сгенерировано task_bridge из behaviour-spec бандла WS-disputatio-57 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Draft: исполнение только после человеческого approve.
 
 ### TASK-001: Строки изменения учитываются только после заголовка ханка
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-01.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-01
