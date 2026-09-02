@@ -77,7 +77,7 @@ spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-004.json):
 **Traces to:** [FR-03]
 
 ### TASK-005: Похожее на метаданные содержимое добавленной строки сохраняется
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-05.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-05
