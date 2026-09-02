@@ -180,7 +180,7 @@ spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-010.json):
 **Traces to:** [FR-01, FR-02, FR-05]
 
 ### TASK-011: Невалидный UTF-8 преобразуется в SyntaxError с диагностикой
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-11.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-11
