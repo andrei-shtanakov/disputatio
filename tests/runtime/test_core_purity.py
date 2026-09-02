@@ -272,3 +272,49 @@ def test_scan_package_purity_fails_atomically_on_invalid_utf8(
         )
 
     assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
+def test_scan_package_purity_only_wraps_unicode_decode_error(
+    tmp_path, monkeypatch
+) -> None:
+    """BEH-13: новая ветвь преобразует ровно `UnicodeDecodeError` — прочие
+    ошибки сохраняют тип и экземпляр (waiver TASK-013: дано по построению
+    TASK-011). Ошибки чтения возбуждаются детерминированно подменой
+    `Path.read_text`, без зависимости от UID и файловой системы."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+
+    # 1) синтаксическая ошибка приходит НЕПОСРЕДСТВЕННО от ast.parse —
+    # тем же экземпляром, не перевозбуждённая и не ветви декодирования
+    (pkg / "bad_syntax.py").write_text("def broken(:\n")
+    purity_module = _purity()
+    sentinel = SyntaxError("sentinel from ast.parse")
+
+    def fake_parse(*args, **kwargs):
+        raise sentinel
+
+    monkeypatch.setattr(purity_module.ast, "parse", fake_parse)
+    with pytest.raises(SyntaxError) as ast_exc:
+        purity_module.scan_package_purity(pkg, package_name="pkg")
+    assert ast_exc.value is sentinel
+    assert not isinstance(ast_exc.value.__cause__, UnicodeDecodeError)
+    monkeypatch.undo()
+    (pkg / "bad_syntax.py").unlink()
+
+    # 2) и 3) файловая и произвольная ошибка чтения выходят как есть —
+    # тем же экземпляром, без обёртывания в SyntaxError
+    (pkg / "target.py").write_text("x = 1\n")
+    original_read_text = Path.read_text
+    for raised in (PermissionError("denied"), ValueError("odd reader")):
+
+        def fake_read_text(self, *args, _raised=raised, **kwargs):
+            if self.name == "target.py":
+                raise _raised
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        with pytest.raises(type(raised)) as exc_info:
+            _purity().scan_package_purity(pkg, package_name="pkg")
+        assert exc_info.value is raised
+        monkeypatch.setattr(Path, "read_text", original_read_text)

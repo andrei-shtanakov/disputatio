@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "TASK-013",
+  "reason": "Честный RED невозможен: узость перехвата BEH-13 дана по построению реализацией TASK-011 (PR #78) — новая ветвь ловит РОВНО UnicodeDecodeError (purity.py: except UnicodeDecodeError), других except в scan_package_purity нет. Эмпирика до waiver-а: (1) синтаксическая ошибка в валидном UTF-8 выходит SyntaxError AST-разбора без __cause__ UnicodeDecodeError; (2) недоступный файл даёт PermissionError наружу как есть, без маскировки. Стоячая санкция владельца 2026-09-02 (класс red-unverifiable с эмпирикой). Регрессия — зелёный тест test_scan_package_purity_only_wraps_unicode_decode_error (цель checklist), вне TDD-цикла.",
+  "approved_by": "human",
+  "baseline_sha": "371bf5780e1821306afab4b98ae728f9116b0485"
+}
