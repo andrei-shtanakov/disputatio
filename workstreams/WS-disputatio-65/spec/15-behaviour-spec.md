@@ -1,9 +1,14 @@
 ---
 spec_stage: behaviour-spec
-status: draft
+status: approved
 owner_role: product
-traces_to: [requirements]
-upstream_hashes: {requirements: "075400dd9e93a76cd5b8fdf12359422eb9b68e9e"}
+traces_to:
+- requirements
+upstream_hashes:
+  requirements: e98bc31172234fbca8cc4e7737d274b7ba23c731
+approved_by: ai-prosto
+approved_at: '2026-09-02T23:42:48Z'
+version: 2
 ---
 
 # Behaviour spec: неизменяемая семантика сессий при resume пайплайна

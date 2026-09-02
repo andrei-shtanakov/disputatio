@@ -1,9 +1,14 @@
 ---
 spec_stage: requirements
-status: draft
+status: approved
 owner_role: product
-traces_to: [charter]
-upstream_hashes: {charter: "07e6b50110750e73348f8d671b2b4586c681ce85"}
+traces_to:
+- charter
+upstream_hashes:
+  charter: f241dd0757124a4d43e21df7ba4e41de27a69f82
+approved_by: ai-prosto
+approved_at: '2026-09-02T23:42:48Z'
+version: 2
 ---
 
 # Requirements: неизменяемая семантика сессий при resume пайплайна
