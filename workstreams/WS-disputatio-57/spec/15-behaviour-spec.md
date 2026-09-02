@@ -3,7 +3,7 @@ spec_stage: behaviour-spec
 status: draft
 owner_role: product
 traces_to: [requirements]
-upstream_hashes: {requirements: "301cde802af08f9886f28812da5c2325bd916bb4"}
+upstream_hashes: {requirements: "e18843bef8d5fc3860f91c7a38adeb705a544ba7"}
 ---
 
 # Behaviour spec: построчный разбор без состояния между вызовами и единый отказ на не-UTF-8
