@@ -9,6 +9,8 @@ Red-селектор (`test_check_purity_dynamically_discovers_new_module_with_b
 """
 
 import ast
+import dataclasses
+import inspect
 from pathlib import Path
 from types import ModuleType
 
@@ -110,3 +112,74 @@ def test_actual_core_modules_never_call_open_or_datetime_now_today() -> None:
     for path in checker.iter_module_paths(checker.core_package_dir()):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         assert checker.find_forbidden_calls(tree) == [], path.name
+
+
+def test_core_import_boundary() -> None:
+    """BEH-14: сигнатуры/структуры и dependency-boundary `disputatio.core`.
+
+    В отличие от прочих тестов модуля, проверяет запрет зависимостей не
+    локальным allowlist-чекером (`.purity_checker`, TASK-010), а каноническим
+    AST-сканером `disputatio.runtime.purity.scan_package_purity`, которым
+    реально пользуется остальной проект ([REQ-002], [DESIGN-002]) — у
+    `.purity_checker` нет понятия о `FORBIDDEN_ROOTS`/`PurityViolation`.
+    """
+    from disputatio.core.oscillation import (
+        CLAIM_SIMILARITY_THRESHOLD,
+        OSCILLATION_DIFF_THRESHOLD,
+        _changed_lines,
+        patch_similarity,
+    )
+    from disputatio.runtime.purity import (
+        FORBIDDEN_ROOTS,
+        PurityViolation,
+        scan_package_purity,
+    )
+
+    checker = _checker()
+
+    changed_lines_sig = inspect.signature(_changed_lines)
+    assert list(changed_lines_sig.parameters) == ["patch"]
+    assert changed_lines_sig.parameters["patch"].annotation is str
+    assert changed_lines_sig.return_annotation == set[str]
+
+    patch_similarity_sig = inspect.signature(patch_similarity)
+    assert list(patch_similarity_sig.parameters) == ["a", "b"]
+    assert patch_similarity_sig.parameters["a"].annotation is str
+    assert patch_similarity_sig.parameters["b"].annotation is str
+    assert patch_similarity_sig.return_annotation is float
+
+    scan_sig = inspect.signature(scan_package_purity)
+    assert list(scan_sig.parameters) == ["package_dir", "package_name", "forbidden"]
+    assert (
+        scan_sig.parameters["package_dir"].kind
+        is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert scan_sig.parameters["package_name"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert scan_sig.parameters["forbidden"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert scan_sig.parameters["forbidden"].default == FORBIDDEN_ROOTS
+    assert scan_sig.return_annotation == list[PurityViolation]
+
+    assert [field.name for field in dataclasses.fields(PurityViolation)] == [
+        "module",
+        "lineno",
+        "imported",
+        "kind",
+    ]
+
+    assert OSCILLATION_DIFF_THRESHOLD == 0.8
+    assert CLAIM_SIMILARITY_THRESHOLD == 0.7
+
+    assert FORBIDDEN_ROOTS == frozenset(
+        {
+            "disputatio.events",
+            "disputatio.adapters",
+            "disputatio.verifier",
+            "disputatio.context",
+            "disputatio.runtime",
+        }
+    )
+
+    assert (
+        scan_package_purity(checker.core_package_dir(), package_name="disputatio.core")
+        == []
+    )
