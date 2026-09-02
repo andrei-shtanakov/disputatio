@@ -35,8 +35,8 @@ def test_patch_similarity_disjoint_patches_is_zero() -> None:
     """Непересекающиеся множества изменённых строк → similarity 0.0."""
     from disputatio.core.oscillation import patch_similarity
 
-    a = "+++ b/a.py\n--- a/a.py\n+alpha\n-beta\n"
-    b = "+++ b/a.py\n--- a/a.py\n+gamma\n-delta\n"
+    a = "+++ b/a.py\n--- a/a.py\n@@ -1,2 +1,2 @@\n+alpha\n-beta\n"
+    b = "+++ b/a.py\n--- a/a.py\n@@ -1,2 +1,2 @@\n+gamma\n-delta\n"
     assert patch_similarity(a, b) == 0.0
 
 
@@ -44,8 +44,8 @@ def test_patch_similarity_excludes_diff_headers() -> None:
     """Заголовки `+++`/`---` не участвуют в множестве изменённых строк."""
     from disputatio.core.oscillation import patch_similarity
 
-    a = "+++ b/a.py\n--- a/a.py\n+line\n"
-    b = "+++ b/other.py\n--- a/other.py\n+line\n"
+    a = "+++ b/a.py\n--- a/a.py\n@@ -1,1 +1,1 @@\n+line\n"
+    b = "+++ b/other.py\n--- a/other.py\n@@ -1,1 +1,1 @@\n+line\n"
     assert patch_similarity(a, b) == 1.0
 
 
@@ -53,8 +53,8 @@ def test_patch_similarity_normalizes_trailing_whitespace() -> None:
     """Хвостовые пробелы после маркера +/- нормализуются перед сравнением."""
     from disputatio.core.oscillation import patch_similarity
 
-    a = "+line   \n-other\t\n"
-    b = "+line\n-other\n"
+    a = "@@ -1,2 +1,2 @@\n+line   \n-other\t\n"
+    b = "@@ -1,2 +1,2 @@\n+line\n-other\n"
     assert patch_similarity(a, b) == 1.0
 
 
@@ -63,6 +63,35 @@ def test_patch_similarity_two_empty_patches_is_one() -> None:
     from disputatio.core.oscillation import patch_similarity
 
     assert patch_similarity("", "") == 1.0
+
+
+def test_changed_lines_requires_open_hunk() -> None:
+    """Строки `+`/`-` до первого `@@` игнорируются (BEH-01)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = (
+        "+leaked addition before hunk\n"
+        "-leaked deletion before hunk\n"
+        "@@ -1,2 +1,2 @@\n"
+        "+added in hunk\n"
+        "-removed in hunk\n"
+    )
+    assert _changed_lines(patch) == {"added in hunk", "removed in hunk"}
+
+
+def test_changed_lines_empty_patch_returns_empty_set() -> None:
+    """Пустой patch → пустое множество (BEH-01)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    assert _changed_lines("") == set()
+
+
+def test_changed_lines_without_hunk_header_returns_empty_set() -> None:
+    """Patch без заголовка `@@` → пустое множество, даже со строками `+`/`-` (BEH-01)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = "+addition without hunk\n-deletion without hunk\n"
+    assert _changed_lines(patch) == set()
 
 
 def test_oscillation_diff_threshold_is_pinned() -> None:
@@ -84,8 +113,8 @@ def test_patch_similarity_exactly_at_threshold_does_not_trigger() -> None:
     from disputatio.core.oscillation import OSCILLATION_DIFF_THRESHOLD, patch_similarity
 
     # A ⊂ B, |A|=4, |B|=5: |intersection|/|union| = 4/5 = 0.8.
-    a = "+one\n+two\n+three\n+four\n"
-    b = "+one\n+two\n+three\n+four\n+five\n"
+    a = "@@ -1,4 +1,4 @@\n+one\n+two\n+three\n+four\n"
+    b = "@@ -1,5 +1,5 @@\n+one\n+two\n+three\n+four\n+five\n"
     similarity = patch_similarity(a, b)
 
     assert similarity == 0.8

@@ -451,8 +451,8 @@ def test_decide_oscillation_diff_similarity_exactly_threshold_does_not_trigger()
         review=make_request_changes_review(),
         verification=make_verification(overall=OverallStatus.FAIL),
         limits=make_limits(max_rounds=8),
-        patch_current="+one\n+two\n+three\n+four\n",
-        patch_two_back="+one\n+two\n+three\n+four\n+five\n",
+        patch_current="@@ -1,4 +1,4 @@\n+one\n+two\n+three\n+four\n",
+        patch_two_back="@@ -1,5 +1,5 @@\n+one\n+two\n+three\n+four\n+five\n",
     )
 
     draft = decide(inputs)
