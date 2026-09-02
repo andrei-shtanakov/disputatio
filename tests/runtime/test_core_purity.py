@@ -17,6 +17,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 import disputatio.core as _core_package
 
 _CORE_PACKAGE_NAME = "disputatio.core"
@@ -240,3 +242,20 @@ def test_forbidden_collection_is_a_parameter(tmp_path: Path) -> None:
     )
 
     assert violations == []
+
+
+def test_scan_package_purity_fails_atomically_on_invalid_utf8(tmp_path) -> None:
+    """BEH-12: ошибка декодирования атомарно прекращает весь scan
+    (waiver TASK-012: атомарность дана по построению TASK-011)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "dirty.py").write_text("import disputatio.adapters\n")
+    (pkg / "broken.py").write_bytes(b"x = '\xff\xfe broken'\n")
+
+    with pytest.raises(SyntaxError) as exc_info:
+        _purity().scan_package_purity(
+            pkg, package_name="pkg", forbidden=("disputatio.adapters",)
+        )
+
+    assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)

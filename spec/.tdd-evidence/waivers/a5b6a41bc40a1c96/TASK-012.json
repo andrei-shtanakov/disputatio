@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "TASK-012",
+  "reason": "Честный RED невозможен: атомарность BEH-12 дана по построению реализацией TASK-011 (PR #78) — UnicodeDecodeError конвертируется в SyntaxError и исключение прерывает scan_package_purity до возврата любого (в т.ч. частичного) списка PurityViolation. Эмпирика до waiver-а: пакет с нарушением чистоты + файл с невалидным UTF-8 → SyntaxError, __cause__ — UnicodeDecodeError, результат не возвращён. Стоячая санкция владельца 2026-09-02 (класс red-unverifiable с эмпирикой, остаток workstream; первично — батч PR #75). Регрессия — зелёный тест test_scan_package_purity_fails_atomically_on_invalid_utf8 (цель checklist), вне TDD-цикла.",
+  "approved_by": "human",
+  "baseline_sha": "99758033edf3c430a29399f30bad299298490268"
+}
