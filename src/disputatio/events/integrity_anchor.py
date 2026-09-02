@@ -250,7 +250,12 @@ class IntegrityAnchor:
         tail_start = raw.rfind(b"\n") + 1
         try:
             _decode(raw[tail_start:].decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
+        # Один класс, не пара: `UnicodeDecodeError` — подкласс `ValueError`
+        # и покрыт им; конвенция модуля (runtime/config.py `_load_raw`)
+        # называет его отдельно только там, где базовый перехват —
+        # `OSError`-семейство — его НЕ покрыл бы. Негодные байты хвоста —
+        # такой же след краха, как оборванный JSON: fail-closed усечение.
+        except ValueError:
             with self._path.open("r+b") as handle:
                 handle.truncate(tail_start)
                 os.fsync(handle.fileno())
@@ -276,15 +281,27 @@ class IntegrityAnchor:
         отключал бы саму проверку — поэтому «не разобрал» здесь останавливает
         пайплайн, а не превращается в чистый журнал.
         """
-        raw = self._path.read_text(encoding="utf-8")
-        lines = raw.splitlines()
+        # Побайтово и построчно: `read_text` всего файла роняло читателя
+        # сырым `UnicodeDecodeError` ДО применения семантики хвоста — негодные
+        # байты краш-остатка делали журнал нечитаемым навсегда (disputatio#57
+        # К2). Декодирование каждой строки отдельно кладёт UTF-8-негодность
+        # в ту же развилку, что и негодный JSON: завершённая запись —
+        # `AnchorCorrupted`, незавершённый хвост — терпимо.
+        raw_bytes = self._path.read_bytes()
+        byte_lines = raw_bytes.split(b"\n")
+        if byte_lines and byte_lines[-1] == b"":
+            byte_lines.pop()
         # Индекс единственной терпимой строки: доказательство обрыва —
         # отсутствие завершающего `\n` у файла, а не негодность её текста.
-        truncated_tail = len(lines) - 1 if lines and not raw.endswith("\n") else -1
+        truncated_tail = (
+            len(byte_lines) - 1 if byte_lines and not raw_bytes.endswith(b"\n") else -1
+        )
         records: list[AnchorRecord] = []
-        for index, line in enumerate(lines):
+        for index, line_bytes in enumerate(byte_lines):
             try:
-                records.append(_decode(line))
+                records.append(_decode(line_bytes.decode("utf-8")))
+            # Один класс: `UnicodeDecodeError` — подкласс `ValueError`,
+            # негодные байты и негодный JSON ходят одной дорогой.
             except ValueError as exc:
                 if index == truncated_tail:
                     break

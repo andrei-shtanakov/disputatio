@@ -288,3 +288,26 @@ def test_missing_journal_still_raises_file_not_found(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         anchor.last_record()
+
+
+def test_invalid_utf8_tail_is_truncated_fail_closed(tmp_path: Path) -> None:
+    """Негодные байты хвоста усекаются как след краха (disputatio#57 К2).
+
+    Хвост, не декодируемый как UTF-8, проходит той же fail-closed дорогой,
+    что и оборванный JSON: `UnicodeDecodeError` — подкласс `ValueError`, и
+    приведение перехвата к одному классу не меняет поведения.
+    """
+    anchor = _anchor(tmp_path)
+    anchor.append_pre_turn(_snapshot("turn-1"))
+    trusted = anchor.path.read_bytes()
+    with anchor.path.open("ab") as handle:
+        handle.write(b"\xff\xfe broken tail")
+
+    anchor.append_pre_turn(_snapshot("turn-2"))
+
+    raw = anchor.path.read_bytes()
+    assert raw.startswith(trusted)
+    assert b"\xff\xfe" not in raw
+    record = anchor.last_record()
+    assert record is not None
+    assert record.operation_id == "turn-2"
