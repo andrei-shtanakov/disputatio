@@ -29,15 +29,15 @@ Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-01
 **Traces to:** [FR-01, FR-02, FR-06]
 
 ### TASK-002: Заголовок следующего файла закрывает открытый ханк
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-02.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-02
 **Depends on:** [TASK-001]
 
 **Checklist:**
-- [ ] реализовать BEH-02: Заголовок следующего файла закрывает открытый ханк
-- [ ] проверка группы: tests/core/test_oscillation.py::test_changed_lines_tracks_multiple_files_and_hunks (kind: atp) зелёные на BEH-02
+- [x] реализовать BEH-02: Заголовок следующего файла закрывает открытый ханк
+- [x] проверка группы: tests/core/test_oscillation.py::test_changed_lines_tracks_multiple_files_and_hunks (kind: atp) зелёные на BEH-02
 
 **Traces to:** [FR-02, FR-07]
 

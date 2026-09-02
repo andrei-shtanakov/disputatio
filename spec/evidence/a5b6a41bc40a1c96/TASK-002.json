@@ -1,0 +1,83 @@
+{
+  "claims": [
+    {
+      "blob_sha": "f5cdd80693a53cba299fdf133730d071235c3bea",
+      "checkpoint_sha": "70b22d9d171f1b25fac008736fee5b02bde1adc8",
+      "created_at": "2026-09-02T12:33:13.604415",
+      "path": "tests/test_task_002_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "074442c83a81556745d40b10fc75ce191df716ae",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review fixed of review checkpoint b1230a27b19e787c4e51618630053d15c214a141 at merge candidate 074442c83a81556745d40b10fc75ce191df716ae",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T12:44:34.730340"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "074442c83a81556745d40b10fc75ce191df716ae",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T12:44:34.803283"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "074442c83a81556745d40b10fc75ce191df716ae",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_002_red.py::test_changed_lines_tracks_multiple_files_and_hunks at 70b22d9d171f in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T12:44:34.754268"
+    }
+  },
+  "judged_commit": "074442c83a81556745d40b10fc75ce191df716ae",
+  "namespace": "a5b6a41bc40a1c96",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-02T12:30:26.324510"
+    },
+    {
+      "detail": "tests/test_task_002_red.py::test_changed_lines_tracks_multiple_files_and_hunks",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-02T12:33:10.141115"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-02T12:33:13.655046"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-02T12:44:34.700085"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-02T12:44:34.804286"
+    }
+  ],
+  "red": {
+    "baseline_sha": "6ff4ed94604d469cfb1c2808337db1f6473dffcd",
+    "commit_sha": "70b22d9d171f1b25fac008736fee5b02bde1adc8",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_002_red.py::test_changed_lines_tracks_multiple_files_and_hunks",
+    "status": "active",
+    "timestamp": "2026-09-02T12:33:13.603996"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "a5b6a41bc40a1c96",
+  "task_id": "TASK-002",
+  "waivers": []
+}
