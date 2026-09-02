@@ -242,3 +242,31 @@ def test_find_repeated_issue_empty_history_returns_none() -> None:
     current = [make_issue()]
 
     assert find_repeated_issue(current, {}) is None
+
+
+def test_changed_lines_tracks_consecutive_hunks() -> None:
+    """BEH-03: новый заголовок `@@` продолжает разбор того же файла.
+
+    Регрессионный тест по waiver-у TASK-003 (tdd-waiver/v1,
+    spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-003.json): поведение
+    уже обеспечено state-машиной TASK-001/002, честный RED невозможен —
+    тест закрепляет его зелёным, вне TDD-цикла.
+    """
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = (
+        "diff --git a/f.py b/f.py\n"
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "+first hunk line\n"
+        "@@ -10,2 +10,2 @@\n"
+        "+second hunk line\n"
+        "-removed in second\n"
+    )
+
+    got = _changed_lines(patch)
+
+    assert "first hunk line" in got
+    assert "second hunk line" in got
+    assert "removed in second" in got
