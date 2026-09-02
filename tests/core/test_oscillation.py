@@ -376,16 +376,7 @@ def test_changed_lines_preserves_added_metadata_like_content() -> None:
     """
     from disputatio.core.oscillation import _changed_lines
 
-    patch = (
-        "@@ -1,8 +1,8 @@\n"
-        "++\n"
-        "+++ tail\n"
-        "+-\n"
-        "+--\n"
-        "+--- tail\n"
-        "+@@\n"
-        "+diff --git tail\n"
-    )
+    patch = "@@ -1,8 +1,8 @@\n++\n+++ tail\n+-\n+--\n+--- tail\n+@@\n+diff --git tail\n"
 
     assert _changed_lines(patch) == {
         "+",
@@ -396,3 +387,24 @@ def test_changed_lines_preserves_added_metadata_like_content() -> None:
         "@@",
         "diff --git tail",
     }
+
+
+def test_changed_lines_preserves_removed_metadata_like_content() -> None:
+    """BEH-06: содержимое удалённой строки, похожее на метаданные,
+    сохраняется (waiver TASK-006: парный кейс накрыт фиксом TASK-005)."""
+    from disputatio.core.oscillation import _changed_lines
+
+    patch = (
+        "@@ -1,4 +1,4 @@\n"
+        "--- removed-looks-like-file-header\n"
+        "-+++ removed-plus-header\n"
+        "-@@ removed-hunk-lookalike\n"
+        "-diff --git removed-diff-lookalike\n"
+    )
+
+    got = _changed_lines(patch)
+
+    assert "-- removed-looks-like-file-header" in got
+    assert "+++ removed-plus-header" in got
+    assert "@@ removed-hunk-lookalike" in got
+    assert "diff --git removed-diff-lookalike" in got

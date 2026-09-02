@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "TASK-006",
+  "reason": "Честный RED невозможен: фикс TASK-005 (PR #76) удалил эвристику '+++ '/'--- ' из _changed_lines целиком, накрыв и парный кейс удалённых строк (BEH-06). Эмпирика до waiver-а: удалённые строки '--- x', '-+++ y', '-@@ z' сохраняются как '-- x', '+++ y', '@@ z'. Санкция владельца 2026-09-02 — по этой задаче и стоячая на остаток workstream для класса red-unverifiable с приложенной эмпирикой. Регрессия — зелёный тест test_changed_lines_preserves_removed_metadata_like_content (цель checklist), вне TDD-цикла.",
+  "approved_by": "human",
+  "baseline_sha": "92dbd996c3270645330bfea65a222bb10935da4b"
+}
