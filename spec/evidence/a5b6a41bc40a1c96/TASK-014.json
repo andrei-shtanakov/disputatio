@@ -1,0 +1,118 @@
+{
+  "claims": [
+    {
+      "blob_sha": "88a936ef4a15ad4398fc4ba4ef1f699354d828da",
+      "checkpoint_sha": "7a8835ce12245dad20c5f5494aafe90765d6809d",
+      "created_at": "2026-09-02T16:07:54.583288",
+      "path": "tests/test_task_014_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "15c62b9984a331c5f50060a35ffff66555bb3faf",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review passed of review checkpoint 15c62b9984a331c5f50060a35ffff66555bb3faf at merge candidate 15c62b9984a331c5f50060a35ffff66555bb3faf",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T18:21:00.836214"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "15c62b9984a331c5f50060a35ffff66555bb3faf",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T18:21:00.888855"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "15c62b9984a331c5f50060a35ffff66555bb3faf",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_014_red.py::test_core_import_boundary_check_is_present_in_test_purity_module at 7a8835ce1224 in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-02T18:21:00.855615"
+    }
+  },
+  "judged_commit": "15c62b9984a331c5f50060a35ffff66555bb3faf",
+  "namespace": "a5b6a41bc40a1c96",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-02T16:01:37.536741"
+    },
+    {
+      "detail": "tests/test_task_014_red.py::test_core_import_boundary_check_is_present_in_test_purity_module",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-02T16:07:51.369199"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-02T16:07:54.633674"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-02T16:17:27.984468"
+    },
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-02T16:27:08.195013"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-02T16:27:08.280144"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-02T16:37:21.344716"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-02T16:37:21.417326"
+    },
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-02T18:12:35.681256"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-02T18:12:35.759961"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-02T18:21:00.818935"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-02T18:21:00.890089"
+    }
+  ],
+  "red": {
+    "baseline_sha": "ab8c41c0864651510fe49a8dfc04c66c69bca7c5",
+    "commit_sha": "7a8835ce12245dad20c5f5494aafe90765d6809d",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_014_red.py::test_core_import_boundary_check_is_present_in_test_purity_module",
+    "status": "active",
+    "timestamp": "2026-09-02T16:07:54.582286"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "a5b6a41bc40a1c96",
+  "task_id": "TASK-014",
+  "waivers": []
+}
