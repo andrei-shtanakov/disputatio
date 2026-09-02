@@ -229,15 +229,15 @@ test_scan_package_purity_only_wraps_unicode_decode_error.
 **Traces to:** [FR-13]
 
 ### TASK-014: Публичные сигнатуры и границы зависимостей сохраняются
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-14.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-14
 **Depends on:** [TASK-013]
 
 **Checklist:**
-- [ ] реализовать BEH-14: Публичные сигнатуры и границы зависимостей сохраняются
-- [ ] проверка группы: tests/core/test_purity.py::test_core_import_boundary (kind: integration) зелёные на BEH-14
+- [x] реализовать BEH-14: Публичные сигнатуры и границы зависимостей сохраняются
+- [x] проверка группы: tests/core/test_purity.py::test_core_import_boundary (kind: integration) зелёные на BEH-14
 
 **Traces to:** [FR-08, FR-13]
 
