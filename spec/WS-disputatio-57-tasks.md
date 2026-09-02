@@ -1,12 +1,15 @@
 ---
+traces_to:
+- design
 spec_stage: tasks
-status: draft
-version: 1
+status: approved
+version: 2
 generated_by: fleet-agent
-generated_at: 2026-09-02T08:04:02
-source_prompt_version: ""
-validation: ""
-approved_by: ""
+generated_at: '2026-09-02T08:04:02'
+source_prompt_version: ''
+validation: warn
+approved_by: verifier-tests
+approved_at: '2026-09-02T06:03:08Z'
 ---
 
 ## Milestone 1: Построчный разбор без состояния: _changed_lines со state-парсером + перехват UnicodeDecodeError по конвенции (disputatio#57)
