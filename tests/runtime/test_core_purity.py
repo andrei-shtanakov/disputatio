@@ -285,12 +285,21 @@ def test_scan_package_purity_only_wraps_unicode_decode_error(
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
 
-    # 1) синтаксическая ошибка в валидном UTF-8 — SyntaxError AST-разбора,
-    # НЕ ветви декодирования (без __cause__ UnicodeDecodeError)
+    # 1) синтаксическая ошибка приходит НЕПОСРЕДСТВЕННО от ast.parse —
+    # тем же экземпляром, не перевозбуждённая и не ветви декодирования
     (pkg / "bad_syntax.py").write_text("def broken(:\n")
+    purity_module = _purity()
+    sentinel = SyntaxError("sentinel from ast.parse")
+
+    def fake_parse(*args, **kwargs):
+        raise sentinel
+
+    monkeypatch.setattr(purity_module.ast, "parse", fake_parse)
     with pytest.raises(SyntaxError) as ast_exc:
-        _purity().scan_package_purity(pkg, package_name="pkg")
+        purity_module.scan_package_purity(pkg, package_name="pkg")
+    assert ast_exc.value is sentinel
     assert not isinstance(ast_exc.value.__cause__, UnicodeDecodeError)
+    monkeypatch.undo()
     (pkg / "bad_syntax.py").unlink()
 
     # 2) и 3) файловая и произвольная ошибка чтения выходят как есть —
