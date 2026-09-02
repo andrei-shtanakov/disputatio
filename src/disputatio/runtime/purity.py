@@ -56,10 +56,18 @@ def scan_package_purity(
     рекурсивный и файловый, поэтому новый модуль ядра попадает под проверку
     без правок сканера. Пути модулей возвращаются как есть, без `resolve()`,
     чтобы совпадать с переданным `package_dir`.
+
+    Файл, не декодируемый как UTF-8, fail-closed прерывает весь скан:
+    `UnicodeDecodeError` перехватывается и пересобирается в `SyntaxError`,
+    называющий путь файла, с исходной ошибкой в `__cause__` ([FR-10, FR-11]).
     """
     violations: list[PurityViolation] = []
     for path in sorted(package_dir.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise SyntaxError(f"invalid UTF-8 in {path}") from exc
+        tree = ast.parse(source)
         found = _scan_tree(
             tree,
             module=path,
