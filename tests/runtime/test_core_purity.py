@@ -272,3 +272,29 @@ def test_scan_package_purity_fails_atomically_on_invalid_utf8(
         )
 
     assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+
+def test_scan_package_purity_only_wraps_unicode_decode_error(tmp_path) -> None:
+    """BEH-13: новая ветвь преобразует ровно `UnicodeDecodeError` — прочие
+    ошибки сохраняют тип (waiver TASK-013: дано по построению TASK-011)."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+
+    # синтаксическая ошибка в валидном UTF-8 — SyntaxError AST-разбора,
+    # НЕ ветви декодирования (без __cause__ UnicodeDecodeError)
+    (pkg / "bad_syntax.py").write_text("def broken(:\n")
+    with pytest.raises(SyntaxError) as ast_exc:
+        _purity().scan_package_purity(pkg, package_name="pkg")
+    assert not isinstance(ast_exc.value.__cause__, UnicodeDecodeError)
+    (pkg / "bad_syntax.py").unlink()
+
+    # недоступный файл — файловая ошибка наружу как есть, без маскировки
+    no_access = pkg / "no_access.py"
+    no_access.write_text("x = 1\n")
+    no_access.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            _purity().scan_package_purity(pkg, package_name="pkg")
+    finally:
+        no_access.chmod(0o644)

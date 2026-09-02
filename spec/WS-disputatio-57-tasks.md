@@ -211,15 +211,20 @@ test_scan_package_purity_fails_atomically_on_invalid_utf8.
 **Traces to:** [FR-10, FR-12]
 
 ### TASK-013: Перехват не маскирует другие ошибки
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-13.
 Source: workstreams/WS-disputatio-57/spec/15-behaviour-spec.md#BEH-13
 **Depends on:** [TASK-012]
 
+Закрыто waiver-ом (стоячая санкция владельца 2026-09-02; tdd-waiver/v1,
+spec/.tdd-evidence/waivers/a5b6a41bc40a1c96/TASK-013.json): узость
+перехвата дана по построению TASK-011; регрессия — зелёный тест
+test_scan_package_purity_only_wraps_unicode_decode_error.
+
 **Checklist:**
-- [ ] реализовать BEH-13: Перехват не маскирует другие ошибки
-- [ ] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_only_wraps_unicode_decode_error (kind: contract) зелёные на BEH-13
+- [x] реализовать BEH-13: Перехват не маскирует другие ошибки
+- [x] проверка группы: tests/runtime/test_core_purity.py::test_scan_package_purity_only_wraps_unicode_decode_error (kind: contract) зелёные на BEH-13
 
 **Traces to:** [FR-13]
 
