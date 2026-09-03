@@ -87,6 +87,7 @@ from disputatio.runtime.pipeline_runner import (
 from disputatio.runtime.pipeline_semantic_proof import (
     build_projection,
     diff_projections,
+    load_legacy_projection,
     load_semantic_proof,
 )
 
@@ -538,14 +539,28 @@ class PipelineResume:
         экземпляру, что принят конструктором и обслуживает всё остальное
         резюме (FR-13): повторного чтения `config.toml` здесь нет.
 
-        Drift — отдельный исход, не «недоказуемость»: доказательство здесь
-        ЦЕЛИКОМ доверено, расходится лишь значение. `SemanticDrift`
-        нарочно не переводит пайплайн в `FAILED` и не пишет ничего —
-        BEH-11 требует остановки БЕЗ побочных эффектов (в отличие от P9,
-        чей отказ — сама подмена control plane, а не разночтение конфига).
+        Манифест без `semantic_proof` (записанный до issue #65) идёт СВОИМ
+        путём восстановления — `load_legacy_projection` (BEH-16), а не
+        отказывает как недоказуемый: `state.semantic_proof is None` сам по
+        себе не «данных недостаточно», а «доказательства этой формы нет» —
+        и для поддерживаемой версии манифеста явная процедура обязана
+        существовать (FR-16). У неё те же причины отказа
+        (`UnprovableSemantics`) на тех же основаниях — отсутствующий или
+        испорченный снапшот, а не сам факт отсутствия proof.
+
+        Drift — отдельный исход, не «недоказуемость»: доказательство (либо
+        legacy-проекция) здесь ЦЕЛИКОМ доверено, расходится лишь значение.
+        `SemanticDrift` нарочно не переводит пайплайн в `FAILED` и не пишет
+        ничего — BEH-11 требует остановки БЕЗ побочных эффектов (в отличие
+        от P9, чей отказ — сама подмена control plane, а не разночтение
+        конфига).
         """
         pipeline_dir = pipeline_dir_of(self._workspace_root, state.pipeline_id)
-        proof = load_semantic_proof(pipeline_dir, state)
+        proof = (
+            load_legacy_projection(pipeline_dir, state)
+            if state.semantic_proof is None
+            else load_semantic_proof(pipeline_dir, state)
+        )
         expected = proof["projection"]
         # Вид МАНИФЕСТА сверяется с доказательством явно (приёмка PR #93,
         # major — преемник снятого `_require_same_kind`, P0): semantic

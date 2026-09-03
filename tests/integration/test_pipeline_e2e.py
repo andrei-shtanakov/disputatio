@@ -1513,3 +1513,98 @@ def test_pre_v02_pair_manifest_resumes(
     assert manifest["schema"] == "disputatio/pipeline/v2"
     assert manifest["documents"]["kind"] == "pair"
     assert manifest["doc_sessions"] == []
+
+
+def _downgrade_manifest_to_pre_issue65(stand: Stand) -> None:
+    """Приводит манифест ещё раньше v0.1 — до появления `semantic_proof` (BEH-16).
+
+    `_downgrade_manifest_to_v1` воспроизводит форму К2 (без `documents.kind`),
+    но `semantic_proof` там остаётся — доказательство пишет ТЕКУЩАЯ
+    реализация при `run`, и К2-регрессия сверяет именно его сохранность.
+    BEH-16 проверяет более раннее состояние манифеста: ссылки на
+    доказательство нет вовсе, потому что записан он был бы до issue #65.
+    Снапшоты `config.toml`/`checklists.toml` и их digest в манифесте
+    остаются нетронутыми — `resume` обязан восстановить проекцию ИЗ НИХ
+    явной процедурой (FR-16), а не отказать так, будто удостоверенных
+    данных недостаточно.
+    """
+    _downgrade_manifest_to_v1(stand)
+    path = stand.pipeline_dir() / "pipeline.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("semantic_proof")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def test_legacy_semantics_require_explicit_provable_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Legacy-манифест без `semantic_proof` продолжается своей процедурой (BEH-16).
+
+    Крах на ходе РЕВЬЮЕРА — тот же приём, что и в `test_pre_v02_pair_manifest_
+    resumes`: последняя запись анкера остаётся `turn_completed`, и P9 не
+    встаёт на пути раньше legacy-совместимости. Пайплайн доходит до `DONE`,
+    хотя манифест не несёт ссылки на доказательство вовсе — восстановление
+    идёт из уже сохранённых и P9-удостоверенных `config.toml`/
+    `checklists.toml`, а не отказывает как недоказуемый (BEH-12) и не
+    получает proof дозаписью задним числом.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "reviewer")] = [
+        Turn(text="", boom=True),
+        *converging_reviews("spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+    _downgrade_manifest_to_pre_issue65(stand)
+    downgraded = stand.manifest()
+    assert "kind" not in downgraded["documents"]
+    assert downgraded.get("semantic_proof") is None
+
+    assert run_cli(stand, "resume") == EXIT_OK
+
+    manifest = stand.manifest()
+    assert manifest["phase"] == PipelinePhase.DONE.value
+    # In-place автодобавление доказательства запрещено явно (FR-16): явная
+    # процедура восстанавливает проекцию для СВЕРКИ, но не сочиняет за
+    # прежний `run` ссылку, которой он не писал.
+    assert manifest.get("semantic_proof") is None
+
+
+def test_legacy_manifest_without_proof_still_stops_on_live_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit-процедура BEH-16 — не безусловный пропуск сверки.
+
+    Тот же downgrade, что и выше, но живой конфиг правится ПОСЛЕ него:
+    `max_architectural_returns` меняется с дефолта на другое значение —
+    ровно то расхождение, которое обязана заметить восстановленная из
+    снапшотов проекция. Продолжение без остановки здесь означало бы, что
+    отсутствие `semantic_proof` тихо превращается в fallback «доверять
+    живому конфигу», который FR-16 и BEH-11 запрещают явно.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "reviewer")] = [
+        Turn(text="", boom=True),
+        *converging_reviews("spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+    _downgrade_manifest_to_pre_issue65(stand)
+
+    stand.config_path.write_text(
+        CONFIG_TEMPLATE.format(
+            spec=SPEC_PATH,
+            plan=PLAN_PATH,
+            max_rounds=5,
+            schema_retries=2,
+            anchor_line=f'anchor_path = "{stand.anchor_root.as_posix()}"\n',
+            extra_pipeline="max_architectural_returns = 5\n",
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_cli(stand, "resume") == EXIT_ERROR
