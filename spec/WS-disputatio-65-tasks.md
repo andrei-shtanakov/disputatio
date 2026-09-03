@@ -68,20 +68,20 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-08
 **Traces to:** [FR-07]
 
 ### TASK-004: P9 предшествует чтению ожидаемой семантики (+4 смежных BEH)
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-09, BEH-10, BEH-11, BEH-17, BEH-20.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-09 (—BEH-20)
 **Depends on:** [TASK-003]
 
 **Checklist:**
-- [ ] реализовать BEH-09: P9 предшествует чтению ожидаемой семантики
-- [ ] реализовать BEH-10: Semantic comparison занимает единственную раннюю позицию resume
-- [ ] реализовать BEH-11: Drift останавливает resume без побочных эффектов
-- [ ] реализовать BEH-17: Повтор после semantic-отказа не видит новых артефактов
-- [ ] реализовать BEH-20: Отказ semantic comparison сохраняет действующие контракты
-- [ ] Закрыть crash-окно BEH-01: создать криптографически связанную genesis/P9-запись якоря на commit point run и проверять её до чтения semantic proof при resume (PR #90, review round 9); TASK-004 не DONE, пока genesis-запись и crash/tamper-тесты не доставлены
-- [ ] проверка группы: tests/runtime/test_pipeline_resume.py::test_p9_precedes_all_semantic_proof_reads (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_comparison_order_and_single_live_config_instance (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_drift_has_no_resume_or_mutation_effects (kind: integration), tests/runtime/test_pipeline_resume.py::test_repeated_semantic_failure_creates_no_artifacts (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_failure_order_and_effect_boundary (kind: integration) зелёные на BEH-09, BEH-10, BEH-11, BEH-17, BEH-20
+- [x] реализовать BEH-09: P9 предшествует чтению ожидаемой семантики
+- [x] реализовать BEH-10: Semantic comparison занимает единственную раннюю позицию resume
+- [x] реализовать BEH-11: Drift останавливает resume без побочных эффектов
+- [x] реализовать BEH-17: Повтор после semantic-отказа не видит новых артефактов
+- [x] реализовать BEH-20: Отказ semantic comparison сохраняет действующие контракты
+- [x] Закрыть crash-окно BEH-01: создать криптографически связанную genesis/P9-запись якоря на commit point run и проверять её до чтения semantic proof при resume (PR #90, review round 9); TASK-004 не DONE, пока genesis-запись и crash/tamper-тесты не доставлены
+- [x] проверка группы: tests/runtime/test_pipeline_resume.py::test_p9_precedes_all_semantic_proof_reads (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_comparison_order_and_single_live_config_instance (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_drift_has_no_resume_or_mutation_effects (kind: integration), tests/runtime/test_pipeline_resume.py::test_repeated_semantic_failure_creates_no_artifacts (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_failure_order_and_effect_boundary (kind: integration) зелёные на BEH-09, BEH-10, BEH-11, BEH-17, BEH-20
 
 **Traces to:** [FR-08, FR-09, FR-13, FR-10, FR-17]
 

@@ -19,13 +19,23 @@
 доступны до чтения рабочего дерева: `anchor_root` из конфига, `workspace_root`
 из cwd, `anchor_id` из `--slug`.
 
-**Записи двух видов, и это обязательно.** `pre_turn` — снапшот перед ходом
+**Записи трёх видов, и это обязательно.** `pre_turn` — снапшот перед ходом
 автора; `turn_completed` — отметка после успешной сверки, с той же identity.
 Без второго вида штатно завершённый ход оставлял бы последней запись
 `pre_turn`, а runtime сразу после сверки законно пишет артефакты раунда и
 двигает `session.json` — следующий `resume` прочитал бы эти штатные изменения
 как подмену и уронил пайплайн в `FAILED` на ровном месте. Сверка на resume
 применяется, только если последняя запись — `pre_turn`.
+
+`genesis` (WS-disputatio-65 BEH-01, TASK-004) закрывает крайний случай того
+же обрыва: до ПЕРВОГО хода автора анкер пуст, и `pre_turn`, с которым можно
+было бы сверяться, ещё не существует — согласованная подмена
+`config.toml`/`checklists.toml`/`semantic_proof.json`, сделанная в этом окне,
+до сих пор проходила бы `resume` необнаруженной. `run` пишет её ровно один
+раз, сразу после первой записи манифеста, независимой сверкой хешей
+write-once снапшотов (не самого манифеста — он и до первого хода легитимно
+переписывается несколько раз, например `create_session`, и сверка по нему
+здесь дала бы ложное срабатывание на этой законной правке).
 """
 
 import hashlib
@@ -43,7 +53,7 @@ from disputatio.events.pipeline_paths import validate_slug
 
 FINGERPRINT_LENGTH: Final = 16
 
-AnchorKind = Literal["pre_turn", "turn_completed"]
+AnchorKind = Literal["pre_turn", "turn_completed", "genesis"]
 
 
 class AnchorCorrupted(Exception):
@@ -141,6 +151,26 @@ class IntegrityAnchor:
         self._append(
             AnchorRecord(
                 kind="pre_turn",
+                session_id=snapshot.session_id,
+                round=snapshot.round,
+                operation_id=snapshot.operation_id,
+                immutable=dict(snapshot.immutable),
+                append_only=dict(snapshot.append_only),
+            )
+        )
+
+    def append_genesis(self, snapshot: IntegritySnapshot) -> None:
+        """Пишет genesis-снапшот write-once файлов пайплайна (§4.2, BEH-01).
+
+        Ровно один раз за жизнь пайплайна: `run` вызывает это сразу после
+        первой записи манифеста, до `advance`. Кроха между записью манифеста
+        и этой записью — узкое, неустранимое без двухфазного commit'а окно;
+        `resume`, застав анкер пустым, трактует его как «сверять нечего» —
+        так же, как и до появления genesis-записи (см. `last_record`).
+        """
+        self._append(
+            AnchorRecord(
+                kind="genesis",
                 session_id=snapshot.session_id,
                 round=snapshot.round,
                 operation_id=snapshot.operation_id,

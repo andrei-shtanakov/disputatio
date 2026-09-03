@@ -73,6 +73,7 @@ from disputatio.contracts import (
     Documents,
     EvidenceLink,
     FileRef,
+    IntegritySnapshot,
     Issue,
     NextAction,
     Outcome,
@@ -121,6 +122,15 @@ CONTOUR_DOC: Final = "doc"
 
 #: Каталог ревизий внутри `pipelines/<slug>/` (§4.1).
 SESSIONS_DIR_NAME: Final = "sessions"
+
+#: Identity genesis-записи анкера (WS-disputatio-65 BEH-01, TASK-004): не
+#: описывает реальную ревизию — до первой сессии её нет, — а лишь заполняет
+#: обязательные поля `AnchorRecord`. Сверка genesis идёт по `.immutable`
+#: (хешам write-once снапшотов), а не по identity, поэтому конкретные
+#: значения здесь — фиксированные метки, а не вычисление.
+GENESIS_SESSION_ID: Final = "__genesis__"
+GENESIS_ROUND: Final = 1
+GENESIS_OPERATION_ID: Final = "genesis"
 
 #: Снапшоты верхнего уровня (§4.1); их пути попадают в манифест относительными.
 TASK_SNAPSHOT_NAME: Final = "task.md"
@@ -422,13 +432,23 @@ class PipelineRunner:
         4. **манифест** с входной фазой ВИДА, переходом `started` и первым
            intent'ом — дальше работает `advance`. Ни фаза, ни имя первого
            контура здесь не зашиты: они читаются из `ENTRY_PHASE` и
-           `CONTOURS_BY_KIND`, потому что вид — свойство конфига (P0).
+           `CONTOURS_BY_KIND`, потому что вид — свойство конфига (P0);
+        5. **genesis-запись анкера** (TASK-004): независимая от манифеста
+           сверка хешей четырёх write-once снапшотов, сразу после того, как
+           они улеглись на диск. `advance` ниже способен переписать
+           `pipeline.json` ещё до первого хода автора (например,
+           `create_session`) — легитимно, поэтому в genesis его хеша нет:
+           сверка по нему здесь ловила бы собственную законную правку, а не
+           подмену. Сверяет её `resume` до первого чтения ожидаемой
+           семантики, пока анкер не несёт ни одного `pre_turn` (§8.1 шаг 0).
 
         Окно между созданием каталога и первой записью манифеста не
         восстановимо и не притворяется таковым: манифеста нет, `resume` его
         не найдёт, а `run` откажет по существующему каталогу. Честная цена
         четырёх файлов (task/config/checklists/semantic_proof), которые
-        нельзя записать одной атомарной операцией.
+        нельзя записать одной атомарной операцией. Крах между манифестом и
+        genesis-записью — то же самое, более узкое окно: `resume` тогда
+        застаёт анкер пустым и, как и раньше, сверять нечего (`last_record`).
         """
         check_run_preconditions(self._git, self._workspace_root, self._config, slug)
 
@@ -491,6 +511,17 @@ class PipelineRunner:
         self._write(
             state,
             self._event(state, PipelineEventType.PHASE_CHANGE, first.operation_id),
+        )
+        anchor.append_genesis(
+            IntegritySnapshot(
+                session_id=GENESIS_SESSION_ID,
+                round=GENESIS_ROUND,
+                operation_id=GENESIS_OPERATION_ID,
+                immutable={
+                    ref.path: ref.sha256
+                    for ref in (task, config, checklists, semantic_proof)
+                },
+            )
         )
         return self.advance(slug)
 
