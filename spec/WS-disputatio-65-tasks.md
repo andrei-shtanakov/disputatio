@@ -34,7 +34,7 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-01 (—BEH-15
 **Traces to:** [FR-01, FR-11, FR-12, FR-15]
 
 ### TASK-002: Эквивалентное TOML-представление даёт ту же модель (+8 смежных BEH)
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-07, BEH-14, BEH-19, BEH-21.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-02 (—BEH-21)
