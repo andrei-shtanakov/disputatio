@@ -454,6 +454,13 @@ def _from_pipeline_table(table: Mapping[str, Any]) -> PipelineConfig:
     `load_pipeline_config` переводит в `ConfigError` с именем файла.
     """
     where = "pipeline"
+    unknown = set(table) - _KNOWN_PIPELINE_KEYS
+    if unknown:
+        raise ConfigError(
+            f"[pipeline] содержит неизвестные ключи: {sorted(unknown)} — "
+            "закрытая схема §3.2 отклоняет их, а не молчаливо игнорирует "
+            "(FR-07)"
+        )
     kind = _resolve_kind(table)
     if kind is PipelineKind.DOCUMENT and "max_architectural_returns" in table:
         raise ConfigError(
@@ -494,6 +501,23 @@ _PATH_KEYS_BY_KIND: Final[dict[PipelineKind, tuple[str, ...]]] = {
     PipelineKind.PAIR: ("spec_path", "plan_path"),
     PipelineKind.DOCUMENT: ("document_path",),
 }
+
+#: Замкнутая схема `[pipeline]` (FR-07): всё, что читает разбор ниже, плюс
+#: `checklists`/`gates`, у которых своя вложенная закрытая схема.
+_KNOWN_PIPELINE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "spec_path",
+        "plan_path",
+        "document_path",
+        "max_architectural_returns",
+        "soft_max_pipeline_tokens",
+        "soft_max_pipeline_wall_seconds",
+        "protected_branches",
+        "anchor_path",
+        "checklists",
+        "gates",
+    }
+)
 
 _PAIR_FORM: Final = (
     "  [pipeline]\n"
@@ -589,6 +613,13 @@ def _checklists(value: Any, kind: PipelineKind) -> dict[str, ResolvedChecklist]:
         raise TypeError("pipeline.checklists обязана быть таблицей")
     table: Mapping[str, Any] = value or {}
     if kind is PipelineKind.DOCUMENT:
+        unknown = set(table) - {"doc"}
+        if unknown:
+            raise ConfigError(
+                f"[pipeline.checklists] содержит неизвестные ключи: "
+                f"{sorted(unknown)} — вид document допускает только "
+                "[pipeline.checklists.doc] (FR-07)"
+            )
         return {"doc": _operator_checklist(table.get("doc"))}
     return _builtin_checklists(table)
 
@@ -623,6 +654,13 @@ def _operator_checklist(table: Any) -> ResolvedChecklist:
         raise ConfigError(
             "[pipeline.checklists.doc] обязательна для вида document: "
             "вендоренного набора у операторского контура нет"
+        )
+    unknown = set(table) - {"findings_item", "items"}
+    if unknown:
+        raise ConfigError(
+            f"[pipeline.checklists.doc] содержит неизвестные ключи: "
+            f"{sorted(unknown)} — допустимы только findings_item и items "
+            "(FR-07)"
         )
     items = table.get("items")
     if not isinstance(items, Mapping) or not items:

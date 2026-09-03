@@ -304,6 +304,78 @@ def test_load_pipeline_config_rejects_unknown_checklist_id(
         load_pipeline_config(path)
 
 
+_UNKNOWN_AT_PIPELINE_LEVEL = """
+[pipeline]
+spec_path = "docs/specs/2026-08-28-foo-design.md"
+plan_path = "docs/plans/2026-08-28-foo-plan.md"
+unknown_toplevel_key = "x"
+"""
+
+_UNKNOWN_AT_CHECKLISTS_LEVEL = """
+[pipeline]
+document_path = "docs/charter.md"
+
+[pipeline.checklists]
+unknown_checklists_key = "x"
+
+[pipeline.checklists.doc]
+findings_item = "B3"
+
+[pipeline.checklists.doc.items]
+B3 = "нет blocker/major-находок"
+"""
+
+_UNKNOWN_AT_SPECIFIC_CHECKLIST_LEVEL = """
+[pipeline]
+document_path = "docs/charter.md"
+
+[pipeline.checklists.doc]
+findings_item = "B3"
+unknown_checklist_key = "x"
+
+[pipeline.checklists.doc.items]
+B3 = "нет blocker/major-находок"
+"""
+
+_UNKNOWN_AT_GATE_ENTRY_LEVEL = """
+[pipeline]
+spec_path = "docs/specs/2026-08-28-foo-design.md"
+plan_path = "docs/plans/2026-08-28-foo-plan.md"
+
+[[pipeline.gates]]
+name = "extra-gate"
+cmd = "true"
+unknown_gate_key = "x"
+"""
+
+_UNKNOWN_KEY_CASES = (
+    ("pipeline", _UNKNOWN_AT_PIPELINE_LEVEL),
+    ("checklists", _UNKNOWN_AT_CHECKLISTS_LEVEL),
+    ("specific-checklist", _UNKNOWN_AT_SPECIFIC_CHECKLIST_LEVEL),
+    ("gate-entry", _UNKNOWN_AT_GATE_ENTRY_LEVEL),
+)
+
+
+def test_unknown_pipeline_keys_fail_closed_at_every_schema_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-07: неизвестный ключ на любом уровне `[pipeline]` — `ConfigError`.
+
+    Закрытая схема, не открытая: `[pipeline]`, `pipeline.checklists`,
+    конкретный чеклист и запись `pipeline.gates` — каждый из этих четырёх
+    уровней обязан отвергать чужой ключ сам, а не полагаться на то, что
+    его отловит соседний уровень. (`items` сюда не входит — это открытый
+    реестр id, объявляемых оператором, а не закрытая схема.)
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+
+    for label, text in _UNKNOWN_KEY_CASES:
+        path = tmp_path / f"config-{label}.toml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_pipeline_config(path)
+
+
 # ---------------------------------------------------------------------------
 # check_run_preconditions / validate_anchor_path
 # ---------------------------------------------------------------------------
