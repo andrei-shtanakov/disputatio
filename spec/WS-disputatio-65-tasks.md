@@ -86,7 +86,7 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-09 (—BEH-20
 **Traces to:** [FR-08, FR-09, FR-13, FR-10, FR-17]
 
 ### TASK-005: Legacy возобновляется только по явной доказуемой процедуре
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | 🔍 REVIEW   Est: 0.5d
 
 Реализовать сценарии BEH-16.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-16
