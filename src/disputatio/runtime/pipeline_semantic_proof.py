@@ -315,3 +315,36 @@ def _verify_source(
             manifest_ref.path,
             "снапшот источника пуст или не несёт TOML-маппинг",
         )
+    _validate_source_schema(name, parsed, manifest_ref.path)
+
+
+def _validate_source_schema(name: str, parsed: Mapping[str, Any], path: str) -> None:
+    """Предметная схема снапшота (FR-12, приёмка PR #90, круг 6).
+
+    Digest удостоверяет байты, общий TOML-разбор — синтаксис; произвольный
+    валидный TOML (`[unrelated]`) всё ещё не является снапшотом источника.
+    Якоря — инварианты собственных писателей (`pipeline_runner`):
+    config-снапшот несёт таблицу ``[pipeline]``; checklists-снапшот — по
+    таблице на контур, каждая с обязательным ``findings_item`` (пустая
+    роль пишется явным ``false``, не пропуском). Глубже — модельная
+    валидация expected-модели, объём TASK-002+.
+    """
+    if name == "config":
+        if not isinstance(parsed.get("pipeline"), Mapping):
+            raise UnprovableSemantics(
+                "parse_error",
+                path,
+                "config-снапшот не несёт таблицу [pipeline]",
+            )
+        return
+    if name == "checklists":
+        contours = list(parsed.values())
+        if not contours or not all(
+            isinstance(contour, Mapping) and "findings_item" in contour
+            for contour in contours
+        ):
+            raise UnprovableSemantics(
+                "parse_error",
+                path,
+                "checklists-снапшот не несёт контуров с findings_item",
+            )

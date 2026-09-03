@@ -633,3 +633,51 @@ def test_source_snapshot_with_invalid_schema_is_parse_error(
     assert excinfo.value.reason == "parse_error"
     assert excinfo.value.artifact == state.config.path
     assert "not = valid" not in str(excinfo.value)
+
+
+def _consistent_source_swap(
+    stand: Stand, state: PipelineState, name: str, payload: bytes
+) -> PipelineState:
+    """Подменяет снапшот источника согласованно: диск + манифест + proof.
+
+    Имитирует «digest сходится везде, но содержимое негодно» — вход
+    предметной проверки схемы (FR-12), до которой надо пройти все
+    integrity-проверки.
+    """
+    pipeline_dir = stand.pipeline_dir()
+    ref = getattr(state, name)
+    assert ref is not None
+    (pipeline_dir / ref.path).write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    consistent = state.model_copy(
+        update={name: ref.model_copy(update={"sha256": digest})}
+    )
+    forged = _proof_json(stand, state)
+    forged["sources"][name]["sha256"] = digest
+    return _rewrite_proof_with_matching_digest(stand, consistent, forged)
+
+
+def test_valid_toml_with_foreign_schema_is_parse_error(tmp_path: Path) -> None:
+    """FR-12 (приёмка PR #90, круг 6): синтаксически валидный TOML с чужой
+    структурой — не снапшот источника. config без таблицы [pipeline] и
+    checklists без findings_item — parse_error, не «доказанный» источник."""
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+
+    foreign_config = b"[unrelated]\nvalue = 1\n"
+    tainted = _consistent_source_swap(stand, state, "config", foreign_config)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, tainted)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == state.config.path
+
+    # восстановить config для второго кейса
+    stand2 = _doc_stand(tmp_path / "second")
+    state2 = stand2.manifest()
+    foreign_checklists = b"[doc]\nitem = 'text'\n"  # нет findings_item
+    tainted2 = _consistent_source_swap(stand2, state2, "checklists", foreign_checklists)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(stand2.pipeline_dir(), tainted2)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == state2.checklists.path
