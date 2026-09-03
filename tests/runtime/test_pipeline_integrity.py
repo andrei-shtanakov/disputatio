@@ -387,3 +387,23 @@ def test_snapshot_hashes_are_the_bytes_on_disk(tmp_path: Path) -> None:
     assert (
         snapshot.immutable[manifest_key] == hashlib.sha256(MANIFEST_BYTES).hexdigest()
     )
+
+
+def test_semantic_proof_is_part_of_immutable_surface(tmp_path: Path) -> None:
+    """WS-65 BEH-01 (приёмка PR #90, круг 8): semantic_proof.json — durable
+    control-plane артефакт того же окна, что и снапшоты, — входит в
+    P9-поверхность: подмена меняет immutable-хеши, отсутствие (legacy)
+    выражено членством и не ломает снятие снапшота."""
+    plane = _seed(tmp_path)
+    # legacy: файла нет — снапшот снимается, имени в наборе нет
+    legacy = plane.immutable_hashes()
+    assert "semantic_proof.json" not in {name.split("/")[-1] for name in legacy}
+
+    proof_path = plane.pipeline_dir / "semantic_proof.json"
+    proof_path.write_bytes(b'{"projection_schema_version": "1"}')
+    with_proof = plane.immutable_hashes()
+    (key,) = [k for k in with_proof if k.endswith("semantic_proof.json")]
+
+    proof_path.write_bytes(b'{"projection_schema_version": "tampered"}')
+    tampered = plane.immutable_hashes()
+    assert tampered[key] != with_proof[key]
