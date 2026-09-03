@@ -23,13 +23,13 @@ BEH-12, BEH-13, BEH-15):
   автоматической записи/починки — по одной причине `errors.SemanticProofReason`
   на артефакт, без утечки его содержимого в диагностику.
 
-Фактическое встраивание `load_semantic_proof` в порядок §8.1 `resume`
-(P9 → манифест → semantic proof → …) — задача TASK-004 того же milestone;
-здесь доказательство строится и проверяется как самостоятельный, полностью
-тестируемый шаг. Само сравнение двух проекций (`diff_projections`,
-BEH-02/04-07/14/19, TASK-002) уже здесь — оно не зависит от порядка
-`resume` и тестируется без него; TASK-004 лишь решает, ЧТО `resume` делает
-с непустым результатом сравнения.
+Встраивание `load_semantic_proof` в порядок §8.1 `resume` (P9 → манифест →
+semantic proof → …) сделано в `pipeline_resume.PipelineResume._verify_semantics`
+(BEH-09/10/11/17/20, TASK-004); здесь доказательство по-прежнему строится и
+проверяется как самостоятельный, полностью тестируемый шаг — `resume` лишь
+вызывает уже готовые `load_semantic_proof`/`diff_projections`, не дублируя их
+логику. Само сравнение двух проекций (`diff_projections`, BEH-02/04-07/14/19,
+TASK-002) не зависит от порядка `resume` и тестируется без него.
 """
 
 import hashlib
@@ -414,6 +414,31 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
     if not isinstance(proof.get("projection"), Mapping):
         raise UnprovableSemantics(
             "parse_error", ref.path, "доказательство не несёт immutable-проекцию"
+        )
+    # Структура проекции валидируется ДО того, как её увидит
+    # diff_projections (приёмка PR #93, круг 2, minor): происхождение —
+    # файл в недоверенном дереве, и негодные типы полей (checklists-строка,
+    # gates-маппинг) роняли бы сравнение сырым AttributeError/KeyError мимо
+    # именованных причин BEH-15.
+    projection = proof["projection"]
+    checklists = projection.get("checklists")
+    if checklists is not None and (
+        not isinstance(checklists, Mapping)
+        or not all(isinstance(c, Mapping) for c in checklists.values())
+    ):
+        raise UnprovableSemantics(
+            "parse_error",
+            ref.path,
+            "проекция доказательства несёт checklists не той структуры",
+        )
+    gates = projection.get("gates")
+    if gates is not None and (
+        not isinstance(gates, list) or not all(isinstance(g, Mapping) for g in gates)
+    ):
+        raise UnprovableSemantics(
+            "parse_error",
+            ref.path,
+            "проекция доказательства несёт gates не той структуры",
         )
     sources = proof.get("sources")
     if not isinstance(sources, Mapping):

@@ -6,8 +6,9 @@
 * **Анкер создаётся первым действием `run`.** §3.1 требует этого прямо, а
   §8.1 шаг 0 делает «файла анкера нет» безусловным отказом resume — и
   обосновывает отказ именно тем, что `run` анкер уже создал. Крах на первом
-  же интенте обязан оставить пустой существующий журнал, иначе пайплайн
-  невозобновим по собственному правилу.
+  же интенте (после манифеста) обязан оставить журнал, несущий ровно
+  genesis-запись (BEH-01, TASK-004 WS-disputatio-65) — не пустым: до
+  genesis'а он был бы буквально пуст в этом окне, и сверять было бы нечего.
 * **Терминал читается по durable-состоянию, а не по возврату драйвера.**
   У припаркованного раунда `decision.json` не существует вовсе (§7.1:
   `decide()` не вызывался), и это сам по себе признак парковки. Драйвер,
@@ -576,7 +577,14 @@ def structure(state: PipelineState) -> dict[str, Any]:
 
 
 def test_run_creates_anchor_before_any_mutation(tmp_path: Path) -> None:
-    """Крах на первом интенте оставляет пустой существующий анкер (§8.1 шаг 0)."""
+    """Крах на первом интенте: анкер несёт genesis-запись, не пуст (BEH-01, TASK-004).
+
+    До genesis-записи (WS-disputatio-65 TASK-004) крах здесь заставал анкер
+    буквально пустым — сверять было нечего. `run` пишет genesis сразу после
+    манифеста, ДО `advance`, поэтому даже крах на первом же интенте
+    (`create_session`, здесь смоделирован фабрикой) заставляет анкер уже
+    несущим снапшот write-once файлов, готовый к сверке следующим `resume`.
+    """
     harness = build_harness(tmp_path, converged_pair())
     harness.factory.raise_next = True
 
@@ -588,10 +596,10 @@ def test_run_creates_anchor_before_any_mutation(tmp_path: Path) -> None:
         "анкер обязан быть создан ДО первой сохраняемой мутации: §8.1 делает "
         "«файла анкера нет» безусловным отказом resume"
     )
-    assert anchor.path.read_bytes() == b""
-    # Ровно предикат §8.1 шага 0: журнал существует и пуст → сверять нечего,
-    # отказа нет. FileNotFoundError здесь означал бы отказ resume.
-    assert anchor.last_record() is None
+    record = anchor.last_record()
+    assert record is not None
+    assert record.kind == "genesis"
+    assert "pipeline.json" not in record.immutable
 
     harness.factory.raise_next = False
     state = rebuild(harness).runner.advance(SLUG)
