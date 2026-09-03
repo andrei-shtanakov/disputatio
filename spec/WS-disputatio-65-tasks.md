@@ -25,11 +25,11 @@ P2 | ✅ DONE   Est: 0.5d
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-01 (—BEH-15)
 
 **Checklist:**
-- [ ] реализовать BEH-01: Run атомарно фиксирует версионированную immutable-модель
-- [ ] реализовать BEH-12: Недоказуемая семантика запрещает продолжение без fallback
-- [ ] реализовать BEH-13: Каждый источник доказательства проверяется и согласуется
-- [ ] реализовать BEH-15: Ошибка доказательства различает безопасные причины
-- [ ] проверка группы: tests/runtime/test_pipeline_semantic_proof.py::test_run_commits_versioned_proof_atomically (kind: integration), tests/runtime/test_pipeline_semantic_proof.py::test_unprovable_semantics_fail_closed_without_fallback (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_all_proof_sources_require_integrity_and_consistency (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_proof_errors_are_distinct_safe_and_actionable (kind: contract) зелёные на BEH-01, BEH-12, BEH-13, BEH-15
+- [x] реализовать BEH-01: Run атомарно фиксирует версионированную immutable-модель
+- [x] реализовать BEH-12: Недоказуемая семантика запрещает продолжение без fallback
+- [x] реализовать BEH-13: Каждый источник доказательства проверяется и согласуется
+- [x] реализовать BEH-15: Ошибка доказательства различает безопасные причины
+- [x] проверка группы: tests/runtime/test_pipeline_semantic_proof.py::test_run_commits_versioned_proof_atomically (kind: integration), tests/runtime/test_pipeline_semantic_proof.py::test_unprovable_semantics_fail_closed_without_fallback (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_all_proof_sources_require_integrity_and_consistency (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_proof_errors_are_distinct_safe_and_actionable (kind: contract) зелёные на BEH-01, BEH-12, BEH-13, BEH-15
 
 **Traces to:** [FR-01, FR-11, FR-12, FR-15]
 

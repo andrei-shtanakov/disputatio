@@ -31,6 +31,7 @@ TASK-002…TASK-004 того же milestone; здесь доказательст
 
 import hashlib
 import json
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -295,4 +296,22 @@ def _verify_source(
             "digest_mismatch",
             manifest_ref.path,
             "содержимое снапшота на диске не совпадает с удостоверенным digest",
+        )
+    # Четвёртая проверка BEH-13 — «недопустимая схема» (приёмка PR #90,
+    # круг 4): сходящийся digest удостоверяет байты, но не их годность —
+    # снапшот, не разбирающийся как TOML-маппинг, нельзя трактовать как
+    # доказанный источник. Содержимое в диагностику не выносится (BEH-15).
+    try:
+        parsed = tomllib.loads(actual.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raise UnprovableSemantics(
+            "parse_error",
+            manifest_ref.path,
+            "снапшот источника не разбирается как TOML",
+        ) from None
+    if not isinstance(parsed, Mapping) or not parsed:
+        raise UnprovableSemantics(
+            "parse_error",
+            manifest_ref.path,
+            "снапшот источника пуст или не несёт TOML-маппинг",
         )

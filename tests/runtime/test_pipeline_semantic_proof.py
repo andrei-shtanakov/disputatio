@@ -602,3 +602,34 @@ def test_invalid_utf8_proof_is_parse_error_not_unicode_crash(
     with pytest.raises(UnprovableSemantics) as excinfo:
         load_semantic_proof(pipeline_dir, broken_state)
     assert excinfo.value.reason == "parse_error"
+
+
+def test_source_snapshot_with_invalid_schema_is_parse_error(
+    tmp_path: Path,
+) -> None:
+    """BEH-13 «недопустимая схема» (приёмка PR #90, круг 4): снапшот с
+    согласованным digest, но не разбирающийся как TOML-маппинг, — отказ
+    `parse_error`, а не «доказанный» источник: digest удостоверяет байты,
+    но не их годность."""
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+
+    bad = b"not = valid = toml [[["
+    (pipeline_dir / state.config.path).write_bytes(bad)
+    assert state.config is not None
+    consistent = state.model_copy(
+        update={
+            "config": state.config.model_copy(
+                update={"sha256": hashlib.sha256(bad).hexdigest()}
+            )
+        }
+    )
+    forged = _proof_json(stand, state)
+    forged["sources"]["config"]["sha256"] = hashlib.sha256(bad).hexdigest()
+    tainted_state = _rewrite_proof_with_matching_digest(stand, consistent, forged)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, tainted_state)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == state.config.path
+    assert "not = valid" not in str(excinfo.value)

@@ -101,9 +101,7 @@ def test_run_commits_versioned_semantic_proof(tmp_path: Path) -> None:
         "первой сессии (BEH-01), одной записью с первым intent'ом"
     )
 
-    proof_path = (
-        workspace / ".disputatio" / "pipelines" / SLUG / proof_ref["path"]
-    )
+    proof_path = workspace / ".disputatio" / "pipelines" / SLUG / proof_ref["path"]
     proof = json.loads(proof_path.read_bytes())
     assert "projection_schema_version" in proof, (
         "доказательство обязано нести версию канонизации immutable-проекции "

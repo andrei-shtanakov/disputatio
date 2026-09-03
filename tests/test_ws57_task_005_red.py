@@ -11,16 +11,7 @@ def test_changed_lines_preserves_added_metadata_like_content() -> None:
     """
     from disputatio.core.oscillation import _changed_lines
 
-    patch = (
-        "@@ -1,8 +1,8 @@\n"
-        "++\n"
-        "+++ tail\n"
-        "+-\n"
-        "+--\n"
-        "+--- tail\n"
-        "+@@\n"
-        "+diff --git tail\n"
-    )
+    patch = "@@ -1,8 +1,8 @@\n++\n+++ tail\n+-\n+--\n+--- tail\n+@@\n+diff --git tail\n"
 
     assert _changed_lines(patch) == {
         "+",
