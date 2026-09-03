@@ -377,16 +377,19 @@ _V2_ADDITIONS: dict[tuple[str, ...], Any] = {
     ("schema",): SCHEMA_PIPELINE_V2,
     ("documents", "kind"): "pair",
     ("doc_sessions",): [],
+    ("semantic_proof",): None,
 }
 
 
 def test_v1_fixture_saves_as_v2_and_keeps_everything_else() -> None:
-    """Пара переходит на v2 ровно тремя полями и ничем больше.
+    """Пара переходит на v2 ровно четырьмя полями и ничем больше.
 
     `doc_sessions` попадает в дамп наравне с двумя существующими
     коллекциями — `default_factory=list` сериализуется как обычное поле.
-    Забыть его в списке ожидаемых отличий значило бы написать тест, который
-    невозможно выполнить.
+    `semantic_proof` (WS-disputatio-65 BEH-01) — опциональное поле новее
+    самой v1/v2 схемы: у манифеста, записанного до появления доказательства,
+    его законно нет, и читается он как `None`. Забыть любое из них в списке
+    ожидаемых отличий значило бы написать тест, который невозможно выполнить.
     """
     before = json.loads(_V1_FIXTURE.read_text(encoding="utf-8"))
     after = PipelineState.model_validate(before).model_dump(mode="json", by_alias=True)
@@ -394,8 +397,11 @@ def test_v1_fixture_saves_as_v2_and_keeps_everything_else() -> None:
     assert after["schema"] == _V2_ADDITIONS[("schema",)]
     assert after["documents"]["kind"] == _V2_ADDITIONS[("documents", "kind")]
     assert after["doc_sessions"] == _V2_ADDITIONS[("doc_sessions",)]
+    assert after["semantic_proof"] == _V2_ADDITIONS[("semantic_proof",)]
 
-    stripped = {k: v for k, v in after.items() if k != "doc_sessions"}
+    stripped = {
+        k: v for k, v in after.items() if k not in {"doc_sessions", "semantic_proof"}
+    }
     stripped["schema"] = before["schema"]
     stripped["documents"] = {k: v for k, v in after["documents"].items() if k != "kind"}
     assert stripped == before

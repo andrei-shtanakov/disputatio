@@ -517,6 +517,13 @@ class PipelineState(PipelineArtifactBase):
     перезаписывается атомарно целиком (temp-file + rename) — гарантия
     append-only коллекций и разрешённая правка `outcome`/`superseded_by`
     задним числом — обязанность стора (задача 5), не схемы.
+
+    `semantic_proof` — ссылка на версионированное доказательство immutable-
+    проекции `[pipeline]` (WS-disputatio-65 BEH-01, FR-01), тем же приёмом,
+    что и `task`/`config`/`checklists`: путь + sha256 файла-снапшота.
+    Опционален ради чтения манифестов, записанных до появления доказательства
+    (issue #65) — `None` там читается легитимно, а решает, что с этим делать,
+    resume (BEH-12/16), не схема.
     """
 
     pipeline_id: str
@@ -525,6 +532,7 @@ class PipelineState(PipelineArtifactBase):
     task: FileRef
     config: FileRef
     checklists: FileRef
+    semantic_proof: FileRef | None = None
     documents: Documents
     spec_sessions: list[SessionRecord] = Field(default_factory=list)
     pair_sessions: list[SessionRecord] = Field(default_factory=list)
