@@ -197,9 +197,14 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
             ref.path,
             "sha256 файла не совпадает с зафиксированным в манифесте",
         )
+    # UnicodeDecodeError наравне с JSONDecodeError (приёмка PR #90,
+    # круг 2): json.loads над сырыми байтами падает ИМ на невалидном
+    # UTF-8, и сырое исключение обошло бы контрактную диагностику
+    # parse_error (BEH-15) — тот же класс, что закрыт в integrity-журнале
+    # WS-57 (K2).
     try:
         proof = json.loads(data)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise UnprovableSemantics(
             "parse_error", ref.path, "содержимое не разбирается как JSON"
         ) from None

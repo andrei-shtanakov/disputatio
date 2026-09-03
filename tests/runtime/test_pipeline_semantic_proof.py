@@ -584,3 +584,21 @@ def test_unsupported_version_message_redacts_untrusted_value(
         load_semantic_proof(pipeline_dir, tainted_state)
     assert excinfo.value.reason == "unsupported_version"
     assert secret not in str(excinfo.value)
+
+
+def test_invalid_utf8_proof_is_parse_error_not_unicode_crash(
+    tmp_path: Path,
+) -> None:
+    """BEH-15 (приёмка PR #90, круг 2): невалидный UTF-8 при сходящемся
+    digest — контрактный `parse_error`, а не сырой `UnicodeDecodeError`
+    мимо fail-closed диагностики (класс K2 integrity-журнала WS-57)."""
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+
+    broken = b'{"projection_schema_version": "\xff\xfe"}'
+    broken_state = _with_proof_sha256(state, hashlib.sha256(broken).hexdigest())
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(broken)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, broken_state)
+    assert excinfo.value.reason == "parse_error"
