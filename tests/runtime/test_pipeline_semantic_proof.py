@@ -33,6 +33,7 @@ from disputatio.runtime.pipeline_semantic_proof import (
     PROJECTION_SCHEMA_VERSION,
     SEMANTIC_PROOF_NAME,
     build_projection,
+    load_legacy_projection,
     load_semantic_proof,
 )
 from disputatio.verifier import GateSpec
@@ -698,3 +699,176 @@ def test_malformed_projection_structure_is_parse_error(tmp_path: Path) -> None:
         with pytest.raises(UnprovableSemantics) as excinfo:
             load_semantic_proof(pipeline_dir, tainted)
         assert excinfo.value.reason == "parse_error", field
+
+
+# ---------------------------------------------------------------------------
+# BEH-16 — legacy-манифест без semantic_proof: явная процедура, не fallback
+# ---------------------------------------------------------------------------
+
+
+def _pair_stand(tmp_path: Path) -> Stand:
+    """Пайплайн вида `pair`, сошедшийся штатно (`spec-r1` + `pair-r1`)."""
+    stand = build_stand(
+        tmp_path,
+        {"spec-r1": Script(), "pair-r1": Script()},
+        kind=PipelineKind.PAIR,
+    )
+    stand.start()
+    return stand
+
+
+def _state_without_proof(state: PipelineState) -> PipelineState:
+    """`state`, каким его видел бы `resume` манифеста, записанного до issue
+    #65 (BEH-16): ссылки на `semantic_proof` нет, `config`/`checklists` — те
+    же, что оставил штатный `run`.
+    """
+    return state.model_copy(update={"semantic_proof": None})
+
+
+def _legacy_source_swap(
+    stand: Stand, state: PipelineState, name: str, payload: bytes
+) -> PipelineState:
+    """Подменяет `config.toml`/`checklists.toml` на диске и синхронизирует
+    ссылку манифеста с новым digest — вход `load_legacy_projection`, где
+    заявок доказательства сверять не с чем (в отличие от
+    `_consistent_source_swap` выше, которая правит ещё и `sources` proof'а).
+    """
+    pipeline_dir = stand.pipeline_dir()
+    ref = getattr(state, name)
+    assert ref is not None
+    (pipeline_dir / ref.path).write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    return state.model_copy(
+        update={
+            "semantic_proof": None,
+            name: ref.model_copy(update={"sha256": digest}),
+        }
+    )
+
+
+def test_load_legacy_projection_matches_build_projection_for_document_kind(
+    tmp_path: Path,
+) -> None:
+    """Реконструкция из снапшотов совпадает с проекцией живого конфига для
+    вида `document` (BEH-16) — центральное утверждение докстринга
+    `_legacy_projection`, до сих пор не проверенное ни одним тестом: обе
+    интеграционные регрессии TASK-005 (`test_pipeline_e2e.py`) гоняют только
+    вид `pair`, и `document`-ветка `_legacy_projection`
+    (`(document_path,) = state.documents.paths()`) оставалась непокрытой.
+    """
+    stand = _doc_stand(tmp_path)
+    state = _state_without_proof(stand.manifest())
+    pipeline_dir = stand.pipeline_dir()
+
+    proof = load_legacy_projection(pipeline_dir, state)
+
+    assert proof["projection_schema_version"] == PROJECTION_SCHEMA_VERSION
+    assert proof["pipeline_id"] == SLUG
+    assert proof["projection"] == build_projection(stand.config)
+    assert proof["projection"]["document_path"] == DOCUMENT_PATH
+    assert "spec_path" not in proof["projection"]
+    assert "max_architectural_returns" not in proof["projection"]
+
+
+def test_load_legacy_projection_matches_build_projection_for_pair_kind(
+    tmp_path: Path,
+) -> None:
+    """Тот же контракт для вида `pair` — второй, `spec_path`/`plan_path`/
+    `max_architectural_returns`-несущей ветки `_legacy_projection` (BEH-16).
+    """
+    stand = _pair_stand(tmp_path)
+    state = _state_without_proof(stand.manifest())
+    pipeline_dir = stand.pipeline_dir()
+
+    proof = load_legacy_projection(pipeline_dir, state)
+
+    assert proof["projection"] == build_projection(stand.config)
+    assert proof["projection"]["spec_path"] == SPEC_PATH
+    assert proof["projection"]["plan_path"] == PLAN_PATH
+    assert (
+        proof["projection"]["max_architectural_returns"]
+        == DEFAULT_MAX_ARCHITECTURAL_RETURNS
+    )
+
+
+def test_load_legacy_projection_requires_intact_snapshots(tmp_path: Path) -> None:
+    """Отсутствующий снапшот отказывает `UnprovableSemantics` в
+    legacy-процедуре тоже (BEH-16): `load_legacy_projection` вызывает
+    `_read_verified_snapshot` напрямую для своих двух источников, а не
+    только `_verify_source` для (здесь отсутствующего) proof'а — эта
+    проверка была ранее покрыта лишь косвенно, через happy-path
+    интеграционные тесты TASK-005.
+    """
+    stand = _pair_stand(tmp_path)
+    state = _state_without_proof(stand.manifest())
+    pipeline_dir = stand.pipeline_dir()
+
+    (pipeline_dir / state.config.path).unlink()
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_legacy_projection(pipeline_dir, state)
+    assert excinfo.value.reason == "missing"
+    assert excinfo.value.artifact == state.config.path
+
+
+def test_legacy_max_returns_rejects_non_integer(tmp_path: Path) -> None:
+    """`_legacy_max_returns` отказывает `parse_error`, когда config-снапшот
+    несёт `max_architectural_returns` не целочисленным типом (BEH-16) —
+    включая `bool`, который `isinstance(x, int)` в Python иначе пропустил бы.
+    """
+    stand = _pair_stand(tmp_path)
+    state = stand.manifest()
+
+    for bad_toml in (
+        b'[pipeline]\nmax_architectural_returns = "five"\n',
+        b"[pipeline]\nmax_architectural_returns = true\n",
+    ):
+        tampered = _legacy_source_swap(stand, state, "config", bad_toml)
+        with pytest.raises(UnprovableSemantics) as excinfo:
+            load_legacy_projection(stand.pipeline_dir(), tampered)
+        assert excinfo.value.reason == "parse_error"
+        assert excinfo.value.artifact == "config"
+
+
+def test_legacy_gates_rejects_malformed_structure(tmp_path: Path) -> None:
+    """`_legacy_gates` отказывает `parse_error` и на нелистовом `gates`, и на
+    отдельной записи gate'а с полем не того типа (BEH-16) — обе ветки, ранее
+    непокрытые ни одним тестом.
+    """
+    stand = _pair_stand(tmp_path)
+    state = stand.manifest()
+
+    not_a_list = b'[pipeline]\nmax_architectural_returns = 2\ngates = "nope"\n'
+    tampered = _legacy_source_swap(stand, state, "config", not_a_list)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_legacy_projection(stand.pipeline_dir(), tampered)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == "config"
+
+    malformed_gate = (
+        b"[pipeline]\nmax_architectural_returns = 2\n\n"
+        b'[[pipeline.gates]]\nname = "lint"\ncmd = "ruff check ."\n'
+        b'enabled = "yes"\n'
+    )
+    tampered = _legacy_source_swap(stand, state, "config", malformed_gate)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_legacy_projection(stand.pipeline_dir(), tampered)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == "config"
+
+
+def test_legacy_checklists_rejects_non_string_item_text(tmp_path: Path) -> None:
+    """`_legacy_checklists` отказывает `parse_error`, когда checklists-снапшот
+    несёт текст пункта не строкового типа (BEH-16): `_validate_source_schema`
+    (общий хвост `_parse_toml_snapshot`) проверяет только форму контура
+    (маппинг + `findings_item`), а не типы отдельных пунктов — эта ветка
+    целиком принадлежит `_legacy_checklists` и ранее была непокрыта.
+    """
+    stand = _pair_stand(tmp_path)
+    state = stand.manifest()
+
+    bad_checklists = b'[spec]\nfindings_item = "S1"\nS1 = 1\n'
+    tampered = _legacy_source_swap(stand, state, "checklists", bad_checklists)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_legacy_projection(stand.pipeline_dir(), tampered)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == "checklists"

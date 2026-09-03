@@ -450,6 +450,57 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
     return proof
 
 
+def _read_verified_snapshot(pipeline_dir: Path, ref: FileRef) -> bytes:
+    """Байты снапшота, сверенные по digest с его собственной ссылкой (BEH-13/16).
+
+    Общий последний шаг обоих читателей immutable-проекции
+    (`_verify_source` для `load_semantic_proof`, `load_legacy_projection`
+    напрямую): файл `ref.path` внутри каталога пайплайна обязан
+    существовать и совпадать по sha256 с `ref.sha256`. Чья это ссылка —
+    заявка доказательства (уже сверенная с манифестом выше по стеку) или
+    поле самого манифеста (`state.config`/`state.checklists` — вход
+    `load_legacy_projection`, где proof-заявки сверять не с чем) — этой
+    проверке безразлично, отсюда и общий код.
+    """
+    source_path = pipeline_dir / ref.path
+    try:
+        data = source_path.read_bytes()
+    except OSError:
+        raise UnprovableSemantics(
+            "missing", ref.path, "снапшот источника отсутствует либо не читается"
+        ) from None
+    if hashlib.sha256(data).hexdigest() != ref.sha256:
+        raise UnprovableSemantics(
+            "digest_mismatch",
+            ref.path,
+            "содержимое снапшота на диске не совпадает с удостоверенным digest",
+        )
+    return data
+
+
+def _parse_toml_snapshot(name: str, data: bytes, path: str) -> Mapping[str, Any]:
+    """Разбор+предметная схема снапшота — общий хвост BEH-13/16.
+
+    Сходящийся digest (`_read_verified_snapshot`) удостоверяет байты, но не
+    их годность: снапшот, не разбирающийся как TOML-маппинг ожидаемой формы,
+    нельзя трактовать как доказанный источник ни доказательству (BEH-13),
+    ни явной legacy-процедуре (BEH-16) — обе останавливаются одной и той же
+    причиной. Содержимое в диагностику не выносится (BEH-15).
+    """
+    try:
+        parsed = tomllib.loads(data.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        raise UnprovableSemantics(
+            "parse_error", path, "снапшот источника не разбирается как TOML"
+        ) from None
+    if not isinstance(parsed, Mapping) or not parsed:
+        raise UnprovableSemantics(
+            "parse_error", path, "снапшот источника пуст или не несёт TOML-маппинг"
+        )
+    _validate_source_schema(name, parsed, path)
+    return parsed
+
+
 def _verify_source(
     pipeline_dir: Path,
     sources: Mapping[str, Any],
@@ -484,40 +535,8 @@ def _verify_source(
             "доказательство расходится с манифестом о том, какой файл и "
             "с каким digest оно удостоверяет",
         )
-    source_path = pipeline_dir / manifest_ref.path
-    try:
-        actual = source_path.read_bytes()
-    except OSError:
-        raise UnprovableSemantics(
-            "missing",
-            manifest_ref.path,
-            "снапшот источника отсутствует либо не читается",
-        ) from None
-    if hashlib.sha256(actual).hexdigest() != manifest_ref.sha256:
-        raise UnprovableSemantics(
-            "digest_mismatch",
-            manifest_ref.path,
-            "содержимое снапшота на диске не совпадает с удостоверенным digest",
-        )
-    # Четвёртая проверка BEH-13 — «недопустимая схема» (приёмка PR #90,
-    # круг 4): сходящийся digest удостоверяет байты, но не их годность —
-    # снапшот, не разбирающийся как TOML-маппинг, нельзя трактовать как
-    # доказанный источник. Содержимое в диагностику не выносится (BEH-15).
-    try:
-        parsed = tomllib.loads(actual.decode("utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-        raise UnprovableSemantics(
-            "parse_error",
-            manifest_ref.path,
-            "снапшот источника не разбирается как TOML",
-        ) from None
-    if not isinstance(parsed, Mapping) or not parsed:
-        raise UnprovableSemantics(
-            "parse_error",
-            manifest_ref.path,
-            "снапшот источника пуст или не несёт TOML-маппинг",
-        )
-    _validate_source_schema(name, parsed, manifest_ref.path)
+    actual = _read_verified_snapshot(pipeline_dir, manifest_ref)
+    _parse_toml_snapshot(name, actual, manifest_ref.path)
 
 
 def _validate_source_schema(name: str, parsed: Mapping[str, Any], path: str) -> None:
@@ -550,3 +569,160 @@ def _validate_source_schema(name: str, parsed: Mapping[str, Any], path: str) -> 
                 path,
                 "checklists-снапшот не несёт контуров с findings_item",
             )
+
+
+# ---------------------------------------------------------------------------
+# BEH-16 — legacy-манифест без semantic_proof: явная процедура, не fallback
+# ---------------------------------------------------------------------------
+
+
+def load_legacy_projection(
+    pipeline_dir: Path, state: PipelineState
+) -> Mapping[str, Any]:
+    """Явная процедура восстановления immutable-проекции без `semantic_proof`.
+
+    Единственный второй вход `resume`'а (наряду с `load_semantic_proof`) —
+    для манифеста, записанного до появления доказательства (issue #65,
+    `state.semantic_proof is None`, FR-16). Обе формы, которые сегодня
+    читает `PipelineState` без proof — v1 (документы без `kind`, поднятые
+    до пары нормализацией тега, `contracts.pipeline._normalize_v1_documents`)
+    и ранний v2 (документы уже с `kind`, но ещё без proof — окно между
+    поддержкой вида `document` и TASK-001 этой же очереди) — закрыты ОДНОЙ
+    процедурой: к моменту, когда `resume` видит `state`, разница уже стёрта
+    нормализацией, и вид с путями документов у обеих читаются из одного и
+    того же поля манифеста, а не из тега схемы. Третьей, неподдерживаемой
+    версии здесь взяться неоткуда: `schema_` — закрытый `Literal` пары
+    значений, и файл с любым другим тегом отказывает ещё в `PipelineState`,
+    до того как эта функция вообще вызвана.
+
+    Источник доверия — те же снапшоты, что удостоверяет
+    `write_semantic_proof` у современных пайплайнов (`config.toml`,
+    `checklists.toml`), сверенные по digest с ссылками САМОГО манифеста
+    (`_read_verified_snapshot` — та же проверка, что видит каждый источник
+    BEH-13; заявки proof здесь сверять не с чем, ссылка манифеста и есть
+    доверенный вход). Их байты писал детерминированный
+    `PipelineRunner._config_snapshot`/`_checklists_snapshot`: разбор ниже —
+    обратная сторона той же записи, а не отдельно живущий формат, и
+    `test_schema_parser_and_canonicalizer_classifications_match` (BEH-21)
+    ловит их расхождение.
+
+    Вид и пути документов при этом берутся НЕ из снапшота, а из
+    `state.documents` — того же поля манифеста, что и P0 сверял до
+    появления доказательства (§4.2, «вид неизменяем»): снапшот удостоверяет
+    то, чего в манифесте нет (гейты, `max_architectural_returns`,
+    чеклисты), а не дублирует то, что там уже есть.
+
+    Недостаточность данных (отсутствующий/повреждённый снапшот, форма не
+    та, что пишет `pipeline_runner`) — тот же `UnprovableSemantics`, что и у
+    `load_semantic_proof`: ни in-place дозаписи `semantic_proof.json`, ни
+    предположения эквивалентности по одному `documents.kind`, ни другого
+    fallback здесь нет ни в одной ветке (FR-16).
+    """
+    config_data = _read_verified_snapshot(pipeline_dir, state.config)
+    checklists_data = _read_verified_snapshot(pipeline_dir, state.checklists)
+    config_table = _parse_toml_snapshot("config", config_data, state.config.path)
+    checklists_table = _parse_toml_snapshot(
+        "checklists", checklists_data, state.checklists.path
+    )
+    projection = _legacy_projection(state, config_table, checklists_table)
+    return {
+        "projection_schema_version": PROJECTION_SCHEMA_VERSION,
+        "pipeline_id": state.pipeline_id,
+        "projection": projection,
+    }
+
+
+def _legacy_projection(
+    state: PipelineState,
+    config_table: Mapping[str, Any],
+    checklists_table: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Проекция той же формы, что и `build_projection` (BEH-16), из снапшотов."""
+    pipeline_table = config_table["pipeline"]
+    projection: dict[str, Any] = {"kind": state.kind.value}
+    if state.kind is PipelineKind.DOCUMENT:
+        (document_path,) = state.documents.paths()
+        projection["document_path"] = document_path
+    else:
+        spec_path, plan_path = state.documents.paths()
+        projection["spec_path"] = spec_path
+        projection["plan_path"] = plan_path
+        projection["max_architectural_returns"] = _legacy_max_returns(pipeline_table)
+    projection["checklists"] = _legacy_checklists(checklists_table)
+    projection["gates"] = _legacy_gates(pipeline_table)
+    return projection
+
+
+def _legacy_max_returns(pipeline_table: Mapping[str, Any]) -> int:
+    """`max_architectural_returns` снапшота — обязано быть целым (BEH-16)."""
+    value = pipeline_table.get("max_architectural_returns")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise UnprovableSemantics(
+            "parse_error",
+            "config",
+            "config-снапшот не несёт целочисленный max_architectural_returns",
+        )
+    return value
+
+
+def _legacy_gates(pipeline_table: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """`[[pipeline.gates]]` снапшота — форма `build_projection.gates` (BEH-16)."""
+    raw = pipeline_table.get("gates", [])
+    if not isinstance(raw, list):
+        raise UnprovableSemantics(
+            "parse_error", "config", "config-снапшот несёт gates не той структуры"
+        )
+    gates: list[dict[str, Any]] = []
+    for gate in raw:
+        if (
+            not isinstance(gate, Mapping)
+            or not isinstance(gate.get("name"), str)
+            or not isinstance(gate.get("cmd"), str)
+            or not isinstance(gate.get("enabled"), bool)
+        ):
+            raise UnprovableSemantics(
+                "parse_error", "config", "config-снапшот несёт gate не той структуры"
+            )
+        gates.append(
+            {"name": gate["name"], "cmd": gate["cmd"], "enabled": gate["enabled"]}
+        )
+    return gates
+
+
+def _legacy_checklists(checklists_table: Mapping[str, Any]) -> dict[str, Any]:
+    """Контуры чеклистов снапшота — форма `build_projection.checklists` (BEH-16).
+
+    `order`/`texts` читаются из порядка ключей уже разобранной TOML-таблицы
+    (`tomllib` сохраняет порядок объявления файла): для встроенных контуров
+    `pipeline_runner._checklists_snapshot` пишет их отсортированными по id,
+    что для вендоренного набора (`S1..S5`, `P1..P5`) совпадает с порядком
+    живого конфига по построению; для операторского `doc` файл несёт
+    порядок объявления как есть — тот же порядок, что и у живого конфига.
+    """
+    result: dict[str, Any] = {}
+    for contour, entry in checklists_table.items():
+        if not isinstance(entry, Mapping):
+            raise UnprovableSemantics(
+                "parse_error",
+                "checklists",
+                "checklists-снапшот несёт контур не той структуры",
+            )
+        role = entry.get("findings_item")
+        findings_item = role if isinstance(role, str) else None
+        texts: dict[str, str] = {}
+        for item_id, text in entry.items():
+            if item_id == "findings_item":
+                continue
+            if not isinstance(text, str):
+                raise UnprovableSemantics(
+                    "parse_error",
+                    "checklists",
+                    "checklists-снапшот несёт текст пункта не той структуры",
+                )
+            texts[item_id] = text
+        result[contour] = {
+            "order": list(texts),
+            "texts": texts,
+            "findings_item": findings_item,
+        }
+    return result

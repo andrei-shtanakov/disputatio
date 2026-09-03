@@ -86,15 +86,15 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-09 (—BEH-20
 **Traces to:** [FR-08, FR-09, FR-13, FR-10, FR-17]
 
 ### TASK-005: Legacy возобновляется только по явной доказуемой процедуре
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-16.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-16
 **Depends on:** [TASK-004]
 
 **Checklist:**
-- [ ] реализовать BEH-16: Legacy возобновляется только по явной доказуемой процедуре
-- [ ] проверка группы: tests/integration/test_pipeline_e2e.py::test_legacy_semantics_require_explicit_provable_version (kind: integration) зелёные на BEH-16
+- [x] реализовать BEH-16: Legacy возобновляется только по явной доказуемой процедуре
+- [x] проверка группы: tests/integration/test_pipeline_e2e.py::test_legacy_semantics_require_explicit_provable_version (kind: integration) зелёные на BEH-16
 
 **Traces to:** [FR-16]
 
