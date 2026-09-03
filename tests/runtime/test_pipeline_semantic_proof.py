@@ -681,3 +681,20 @@ def test_valid_toml_with_foreign_schema_is_parse_error(tmp_path: Path) -> None:
         load_semantic_proof(stand2.pipeline_dir(), tainted2)
     assert excinfo.value.reason == "parse_error"
     assert excinfo.value.artifact == state2.checklists.path
+
+
+def test_malformed_projection_structure_is_parse_error(tmp_path: Path) -> None:
+    """Приёмка PR #93, круг 2 (minor): негодные типы полей проекции
+    (checklists-строка, gates-маппинг) — `parse_error` до diff_projections,
+    а не сырой AttributeError мимо именованных причин BEH-15."""
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+
+    for field, bad in (("checklists", "oops"), ("gates", {})):
+        forged = _proof_json(stand, state)
+        forged["projection"][field] = bad
+        tainted = _rewrite_proof_with_matching_digest(stand, state, forged)
+        with pytest.raises(UnprovableSemantics) as excinfo:
+            load_semantic_proof(pipeline_dir, tainted)
+        assert excinfo.value.reason == "parse_error", field

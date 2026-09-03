@@ -415,6 +415,31 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
         raise UnprovableSemantics(
             "parse_error", ref.path, "доказательство не несёт immutable-проекцию"
         )
+    # Структура проекции валидируется ДО того, как её увидит
+    # diff_projections (приёмка PR #93, круг 2, minor): происхождение —
+    # файл в недоверенном дереве, и негодные типы полей (checklists-строка,
+    # gates-маппинг) роняли бы сравнение сырым AttributeError/KeyError мимо
+    # именованных причин BEH-15.
+    projection = proof["projection"]
+    checklists = projection.get("checklists")
+    if checklists is not None and (
+        not isinstance(checklists, Mapping)
+        or not all(isinstance(c, Mapping) for c in checklists.values())
+    ):
+        raise UnprovableSemantics(
+            "parse_error",
+            ref.path,
+            "проекция доказательства несёт checklists не той структуры",
+        )
+    gates = projection.get("gates")
+    if gates is not None and (
+        not isinstance(gates, list) or not all(isinstance(g, Mapping) for g in gates)
+    ):
+        raise UnprovableSemantics(
+            "parse_error",
+            ref.path,
+            "проекция доказательства несёт gates не той структуры",
+        )
     sources = proof.get("sources")
     if not isinstance(sources, Mapping):
         raise UnprovableSemantics(
