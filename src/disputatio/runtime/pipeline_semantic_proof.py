@@ -212,11 +212,14 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
         not isinstance(version, str)
         or version not in SUPPORTED_PROJECTION_SCHEMA_VERSIONS
     ):
+        # Само значение версии НЕ воспроизводится (BEH-15/FR-15, приёмка
+        # PR #90): поле читается из недоверенного артефакта, и порченый
+        # proof мог бы вынести в терминал/лог произвольное содержимое.
         raise UnprovableSemantics(
             "unsupported_version",
             ref.path,
-            f"версия канонизации {version!r} не входит в поддерживаемые "
-            f"этой версией кода: {sorted(SUPPORTED_PROJECTION_SCHEMA_VERSIONS)}",
+            "версия канонизации не входит в поддерживаемые этой версией "
+            f"кода: {sorted(SUPPORTED_PROJECTION_SCHEMA_VERSIONS)}",
         )
     if proof.get("pipeline_id") != state.pipeline_id:
         raise UnprovableSemantics(

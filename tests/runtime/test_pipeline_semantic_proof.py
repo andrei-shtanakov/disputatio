@@ -564,3 +564,23 @@ def test_build_projection_names_checklist_and_gate_content_literally(
     assert projection["gates"] == [
         {"name": "lint", "cmd": "ruff check .", "enabled": True}
     ]
+
+
+def test_unsupported_version_message_redacts_untrusted_value(
+    tmp_path: Path,
+) -> None:
+    """BEH-15 (приёмка PR #90): диагностика `unsupported_version` не
+    воспроизводит значение поля из недоверенного артефакта — порченый
+    proof мог бы вынести в терминал произвольное содержимое (токен,
+    фрагмент команды)."""
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+
+    secret = "SECRET-TOKEN-do-not-print"
+    tainted = {**_proof_json(stand, state), "projection_schema_version": secret}
+    tainted_state = _rewrite_proof_with_matching_digest(stand, state, tainted)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, tainted_state)
+    assert excinfo.value.reason == "unsupported_version"
+    assert secret not in str(excinfo.value)
