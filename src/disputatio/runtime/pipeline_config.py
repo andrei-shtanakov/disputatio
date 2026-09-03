@@ -610,9 +610,14 @@ def _operator_checklist(table: Any) -> ResolvedChecklist:
     изменённый между запусками, доедет до ревьюера, хотя манифест
     удостоверяет хеш прежнего снапшота. Детерминизм порядка на всю жизнь
     пайплайна здесь пока НЕ обещается — обещание станет правдой, когда
-    SPEC-002 назовёт неизменяемую половину `[pipeline]` и `resume` начнёт
-    сверять её fail-closed. Ограничение общее для видов `pair` и
-    `document`.
+    `resume` начнёт сверять неизменяемую половину `[pipeline]` fail-closed
+    (SPEC-002, TASK-004 очереди WS-disputatio-65). Закрытая immutable-
+    классификация, которой это ограничение измеряется, и функция сравнения
+    двух её проекций уже существуют —
+    `pipeline_semantic_proof.PIPELINE_CONFIG_FIELD_CLASS`,
+    `build_projection`, `diff_projections` — но `resume` их пока не
+    вызывает, поэтому здесь и остаётся открытым. Ограничение общее для
+    видов `pair` и `document`.
     """
     if not isinstance(table, Mapping):
         raise ConfigError(

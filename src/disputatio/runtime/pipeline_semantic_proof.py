@@ -24,17 +24,21 @@ BEH-12, BEH-13, BEH-15):
   на артефакт, без утечки его содержимого в диагностику.
 
 Фактическое встраивание `load_semantic_proof` в порядок §8.1 `resume`
-(P9 → манифест → semantic proof → …) и сравнение с живой моделью — задачи
-TASK-002…TASK-004 того же milestone; здесь доказательство только строится и
-проверяется как самостоятельный, полностью тестируемый шаг.
+(P9 → манифест → semantic proof → …) — задача TASK-004 того же milestone;
+здесь доказательство строится и проверяется как самостоятельный, полностью
+тестируемый шаг. Само сравнение двух проекций (`diff_projections`,
+BEH-02/04-07/14/19, TASK-002) уже здесь — оно не зависит от порядка
+`resume` и тестируется без него; TASK-004 лишь решает, ЧТО `resume` делает
+с непустым результатом сравнения.
 """
 
 import hashlib
 import json
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from disputatio.contracts import FileRef, PipelineKind, PipelineState
 from disputatio.events import atomic_write
@@ -62,22 +66,49 @@ SUPPORTED_PROJECTION_SCHEMA_VERSIONS: Final = frozenset({PROJECTION_SCHEMA_VERSI
 #: настройку контура.
 _PROOF_SOURCES: Final = ("config", "checklists")
 
+#: Классификация полей `PipelineConfig` — единственная декларативная схема
+#: (NFR-08), по которой сверяются `build_projection` (что попадает в
+#: проекцию) и тест `test_schema_parser_and_canonicalizer_classifications_match`
+#: (BEH-21): dataclass-поле без записи здесь ломает тест, а не тихо
+#: становится mutable по умолчанию (FR-07). `extra_gates`/`checklists` —
+#: имена ПОЛЕЙ dataclass'а, а не ключи проекции (`gates` в `build_projection`
+#: ниже) — тест сверяет множество имён, а не написание.
+FieldClass = Literal["immutable", "mutable"]
+PIPELINE_CONFIG_FIELD_CLASS: Final[dict[str, FieldClass]] = {
+    "kind": "immutable",
+    "spec_path": "immutable",
+    "plan_path": "immutable",
+    "document_path": "immutable",
+    "max_architectural_returns": "immutable",
+    "checklists": "immutable",
+    "extra_gates": "immutable",
+    "soft_max_pipeline_tokens": "mutable",
+    "soft_max_pipeline_wall_seconds": "mutable",
+    "protected_branches": "mutable",
+    "anchor_path": "mutable",
+}
+
 
 def build_projection(config: PipelineConfig) -> dict[str, Any]:
     """Каноническая immutable-проекция `[pipeline]` — закрытая таблица WS-65.
 
-    Ровно immutable-поля закрытой классификации требований WS-disputatio-65:
-    `kind`, пути документов формы, `max_architectural_returns` (только
-    `pair`), чеклисты обоих применимых контуров и упорядоченные `extra_gates`
-    со всеми свойствами. `soft_max_pipeline_tokens`,
-    `soft_max_pipeline_wall_seconds`, `protected_branches` и `anchor_path` —
-    mutable по той же таблице и в проекцию не входят: их правка не обязана
-    порождать semantic drift (FR-06).
+    Ровно immutable-поля закрытой классификации требований WS-disputatio-65
+    (`PIPELINE_CONFIG_FIELD_CLASS` выше): `kind`, пути документов формы,
+    `max_architectural_returns` (только `pair`), чеклисты обоих применимых
+    контуров и упорядоченные `extra_gates` со всеми свойствами.
+    `soft_max_pipeline_tokens`, `soft_max_pipeline_wall_seconds`,
+    `protected_branches` и `anchor_path` — mutable по той же таблице и в
+    проекцию не входят: их правка не обязана порождать semantic drift
+    (FR-06, BEH-07) — не потому, что `diff_projections` их прощает, а
+    потому, что сравнивать здесь попросту нечего.
 
-    Полная канонизация путей и TOML-эквивалентности (не зависеть от того, как
-    записан default, от порядка незначимых таблиц и т.п. — FR-02, FR-03) —
-    предмет отдельной задачи очереди (TASK-002); здесь `PipelineConfig` уже
-    разобран и провалидирован, и его поля берутся как есть.
+    Канонизация путей без машинной привязки (BEH-03, FR-03) и TOML-
+    эквивалентность формата (BEH-02, FR-02) — не забота ЭТОЙ функции:
+    `PipelineConfig` на входе уже разобран и провалидирован
+    (`pipeline_config.load_pipeline_config` → `validate_relative_path`),
+    и оба свойства — следствие того, ЧТО она принимает, а не отдельная
+    логика внутри неё. `diff_projections` ниже сравнивает уже канонические
+    словари, которые вернула эта функция.
     """
     projection: dict[str, Any] = {"kind": config.kind.value}
     if config.kind is PipelineKind.DOCUMENT:
@@ -101,6 +132,152 @@ def build_projection(config: PipelineConfig) -> dict[str, Any]:
         for gate in config.extra_gates
     ]
     return projection
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionDiff:
+    """Одно расхождение между ожидаемой и живой immutable-проекциями (BEH-14).
+
+    `field` — отсортируемый канонический путь поля (`"plan_path"`,
+    `"checklists.pair.texts.P1"`, `"gates[1].cmd"`) — то, что диагностика
+    вправе напечатать всегда (FR-14). `old`/`new` несут исходное и живое
+    значение ТОЛЬКО для полей, у которых это безопасно (enum, число,
+    относительный путь документа, порядок id, роль чеклиста) — для текста
+    пункта чеклиста и команды gate'а они остаются `None` независимо от
+    реальных значений: ни одно из этих двух полей не принимает `None`
+    как содержательное значение (`build_projection` пишет туда строки),
+    поэтому пропуск однозначно читается как «значение скрыто», а не как
+    «оно и было пустым» (BEH-14, FR-14 — команды gates и тексты
+    prompt/checklist не печатаются).
+    """
+
+    field: str
+    old: Any = None
+    new: Any = None
+
+
+def diff_projections(
+    expected: Mapping[str, Any], live: Mapping[str, Any]
+) -> list[ProjectionDiff]:
+    """Semantic diff двух канонических проекций (BEH-02/04-07/14/19, FR-02).
+
+    Сравниваются РОВНО поля, которые несёт `build_projection`: mutable
+    controls в проекцию не попадают вовсе (BEH-07), поэтому их не нужно
+    отдельно исключать здесь — исключать нечего. Пустой список — отсутствие
+    semantic drift: конфиги, различающиеся только форматированием TOML
+    (комментарии, пробелы, стиль кавычек, порядок незначимых таблиц,
+    явная запись значения, равного default — BEH-02), дают структурно
+    ОДИНАКОВЫЕ проекции уже на этапе `load_pipeline_config`/`build_projection`,
+    поэтому этой функции остаётся только структурное сравнение уже
+    канонизированных словарей.
+
+    Результат отсортирован по `field` (BEH-14, FR-14: «отсортированный
+    набор различающихся канонических путей») — порядок не зависит ни от
+    порядка вставки Python-словаря, ни от того, expected или live
+    сравнивались первыми.
+    """
+    diffs: list[ProjectionDiff] = []
+    for field in ("kind", "spec_path", "plan_path", "document_path"):
+        if field in expected or field in live:
+            diffs.extend(_diff_scalar(field, expected.get(field), live.get(field)))
+    if "max_architectural_returns" in expected or "max_architectural_returns" in live:
+        diffs.extend(
+            _diff_scalar(
+                "max_architectural_returns",
+                expected.get("max_architectural_returns"),
+                live.get("max_architectural_returns"),
+            )
+        )
+    diffs.extend(
+        _diff_checklists(expected.get("checklists", {}), live.get("checklists", {}))
+    )
+    diffs.extend(_diff_gates(expected.get("gates", ()), live.get("gates", ())))
+    return sorted(diffs, key=lambda diff: diff.field)
+
+
+def _diff_scalar(field: str, old: Any, new: Any) -> list[ProjectionDiff]:
+    """Один безопасный (не текстовый, не gate-command) лист проекции."""
+    if old == new:
+        return []
+    return [ProjectionDiff(field=field, old=old, new=new)]
+
+
+def _diff_checklists(
+    expected: Mapping[str, Any], live: Mapping[str, Any]
+) -> list[ProjectionDiff]:
+    """Полная семантика чеклистов immutable — BEH-04 (`spec`/`pair`) и BEH-05 (`doc`).
+
+    Итерация идёт по ОБЪЕДИНЕНИЮ контуров обеих проекций, а не по одной из
+    них: контур, присутствующий только с одной стороны (смена вида —
+    BEH-18/FR-18), — тоже drift, и заметить его может только объединение.
+    `order` и `findings_item` несут id, а не текст, — им можно называть
+    старое/новое значение; `texts.<id>` — предмет BEH-14: путь называется,
+    содержимое текста пункта — никогда (см. `ProjectionDiff`).
+    """
+    diffs: list[ProjectionDiff] = []
+    for contour in sorted(set(expected) | set(live)):
+        expected_checklist = expected.get(contour, {})
+        live_checklist = live.get(contour, {})
+        diffs.extend(
+            _diff_scalar(
+                f"checklists.{contour}.order",
+                expected_checklist.get("order"),
+                live_checklist.get("order"),
+            )
+        )
+        diffs.extend(
+            _diff_scalar(
+                f"checklists.{contour}.findings_item",
+                expected_checklist.get("findings_item"),
+                live_checklist.get("findings_item"),
+            )
+        )
+        expected_texts = expected_checklist.get("texts", {})
+        live_texts = live_checklist.get("texts", {})
+        for item_id in sorted(set(expected_texts) | set(live_texts)):
+            if expected_texts.get(item_id) != live_texts.get(item_id):
+                diffs.append(
+                    ProjectionDiff(field=f"checklists.{contour}.texts.{item_id}")
+                )
+    return diffs
+
+
+def _diff_gates(
+    expected: Sequence[Mapping[str, Any]], live: Sequence[Mapping[str, Any]]
+) -> list[ProjectionDiff]:
+    """Упорядоченный список `extra_gates` и все их свойства — BEH-06.
+
+    Индекс — часть пути: перестановка двух gate'ов меняет, что стоит по
+    каждому индексу, и уже поэтому является drift (FR-05), а не только
+    смена одного свойства на месте. Gate, присутствующий только у одной
+    стороны (добавление/удаление), сравнивается с "пустой" другой стороной
+    (`None`) — те же безопасные/редактируемые правила, что и у равных по
+    длине списков. `cmd` — предмет BEH-14 (путь называется, команда не
+    печатается); `name`/`enabled` безопасны.
+    """
+    diffs: list[ProjectionDiff] = []
+    for index in range(max(len(expected), len(live))):
+        expected_gate = expected[index] if index < len(expected) else None
+        live_gate = live[index] if index < len(live) else None
+        diffs.extend(
+            _diff_scalar(
+                f"gates[{index}].name",
+                expected_gate.get("name") if expected_gate else None,
+                live_gate.get("name") if live_gate else None,
+            )
+        )
+        expected_cmd = expected_gate.get("cmd") if expected_gate else None
+        live_cmd = live_gate.get("cmd") if live_gate else None
+        if expected_cmd != live_cmd:
+            diffs.append(ProjectionDiff(field=f"gates[{index}].cmd"))
+        diffs.extend(
+            _diff_scalar(
+                f"gates[{index}].enabled",
+                expected_gate.get("enabled") if expected_gate else None,
+                live_gate.get("enabled") if live_gate else None,
+            )
+        )
+    return diffs
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> bytes:
