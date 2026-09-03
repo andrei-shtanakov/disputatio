@@ -55,7 +55,7 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-02 (—BEH-21
 **Traces to:** [FR-02, FR-17, FR-03, FR-04, FR-10, FR-05, FR-06, FR-14, FR-18, FR-07, FR-19]
 
 ### TASK-003: Неизвестный pipeline-ключ отвергается закрытой схемой
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-08.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-08
