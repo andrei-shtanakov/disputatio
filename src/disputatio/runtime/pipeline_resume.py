@@ -66,6 +66,7 @@ from disputatio.runtime.errors import (
     GitCommandError,
     PipelineNotResumable,
     SemanticDrift,
+    UnprovableSemantics,
 )
 from disputatio.runtime.git import GitOps, base_rev
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_artifact
@@ -546,6 +547,22 @@ class PipelineResume:
         pipeline_dir = pipeline_dir_of(self._workspace_root, state.pipeline_id)
         proof = load_semantic_proof(pipeline_dir, state)
         expected = proof["projection"]
+        # Вид МАНИФЕСТА сверяется с доказательством явно (приёмка PR #93,
+        # major — преемник снятого `_require_same_kind`, P0): semantic
+        # comparison сравнивает proof с ЖИВЫМ конфигом, а `state.kind`
+        # читается из pipeline.json рабочего дерева, который genesis-снапшот
+        # намеренно не сторожит и который меняется штатно между ходами.
+        # Подменённый вид манифеста разъехался бы с конфигом только в
+        # `advance` (диспетчеризация по `state.kind` при чужих документах
+        # и гейтах) — здесь это противоречие доказательства и манифеста,
+        # отказ ДО классификации дерева и любых мутаций.
+        if expected.get("kind") != state.kind.value:
+            raise UnprovableSemantics(
+                "contradiction",
+                "pipeline.json",
+                "вид пайплайна в манифесте расходится с удостоверенным "
+                "доказательством — вид неизменяем (P0)",
+            )
         live = build_projection(self._config)
         diffs = diff_projections(expected, live)
         if diffs:

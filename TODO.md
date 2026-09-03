@@ -428,7 +428,7 @@
   потребителя». devtools — он и есть, но одиночный документ дешевле N-stage DSL:
   §11 просила оснований для модели, а не сам DSL. Гейт под DSL devtools —
   обычный doc-гейт сверх baseline (§6), ядро и runner не трогает.
-- [ ] `resume` сверяет только вид: дрейф конфига относительно снапшота @id:resume-config-drift-vs-snapshot
+- [x] `resume` сверяет только вид: дрейф конфига относительно снапшота @id:resume-config-drift-vs-snapshot — закрыт WS-disputatio-65 (issue #65, TASK-001–TASK-004, PR #90–#93): immutable-проекция + semantic comparison на resume, вид манифеста сверяется с доказательством (P0)
   — issue #65, находка терминального ревью PR #64 (major, подтверждена по
   коду). `resume` сверяет с манифестом ровно `documents.kind` (P0, §8.1
   шаг 1); всё остальное содержимое `[pipeline]` берётся из ЖИВОГО конфига,

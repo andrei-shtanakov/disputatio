@@ -27,6 +27,7 @@
 """
 
 import dataclasses
+import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final
@@ -35,6 +36,7 @@ import pytest
 
 from disputatio.contracts import (
     IntegritySnapshot,
+    PipelineKind,
     PipelinePhase,
     SessionOutcome,
     TransitionReason,
@@ -994,3 +996,50 @@ def test_crash_between_manifest_and_genesis_leaves_anchor_empty(
     stand.rebuild()
     state = stand.resume.resume(SLUG)
     assert state.phase is PipelinePhase.DONE
+
+
+def test_manifest_kind_flip_is_a_proof_contradiction(tmp_path: Path) -> None:
+    """P0 «вид неизменяем» после снятия `_require_same_kind` (приёмка
+    PR #93, major): `state.kind` читается из pipeline.json рабочего дерева,
+    который genesis-снапшот намеренно не сторожит, а semantic comparison
+    сравнивает proof с ЖИВЫМ конфигом — подменённый вид манифеста не видел
+    никто. Теперь вид манифеста сверяется с доказательством явно: подмена —
+    `contradiction` ДО классификации дерева и любых мутаций."""
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    calls_before = len(stand.driver.calls)
+    manifest_path = stand.pipeline_dir() / "pipeline.json"
+    original = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    # Подделка обязана быть ЦЕЛОСТНОЙ: model-валидаторы манифеста сами
+    # ловят частичную (сессии/переходы чужого вида) — угроза остаётся для
+    # цельного document-манифеста, пересаженного поверх pair-пайплайна с
+    # СОХРАНЕНИЕМ нетронутых proof/снапшотов и идентичности. Донор —
+    # честный свежий document-манифест второго стенда.
+    donor_stand = build_stand(
+        tmp_path / "donor",
+        {"doc-r1": Script(outcome="park", raise_after_write=True)},
+        kind=PipelineKind.DOCUMENT,
+    )
+    start(donor_stand)
+    forged = json.loads(
+        (donor_stand.pipeline_dir() / "pipeline.json").read_text(encoding="utf-8")
+    )
+    for key in (
+        "pipeline_id",
+        "anchor_id",
+        "created_at",
+        "task",
+        "config",
+        "checklists",
+        "semantic_proof",
+    ):
+        forged[key] = original[key]
+    manifest_path.write_text(json.dumps(forged), encoding="utf-8")
+
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        stand.rebuild().resume.resume(SLUG)
+
+    assert excinfo.value.reason == "contradiction"
+    assert excinfo.value.artifact == "pipeline.json"
+    assert len(stand.driver.calls) == calls_before
