@@ -19,17 +19,17 @@ approved_at: '2026-09-02T23:58:37Z'
 Сгенерировано task_bridge из behaviour-spec бандла WS-disputatio-65 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Draft: исполнение только после человеческого approve.
 
 ### TASK-001: Run атомарно фиксирует версионированную immutable-модель (+3 смежных BEH)
-P2 | 🔄 IN_PROGRESS   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-01, BEH-12, BEH-13, BEH-15.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-01 (—BEH-15)
 
 **Checklist:**
-- [ ] реализовать BEH-01: Run атомарно фиксирует версионированную immutable-модель
-- [ ] реализовать BEH-12: Недоказуемая семантика запрещает продолжение без fallback
-- [ ] реализовать BEH-13: Каждый источник доказательства проверяется и согласуется
-- [ ] реализовать BEH-15: Ошибка доказательства различает безопасные причины
-- [ ] проверка группы: tests/runtime/test_pipeline_semantic_proof.py::test_run_commits_versioned_proof_atomically (kind: integration), tests/runtime/test_pipeline_semantic_proof.py::test_unprovable_semantics_fail_closed_without_fallback (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_all_proof_sources_require_integrity_and_consistency (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_proof_errors_are_distinct_safe_and_actionable (kind: contract) зелёные на BEH-01, BEH-12, BEH-13, BEH-15
+- [x] реализовать BEH-01: Run атомарно фиксирует версионированную immutable-модель
+- [x] реализовать BEH-12: Недоказуемая семантика запрещает продолжение без fallback
+- [x] реализовать BEH-13: Каждый источник доказательства проверяется и согласуется
+- [x] реализовать BEH-15: Ошибка доказательства различает безопасные причины
+- [x] проверка группы: tests/runtime/test_pipeline_semantic_proof.py::test_run_commits_versioned_proof_atomically (kind: integration), tests/runtime/test_pipeline_semantic_proof.py::test_unprovable_semantics_fail_closed_without_fallback (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_all_proof_sources_require_integrity_and_consistency (kind: atp), tests/runtime/test_pipeline_semantic_proof.py::test_proof_errors_are_distinct_safe_and_actionable (kind: contract) зелёные на BEH-01, BEH-12, BEH-13, BEH-15
 
 **Traces to:** [FR-01, FR-11, FR-12, FR-15]
 
@@ -80,6 +80,7 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-09 (—BEH-20
 - [ ] реализовать BEH-11: Drift останавливает resume без побочных эффектов
 - [ ] реализовать BEH-17: Повтор после semantic-отказа не видит новых артефактов
 - [ ] реализовать BEH-20: Отказ semantic comparison сохраняет действующие контракты
+- [ ] Закрыть crash-окно BEH-01: создать криптографически связанную genesis/P9-запись якоря на commit point run и проверять её до чтения semantic proof при resume (PR #90, review round 9); TASK-004 не DONE, пока genesis-запись и crash/tamper-тесты не доставлены
 - [ ] проверка группы: tests/runtime/test_pipeline_resume.py::test_p9_precedes_all_semantic_proof_reads (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_comparison_order_and_single_live_config_instance (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_drift_has_no_resume_or_mutation_effects (kind: integration), tests/runtime/test_pipeline_resume.py::test_repeated_semantic_failure_creates_no_artifacts (kind: integration), tests/runtime/test_pipeline_resume.py::test_semantic_failure_order_and_effect_boundary (kind: integration) зелёные на BEH-09, BEH-10, BEH-11, BEH-17, BEH-20
 
 **Traces to:** [FR-08, FR-09, FR-13, FR-10, FR-17]

@@ -133,6 +133,7 @@ PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("SPEC-002 §3.1", "cli/test_cli_pipeline_kind.py"),
     ("SPEC-002 §10", "integration/test_pipeline_e2e.py"),
     ("SPEC-002 §10", "integration/test_document_pipeline_e2e.py"),
+    ("SPEC-002 §4.2", "runtime/test_pipeline_semantic_proof.py"),
 )
 
 #: Полная матрица.

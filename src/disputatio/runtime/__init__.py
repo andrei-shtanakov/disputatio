@@ -41,6 +41,7 @@ from disputatio.runtime.errors import (
     ReviewParseError,
     SessionNotFound,
     UnknownAdapterError,
+    UnprovableSemantics,
 )
 from disputatio.runtime.git import (
     ROUND_COMMIT_PATTERN,
@@ -95,6 +96,7 @@ __all__ = [
     "SessionNotFound",
     "StatusEntry",
     "UnknownAdapterError",
+    "UnprovableSemantics",
     "base_rev",
     "build_runtime",
     "check_run_preconditions",

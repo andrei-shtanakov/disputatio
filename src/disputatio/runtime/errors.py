@@ -12,6 +12,23 @@ config.toml».
 """
 
 from collections.abc import Sequence
+from typing import Final, Literal
+
+#: Причины BEH-15 (WS-disputatio-65): пять способов, которыми доказательство
+#: immutable-проекции перестаёт быть доказательством. Закрытый набор, а не
+#: свободный текст — `contract`-тест BEH-15 обязан различать их программно,
+#: а не парсингом сообщения на естественном языке.
+SemanticProofReason = Literal[
+    "missing", "digest_mismatch", "parse_error", "contradiction", "unsupported_version"
+]
+
+_SEMANTIC_PROOF_REASON_TEXT: Final[dict[SemanticProofReason, str]] = {
+    "missing": "артефакт отсутствует либо не читается",
+    "digest_mismatch": "содержимое не совпадает с удостоверенным digest",
+    "parse_error": "содержимое не разбирается либо не соответствует схеме",
+    "contradiction": "источники доказательства взаимно противоречивы",
+    "unsupported_version": "версия канонизации не поддерживается этой версией кода",
+}
 
 
 class DisputatioError(Exception):
@@ -160,3 +177,37 @@ class PipelineNotResumable(DisputatioError):
     одно — прочитать текст и не повторять команду; различает их сам текст, а
     не тип.
     """
+
+
+class UnprovableSemantics(DisputatioError):
+    """Доказательство immutable-проекции недоказуемо (WS-disputatio-65 BEH-12).
+
+    Отдельный класс, а не `PipelineNotResumable`: тот отвечает за «нечего
+    решать» три способами, различимыми только текстом, а здесь `resume`
+    обязан различать причину ПРОГРАММНО (`.reason`, BEH-15, `kind: contract`)
+    — вызывающий код и будущие тесты не вправе зависеть от формулировки
+    сообщения на естественном языке.
+
+    Единственный конструктор для всех пяти причин, а не подкласс на каждую:
+    причины делят один и тот же исход — fail-closed без fallback на живой
+    конфиг и без автоматической записи/починки доказательства (FR-11) — и
+    вариативен только диагноз, который несёт `.reason` и `.artifact`, а не
+    поведение вызывающего кода.
+
+    `.artifact` называет ТОЛЬКО идентификатор проблемного файла или записи
+    (`semantic_proof.json`, `config`, `checklists`) — никогда его содержимое:
+    BEH-15 запрещает диагностике раскрывать чувствительные значения.
+    """
+
+    def __init__(self, reason: SemanticProofReason, artifact: str, detail: str) -> None:
+        self.reason: SemanticProofReason = reason
+        self.artifact = artifact
+        super().__init__(
+            f"доказательство immutable-проекции недоказуемо "
+            f"({_SEMANTIC_PROOF_REASON_TEXT[reason]}) — артефакт {artifact!r}: "
+            f"{detail}. Живой конфиг не принимается как новый baseline, а "
+            "доказательство не перезаписывается автоматически: восстановите "
+            f"удостоверенные данные ({artifact!r}) из контроля версий/бэкапа "
+            "либо завершите или пересоздайте пайплайн (`disp pipeline run "
+            "--slug <новый-слаг>`)."
+        )

@@ -110,6 +110,7 @@ from disputatio.runtime.pipeline_config import (
     check_run_preconditions,
 )
 from disputatio.runtime.pipeline_export import ExportFn
+from disputatio.runtime.pipeline_semantic_proof import write_semantic_proof
 from disputatio.verifier import resolve_inside
 
 #: Имена контуров (§2): spec — полировка спеки, pair — перепроверка пары,
@@ -414,8 +415,10 @@ class PipelineRunner:
            отвергает старт (`O_EXCL`), а не переиспользуется — затирать
            накопленную доверенную историю нельзя ни при коллизии слага, ни
            при повторном запуске;
-        3. **снапшоты** task/config/checklists — до манифеста, потому что
-           манифест несёт их sha256 и обязан описывать то, что уже лежит;
+        3. **снапшоты** task/config/checklists, а следом — версионированное
+           доказательство итоговой immutable-проекции (WS-disputatio-65
+           BEH-01): все шаги до манифеста, потому что манифест несёт их
+           sha256 и обязан описывать то, что уже лежит;
         4. **манифест** с входной фазой ВИДА, переходом `started` и первым
            intent'ом — дальше работает `advance`. Ни фаза, ни имя первого
            контура здесь не зашиты: они читаются из `ENTRY_PHASE` и
@@ -424,7 +427,8 @@ class PipelineRunner:
         Окно между созданием каталога и первой записью манифеста не
         восстановимо и не притворяется таковым: манифеста нет, `resume` его
         не найдёт, а `run` откажет по существующему каталогу. Честная цена
-        трёх файлов, которые нельзя записать одной атомарной операцией.
+        четырёх файлов (task/config/checklists/semantic_proof), которые
+        нельзя записать одной атомарной операцией.
         """
         check_run_preconditions(self._git, self._workspace_root, self._config, slug)
 
@@ -447,6 +451,13 @@ class PipelineRunner:
         checklists = self._snapshot(
             directory, CHECKLISTS_SNAPSHOT_NAME, self._checklists_snapshot()
         )
+        semantic_proof = write_semantic_proof(
+            directory,
+            pipeline_id=slug,
+            config=self._config,
+            config_ref=config,
+            checklists_ref=checklists,
+        )
 
         kind = self._config.kind
         first_contour = CONTOURS_BY_KIND[kind][0]
@@ -463,6 +474,7 @@ class PipelineRunner:
             task=task,
             config=config,
             checklists=checklists,
+            semantic_proof=semantic_proof,
             documents=self._documents(),
             transitions=[
                 Transition(
@@ -1230,10 +1242,17 @@ class PipelineRunner:
         return FileRef(path=name, sha256=hashlib.sha256(data).hexdigest())
 
     def _require_snapshots(self, state: PipelineState) -> None:
-        """Fail-closed: снапшоты, на которые ссылается манифест, обязаны быть."""
+        """Fail-closed: снапшоты, на которые ссылается манифест, обязаны быть.
+
+        `semantic_proof` — тем же приёмом, но опционально: манифесты,
+        записанные до BEH-01 (issue #65), легитимно несут `None`, и требовать
+        файл, на который они не ссылаются, значило бы придумать отсутствующую
+        ссылку задним числом.
+        """
         directory = self._pipeline_dir(state.pipeline_id)
-        for ref in (state.task, state.config, state.checklists):
-            if not (directory / ref.path).is_file():
+        refs = (state.task, state.config, state.checklists, state.semantic_proof)
+        for ref in refs:
+            if ref is not None and not (directory / ref.path).is_file():
                 raise FileNotFoundError(
                     f"снапшот {ref.path} каталога пайплайна {directory} "
                     "отсутствует, а манифест ссылается на его sha256: "
