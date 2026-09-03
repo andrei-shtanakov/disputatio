@@ -1,0 +1,83 @@
+{
+  "claims": [
+    {
+      "blob_sha": "eadce9ae71a45aa290e208e9f3b1c323a40312e3",
+      "checkpoint_sha": "a3bdbfb9a78ed951022e7a605a8a493ab35d250b",
+      "created_at": "2026-09-03T17:17:41.918285",
+      "path": "tests/test_task_004_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "abfe705b0704e715f89cc5d00eaf638a1eb7a845",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review fixed of review checkpoint 566d35016dbf534575f48ec9a096df6afda942a4 at merge candidate abfe705b0704e715f89cc5d00eaf638a1eb7a845",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T18:01:39.826627"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "abfe705b0704e715f89cc5d00eaf638a1eb7a845",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T18:01:39.903006"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "abfe705b0704e715f89cc5d00eaf638a1eb7a845",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_004_red.py::test_semantic_drift_in_live_config_stops_resume_before_the_driver_runs at a3bdbfb9a78e in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T18:01:39.849244"
+    }
+  },
+  "judged_commit": "abfe705b0704e715f89cc5d00eaf638a1eb7a845",
+  "namespace": "c9cacecf60255ba2",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-03T17:15:48.956521"
+    },
+    {
+      "detail": "tests/test_task_004_red.py::test_semantic_drift_in_live_config_stops_resume_before_the_driver_runs",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-03T17:17:37.248189"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-03T17:17:41.967776"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-03T18:01:39.793614"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-03T18:01:39.904270"
+    }
+  ],
+  "red": {
+    "baseline_sha": "db668bbb405a5babb02a6be609a7e23f0fe5b7a6",
+    "commit_sha": "a3bdbfb9a78ed951022e7a605a8a493ab35d250b",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_004_red.py::test_semantic_drift_in_live_config_stops_resume_before_the_driver_runs",
+    "status": "active",
+    "timestamp": "2026-09-03T17:17:41.916938"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "c9cacecf60255ba2",
+  "task_id": "TASK-004",
+  "waivers": []
+}
