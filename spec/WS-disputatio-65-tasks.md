@@ -34,23 +34,23 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-01 (—BEH-15
 **Traces to:** [FR-01, FR-11, FR-12, FR-15]
 
 ### TASK-002: Эквивалентное TOML-представление даёт ту же модель (+8 смежных BEH)
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-07, BEH-14, BEH-19, BEH-21.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-02 (—BEH-21)
 **Depends on:** [TASK-001]
 
 **Checklist:**
-- [ ] реализовать BEH-02: Эквивалентное TOML-представление даёт ту же модель
-- [ ] реализовать BEH-03: Пути канонизируются без привязки к машине
-- [ ] реализовать BEH-04: Полная семантика pair-чеклистов неизменяема
-- [ ] реализовать BEH-05: Полная семантика document-чеклиста неизменяема
-- [ ] реализовать BEH-06: Все свойства и порядок дополнительных gates неизменяемы
-- [ ] реализовать BEH-07: Четыре mutable control не создают drift
-- [ ] реализовать BEH-14: Drift-диагностика точна и не раскрывает чувствительные значения
-- [ ] реализовать BEH-19: Каждая строка immutable-классификации имеет регрессионный пример
-- [ ] реализовать BEH-21: Классификация и исполнимый контракт документированы единообразно
-- [ ] проверка группы: tests/runtime/test_pipeline_semantics.py::test_equivalent_toml_and_explicit_defaults_have_one_projection (kind: contract), tests/runtime/test_pipeline_semantics.py::test_document_paths_are_relative_posix_and_machine_independent (kind: contract), tests/runtime/test_pipeline_semantics.py::test_pair_checklist_semantics_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_document_checklist_semantics_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_gate_order_and_all_properties_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_mutable_controls_apply_without_semantic_drift (kind: atp), tests/runtime/test_pipeline_semantics.py::test_drift_diagnostic_is_sorted_specific_and_redacted (kind: contract), tests/runtime/test_pipeline_semantics.py::test_every_immutable_classification_row_is_enforced (kind: atp), tests/runtime/test_pipeline_semantics.py::test_schema_parser_and_canonicalizer_classifications_match (kind: manual) зелёные на BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-07, BEH-14, BEH-19, BEH-21
+- [x] реализовать BEH-02: Эквивалентное TOML-представление даёт ту же модель
+- [x] реализовать BEH-03: Пути канонизируются без привязки к машине
+- [x] реализовать BEH-04: Полная семантика pair-чеклистов неизменяема
+- [x] реализовать BEH-05: Полная семантика document-чеклиста неизменяема
+- [x] реализовать BEH-06: Все свойства и порядок дополнительных gates неизменяемы
+- [x] реализовать BEH-07: Четыре mutable control не создают drift
+- [x] реализовать BEH-14: Drift-диагностика точна и не раскрывает чувствительные значения
+- [x] реализовать BEH-19: Каждая строка immutable-классификации имеет регрессионный пример
+- [x] реализовать BEH-21: Классификация и исполнимый контракт документированы единообразно
+- [x] проверка группы: tests/runtime/test_pipeline_semantics.py::test_equivalent_toml_and_explicit_defaults_have_one_projection (kind: contract), tests/runtime/test_pipeline_semantics.py::test_document_paths_are_relative_posix_and_machine_independent (kind: contract), tests/runtime/test_pipeline_semantics.py::test_pair_checklist_semantics_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_document_checklist_semantics_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_gate_order_and_all_properties_are_immutable (kind: atp), tests/runtime/test_pipeline_semantics.py::test_mutable_controls_apply_without_semantic_drift (kind: atp), tests/runtime/test_pipeline_semantics.py::test_drift_diagnostic_is_sorted_specific_and_redacted (kind: contract), tests/runtime/test_pipeline_semantics.py::test_every_immutable_classification_row_is_enforced (kind: atp), tests/runtime/test_pipeline_semantics.py::test_schema_parser_and_canonicalizer_classifications_match (kind: manual) зелёные на BEH-02, BEH-03, BEH-04, BEH-05, BEH-06, BEH-07, BEH-14, BEH-19, BEH-21
 
 **Traces to:** [FR-02, FR-17, FR-03, FR-04, FR-10, FR-05, FR-06, FR-14, FR-18, FR-07, FR-19]
 

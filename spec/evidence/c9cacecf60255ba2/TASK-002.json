@@ -1,0 +1,98 @@
+{
+  "claims": [
+    {
+      "blob_sha": "72350ac25164e237a13556ec3e8d72b2cda93a40",
+      "checkpoint_sha": "9cebacedc41221e7323d8f18de5f55d5465a3738",
+      "created_at": "2026-09-03T10:25:00.194327",
+      "path": "tests/test_task_002_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "feb7de4e83d28556c3d3cdac8400919dd31e598e",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review passed of review checkpoint feb7de4e83d28556c3d3cdac8400919dd31e598e at merge candidate feb7de4e83d28556c3d3cdac8400919dd31e598e",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T11:03:41.537402"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "feb7de4e83d28556c3d3cdac8400919dd31e598e",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T11:03:41.591578"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "feb7de4e83d28556c3d3cdac8400919dd31e598e",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_002_red.py::test_equivalent_toml_representations_diff_to_no_drift at 9cebacedc412 in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T11:03:41.555479"
+    }
+  },
+  "judged_commit": "feb7de4e83d28556c3d3cdac8400919dd31e598e",
+  "namespace": "c9cacecf60255ba2",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-03T10:18:49.500247"
+    },
+    {
+      "detail": "tests/test_task_002_red.py::test_equivalent_toml_representations_diff_to_no_drift",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-03T10:24:53.917857"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-03T10:25:00.257628"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-03T10:49:26.471708"
+    },
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-03T10:52:00.779847"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-03T10:52:00.861374"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-03T11:03:41.518188"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-03T11:03:41.592476"
+    }
+  ],
+  "red": {
+    "baseline_sha": "5cca74143e78de625d35daee72ad9c3992be6be3",
+    "commit_sha": "9cebacedc41221e7323d8f18de5f55d5465a3738",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_002_red.py::test_equivalent_toml_representations_diff_to_no_drift",
+    "status": "active",
+    "timestamp": "2026-09-03T10:25:00.190609"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "c9cacecf60255ba2",
+  "task_id": "TASK-002",
+  "waivers": []
+}
