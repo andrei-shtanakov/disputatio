@@ -7,10 +7,20 @@
    журнал, лежат вне рабочего дерева: `anchor_root` из живой конфигурации
    (снапшот в каталоге пайплайна не годится — он в недоверенном дереве),
    `anchor_id` — из `--slug`. Identity берётся из самой записи. Сверка
-   применяется, только если последняя запись — `pre_turn`: `turn_completed`
-   и пустой журнал означают, что сверять нечего, а **отсутствие файла** —
-   отказ, потому что иначе пайплайн с нестандартным `anchor_path` смотрел бы
-   в дефолтный журнал, не находил записей и молча пропускал сверку.
+   применяется, если последняя запись — `pre_turn` (control plane внутри
+   хода) либо `genesis` (BEH-01, TASK-004: write-once снапшоты пайплайна
+   ДО первого хода — `pipeline.json` в эту сверку намеренно не входит, он
+   и до первого хода легитимно переписывается). `turn_completed` и пустой
+   журнал означают, что сверять нечего, а **отсутствие файла** — отказ,
+   потому что иначе пайплайн с нестандартным `anchor_path` смотрел бы в
+   дефолтный журнал, не находил записей и молча пропускал сверку.
+0.5. **semantic comparison** (FR-09, BEH-09/10/11) — сразу после чтения
+   манифеста, до всего остального: восстанавливает ожидаемую immutable-
+   проекцию `[pipeline]` из удостоверенного `semantic_proof.json` и
+   сравнивает её с той, что строит живой конфиг ТЕМ ЖЕ разобранным
+   объектом, каким резюме пользуется дальше (FR-13). Расхождение
+   останавливает `resume` без единой мутации (BEH-11) — это заменяет собой
+   прежнюю отдельную проверку `documents.kind` (P0).
 1. **чтение манифеста**; сессии с `outcome`/`superseded_by` ≠ null не
    возобновляются никогда.
 2. **read-only обнаружение** архитектурного дефекта: только вердикт, никаких
@@ -33,6 +43,7 @@
 показом дифа и требованием выбора человека.
 """
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -45,7 +56,7 @@ from disputatio.contracts import (
     SessionRecord,
     TransitionReason,
 )
-from disputatio.events import AnchorCorrupted, IntegrityAnchor
+from disputatio.events import AnchorCorrupted, AnchorRecord, IntegrityAnchor
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import (
     BaseRevisionNotFound,
@@ -54,6 +65,7 @@ from disputatio.runtime.errors import (
     ExternalEditError,
     GitCommandError,
     PipelineNotResumable,
+    SemanticDrift,
 )
 from disputatio.runtime.git import GitOps, base_rev
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_artifact
@@ -70,6 +82,11 @@ from disputatio.runtime.pipeline_runner import (
     artifact_root_of,
     load_session_state,
     pipeline_dir_of,
+)
+from disputatio.runtime.pipeline_semantic_proof import (
+    build_projection,
+    diff_projections,
+    load_semantic_proof,
 )
 
 WorktreeClass = Literal["clean", "legal_patch", "unattributed"]
@@ -258,17 +275,22 @@ class PipelineResume:
     ) -> PipelineState:
         """Продолжает пайплайн `slug`, соблюдая порядок §8.1.
 
-        Сверка вида (P0) стоит **сразу после чтения манифеста** — не раньше
-        и не позже. Раньше нельзя: вид живёт в манифесте, а манифесту нельзя
-        верить, пока не сверена целостность control plane (шаг 0), и её
-        отказ сам мутирует — переводит пайплайн в `FAILED`; §2 P0 объявляет
-        эту мутацию единственной, законно предшествующей проверке вида.
-        Позже нельзя: следом идут `detect_parked`, классификация дерева и
-        мутирующая фаза, а P0 запрещает мутации шагов 3–5 до сверки.
+        Semantic comparison (FR-09, BEH-09/10) стоит **сразу после чтения
+        манифеста** — не раньше и не позже. Раньше нельзя: ожидаемая
+        immutable-проекция восстанавливается из `semantic_proof.json`,
+        названного манифестом, а манифесту нельзя верить, пока не сверена
+        целостность control plane (шаг 0), и её отказ сам мутирует —
+        переводит пайплайн в `FAILED`; §2 P0 объявляет эту мутацию
+        единственной, законно предшествующей семантической сверке. Позже
+        нельзя: следом идут `detect_parked`, классификация дерева и
+        мутирующая фаза, а FR-09/FR-10 запрещают им и любой мутации идти
+        раньше семантической сверки. Она же заменяет собой отдельную
+        проверку `documents.kind` (бывший P0): расхождение вида — тоже поле
+        `kind` итоговой проекции и попадает в тот же diff (BEH-18).
         """
         anchor = self._verify_integrity(slug)
         state = self._load(slug, anchor)
-        _require_same_kind(state, self._config, slug)
+        self._verify_semantics(state)
         parked = self._runner.detect_parked(state)
         pending = _pending_operator_intent(state)
         diff = self._git.diff_readonly()
@@ -354,9 +376,17 @@ class PipelineResume:
             tampered = ControlPlaneTampered(str(exc))
             self._close_tampered(slug, tampered)
             raise tampered from exc
-        if record is None or record.kind != "pre_turn":
-            # Пустой журнал и `turn_completed` означают, что ход не прерван:
-            # штатные записи runtime после успешного хода подменой не являются.
+        if record is None:
+            # Пустой журнал: ни одного хода, ни genesis-записи ещё не было —
+            # сверять нечего (тот же остаток окна, что и до TASK-004: крах
+            # между манифестом и genesis-записью, см. `run`).
+            return anchor
+        if record.kind == "genesis":
+            self._verify_genesis(slug, anchor, record)
+            return anchor
+        if record.kind != "pre_turn":
+            # `turn_completed` означает, что ход не прерван: штатные записи
+            # runtime после успешного хода подменой не являются.
             return anchor
         plane = ControlPlane(
             workspace_root=self._workspace_root,
@@ -371,6 +401,45 @@ class PipelineResume:
             self._close_tampered(slug, tampered)
             raise
         return anchor
+
+    def _verify_genesis(
+        self, slug: str, anchor: IntegrityAnchor, record: AnchorRecord
+    ) -> None:
+        """Сверяет genesis-снапшот до первого хода автора (BEH-01, TASK-004).
+
+        Сверяются РОВНО файлы, названные самой genesis-записью (`run` кладёт
+        туда `task.md`/`config.toml`/`checklists.toml`/`semantic_proof.json`
+        — не `pipeline.json`, который и до первого хода легитимно
+        переписывается, например `create_session`). Хеши читаются напрямую
+        с диска, а не через `ControlPlane`: та сверяет фиксированный
+        каталожный набор (включая манифест и артефакты сессии), которого
+        genesis намеренно не несёт, и совпадение множеств здесь не
+        гарантировано по конструкции.
+        """
+        pipeline_dir = pipeline_dir_of(self._workspace_root, slug)
+        problems: list[str] = []
+        for name in sorted(record.immutable):
+            recorded = record.immutable[name]
+            try:
+                actual = hashlib.sha256((pipeline_dir / name).read_bytes()).hexdigest()
+            except OSError:
+                problems.append(f"{name}: файл control plane исчез до первой сессии")
+                continue
+            if actual != recorded:
+                problems.append(
+                    f"{name}: содержимое изменилось до первой сессии "
+                    f"({recorded[:12]}… → {actual[:12]}…)"
+                )
+        if not problems:
+            return
+        listing = "\n".join(f"  - {problem}" for problem in problems)
+        tampered = ControlPlaneTampered(
+            "целостность control plane нарушена (P9, genesis): состояние не "
+            f"сходится со снапшотом commit point `run`, записанным в "
+            f"{anchor.path}:\n{listing}"
+        )
+        self._close_tampered(slug, tampered)
+        raise tampered
 
     def _close_tampered(self, slug: str, tampered: ControlPlaneTampered) -> None:
         """Отметка `FAILED (invariant_violation)` по подмене (§8.1 шаг 0).
@@ -452,6 +521,38 @@ class PipelineResume:
                 f"ревизия {session_id!r} закрыта ({closed}{overlap}): сессия с "
                 "записанным исходом не возобновляется никогда (§8.1 шаг 1), а "
                 "незавершённый интент указывает на неё"
+            )
+
+    # ------------------------------------------------------------------
+    # Semantic comparison: FR-09/FR-10, BEH-09/10/11/17/20
+    # ------------------------------------------------------------------
+
+    def _verify_semantics(self, state: PipelineState) -> None:
+        """Единая semantic comparison — сразу после манифеста (FR-09, BEH-10).
+
+        `load_semantic_proof` восстанавливает ожидаемую immutable-проекцию
+        fail-closed (BEH-12/13/15): недоказуемость — `UnprovableSemantics`,
+        которому здесь нечего добавить, он уходит наружу как есть, не трогая
+        ничего (FR-11). Живая проекция строится по `self._config` — ТОМУ ЖЕ
+        экземпляру, что принят конструктором и обслуживает всё остальное
+        резюме (FR-13): повторного чтения `config.toml` здесь нет.
+
+        Drift — отдельный исход, не «недоказуемость»: доказательство здесь
+        ЦЕЛИКОМ доверено, расходится лишь значение. `SemanticDrift`
+        нарочно не переводит пайплайн в `FAILED` и не пишет ничего —
+        BEH-11 требует остановки БЕЗ побочных эффектов (в отличие от P9,
+        чей отказ — сама подмена control plane, а не разночтение конфига).
+        """
+        pipeline_dir = pipeline_dir_of(self._workspace_root, state.pipeline_id)
+        proof = load_semantic_proof(pipeline_dir, state)
+        expected = proof["projection"]
+        live = build_projection(self._config)
+        diffs = diff_projections(expected, live)
+        if diffs:
+            raise SemanticDrift(
+                slug=state.pipeline_id,
+                schema_version=str(proof["projection_schema_version"]),
+                diffs=diffs,
             )
 
     # ------------------------------------------------------------------
@@ -560,20 +661,3 @@ def missing_manifest_message(
         "Артефакты сессий в каталоге, если они есть, перед удалением стоит "
         "сохранить: пайплайн их уже не прочитает."
     )
-
-
-def _require_same_kind(state: PipelineState, config: PipelineConfig, slug: str) -> None:
-    """Вид пайплайна неизменяем (§2 P0): чужой конфиг — отказ, не переключение.
-
-    Сменить вид значило бы объявить накопленную историю переходов
-    принадлежащей другой механике: рёбра `SPEC_LOOP → PAIR_LOOP` в
-    документном пайплайне не «лишние данные», а нарушение инварианта, и
-    доигрывать такую историю чужим движком нечем.
-    """
-    if state.kind is not config.kind:
-        raise ConfigError(
-            f"пайплайн {slug!r} создан как вид {state.kind.value!r}, а "
-            f"поданный конфиг описывает {config.kind.value!r}: вид неизменяем "
-            "(P0) — сменить его значило бы объявить накопленную историю "
-            "переходов принадлежащей другой механике"
-        )

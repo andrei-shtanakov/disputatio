@@ -26,7 +26,8 @@
 драйвер/фабрика/экспортёр.
 """
 
-from collections.abc import Sequence
+import dataclasses
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -44,10 +45,12 @@ from disputatio.runtime.errors import (
     ControlPlaneTampered,
     ExternalEditError,
     PipelineNotResumable,
+    SemanticDrift,
+    UnprovableSemantics,
 )
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_dir
 from disputatio.runtime.pipeline_integrity import ControlPlane
-from disputatio.runtime.pipeline_resume import classify_worktree
+from disputatio.runtime.pipeline_resume import PipelineResume, classify_worktree
 
 from ._fakes import GitOpsFakeBase
 from ._pipeline_stand import (
@@ -632,3 +635,321 @@ def _spy_reads(monkeypatch: pytest.MonkeyPatch, watched: Sequence[Path]) -> list
     monkeypatch.setattr(Path, "read_text", spy_text)
     monkeypatch.setattr(Path, "read_bytes", spy_bytes)
     return seen
+
+
+# ---------------------------------------------------------------------------
+# TASK-004 (WS-disputatio-65): P9 → манифест → semantic comparison,
+# BEH-09/10/11/17/20 — и genesis-запись анкера, закрывающая крайний случай
+# BEH-01 (приёмка PR #90, круг 9): подмена config/checklists/proof ДО первого
+# хода автора, когда `pre_turn`, с которым можно было бы сверяться, ещё нет.
+# ---------------------------------------------------------------------------
+
+
+def _watched_snapshot_paths(stand: Stand) -> tuple[Path, ...]:
+    """Файлы, которых до TASK-004 `resume` не касался вовсе — анкер и снапшоты."""
+    return (
+        stand.anchor().path,
+        stand.pipeline_dir() / "config.toml",
+        stand.pipeline_dir() / "checklists.toml",
+        stand.pipeline_dir() / "semantic_proof.json",
+    )
+
+
+def test_p9_precedes_all_semantic_proof_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BEH-09: анкер читается раньше снапшотов/proof; отказ P9 не восстанавливает
+    ожидаемую модель вовсе.
+
+    Две половины утверждения — на двух независимых стендах. Успешный P9
+    обязан ПРЕДШЕСТВОВАТЬ чтению `config.toml`/`checklists.toml`/
+    `semantic_proof.json` (сверяет их сам, читая напрямую с диска, — см.
+    genesis/`ControlPlane`; это законное чтение P9, не semantic comparison).
+    Провалившийся P9 обязан не допустить `load_semantic_proof` — функцию,
+    которая восстанавливает ожидаемую модель для сравнения, — вовсе: P9
+    читает снапшоты для ЦЕЛОСТНОСТИ (хеши control plane), а не для
+    СЕМАНТИКИ, и отказ первого не обязан (и не должен) звать вторую.
+    """
+    ok_scripts = parked_pair()
+    ok_scripts["spec-r2"] = Script(outcome="deadlock")
+    ok_stand = build_stand(tmp_path / "ok", ok_scripts)
+    start(ok_stand)
+    reads = _spy_reads(monkeypatch, _watched_snapshot_paths(ok_stand))
+
+    ok_stand.resume.resume(SLUG)
+
+    assert reads, "ни анкер, ни снапшоты не прочитаны — сверять было нечего"
+    assert reads[0] == ok_stand.anchor().path
+    assert ok_stand.pipeline_dir() / "config.toml" in reads
+    assert ok_stand.pipeline_dir() / "semantic_proof.json" in reads
+
+    tampered_stand = build_stand(tmp_path / "tampered", parked_pair())
+    start(tampered_stand)
+    _seed_pre_turn(tampered_stand, "pair-r1")
+    review = round_dir(tampered_stand.artifact_root("pair-r1"), 1) / "review.json"
+    review.write_text('{"verdict": "approve"}', encoding="utf-8")
+
+    import disputatio.runtime.pipeline_resume as resume_module
+
+    proof_calls: list[object] = []
+    original_load = resume_module.load_semantic_proof
+
+    def spy_load(pipeline_dir: Path, state: object) -> Mapping[str, object]:
+        proof_calls.append(state)
+        return original_load(pipeline_dir, state)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resume_module, "load_semantic_proof", spy_load)
+
+    with pytest.raises(ControlPlaneTampered):
+        tampered_stand.resume.resume(SLUG)
+
+    assert proof_calls == [], (
+        "отказ P9 обязан остановить resume до восстановления ожидаемой модели"
+    )
+
+
+def test_semantic_comparison_order_and_single_live_config_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BEH-10: proof/сравнение — сразу после манифеста, до parked/worktree.
+
+    Один и тот же экземпляр `self._config` уходит и в сравнение, и во всё,
+    что случится дальше (FR-13) — конфиг не перечитывается второй раз.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    stand.scripts["pair-r1"].outcome = "converged"
+
+    import disputatio.runtime.pipeline_resume as resume_module
+
+    calls: list[str] = []
+    seen_configs: list[object] = []
+
+    original_load = resume_module.load_semantic_proof
+
+    def spy_load(pipeline_dir: Path, state: object) -> Mapping[str, object]:
+        calls.append("semantic_proof")
+        return original_load(pipeline_dir, state)  # type: ignore[arg-type]
+
+    original_build = resume_module.build_projection
+
+    def spy_build(config: object) -> Mapping[str, object]:
+        seen_configs.append(config)
+        calls.append("build_projection")
+        return original_build(config)  # type: ignore[arg-type]
+
+    original_classify = resume_module.classify_worktree
+
+    def spy_classify(*args: object, **kwargs: object) -> object:
+        calls.append("classify_worktree")
+        return original_classify(*args, **kwargs)  # type: ignore[arg-type]
+
+    original_detect = stand.runner.detect_parked
+
+    def spy_detect(state: object) -> object:
+        calls.append("detect_parked")
+        return original_detect(state)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resume_module, "load_semantic_proof", spy_load)
+    monkeypatch.setattr(resume_module, "build_projection", spy_build)
+    monkeypatch.setattr(resume_module, "classify_worktree", spy_classify)
+    monkeypatch.setattr(stand.runner, "detect_parked", spy_detect)
+
+    stand.resume.resume(SLUG)
+
+    assert calls.index("semantic_proof") < calls.index("build_projection")
+    assert calls.index("build_projection") < calls.index("detect_parked")
+    assert calls.index("detect_parked") < calls.index("classify_worktree")
+    assert seen_configs, "build_projection не был вызван"
+    assert all(config is stand.config for config in seen_configs)
+
+
+def test_semantic_drift_has_no_resume_or_mutation_effects(tmp_path: Path) -> None:
+    """BEH-11: drift останавливает resume, не тронув НИ ОДНОЙ поверхности.
+
+    Сильнее, чем «драйвер не вызван» (frozen `tests/test_task_004_red.py`):
+    здесь сверяется полный снимок `mutable_surfaces()` — манифест, события,
+    анкер, adoptions, `HEAD`, индекс и список файлов дерева, — а не одно
+    отдельное наблюдение.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    before = stand.mutable_surfaces()
+    calls_before = len(stand.driver.calls)
+
+    drifted = dataclasses.replace(
+        stand.config,
+        max_architectural_returns=stand.config.max_architectural_returns + 1,
+    )
+
+    with pytest.raises(SemanticDrift):
+        stand.resume_with(drifted).resume(SLUG)
+
+    assert stand.mutable_surfaces() == before
+    assert len(stand.driver.calls) == calls_before
+
+
+def test_repeated_semantic_failure_creates_no_artifacts(tmp_path: Path) -> None:
+    """BEH-17: повтор без починки конфига даёт тот же отказ, не новый след."""
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    drifted = dataclasses.replace(
+        stand.config,
+        max_architectural_returns=stand.config.max_architectural_returns + 1,
+    )
+
+    with pytest.raises(SemanticDrift) as first:
+        stand.resume_with(drifted).resume(SLUG)
+    surfaces_after_first = stand.mutable_surfaces()
+
+    with pytest.raises(SemanticDrift) as second:
+        stand.resume_with(drifted).resume(SLUG)
+
+    assert [d.field for d in first.value.diffs] == [d.field for d in second.value.diffs]
+    assert str(first.value) == str(second.value)
+    assert stand.mutable_surfaces() == surfaces_after_first
+
+
+def _drift_resume(stand: Stand) -> PipelineResume:
+    """Живой конфиг с изменённым immutable-полем — вход BEH-20 (drift-ветка)."""
+    drifted = dataclasses.replace(
+        stand.config,
+        max_architectural_returns=stand.config.max_architectural_returns + 1,
+    )
+    return stand.resume_with(drifted)
+
+
+def _contradictory_proof_ref_resume(stand: Stand) -> PipelineResume:
+    """Манифест лжёт о digest'е proof'а — вход BEH-20 (недоказуемая ветка).
+
+    Сами файлы (в т.ч. `semantic_proof.json`) не тронуты — genesis-запись
+    анкера (BEH-01) их не поймает; расходится только ССЫЛКА манифеста, и
+    поймать это способен только `load_semantic_proof` (`contradiction`).
+    """
+    state = stand.manifest()
+    assert state.semantic_proof is not None
+    tampered = state.model_copy(
+        update={
+            "semantic_proof": state.semantic_proof.model_copy(
+                update={"sha256": "0" * 64}
+            )
+        }
+    )
+    stand.store.save(tampered)
+    return stand.resume
+
+
+@pytest.mark.parametrize(
+    "make_resume, expected_exception",
+    [
+        pytest.param(_drift_resume, SemanticDrift, id="drift"),
+        pytest.param(
+            _contradictory_proof_ref_resume, UnprovableSemantics, id="unprovable"
+        ),
+    ],
+)
+def test_semantic_failure_order_and_effect_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    make_resume: Callable[[Stand], PipelineResume],
+    expected_exception: type[Exception],
+) -> None:
+    """BEH-20: ни drift, ни недоказуемая семантика не доходят до parked
+    detection/session-runner и не трогают ни одной поверхности — общая
+    граница эффекта для обеих причин semantic-отказа.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    resume = make_resume(stand)
+    before = stand.mutable_surfaces()
+    calls_before = len(stand.driver.calls)
+
+    original_detect = stand.runner.detect_parked
+    detect_calls: list[object] = []
+
+    def spy_detect(state: object) -> object:
+        detect_calls.append(state)
+        return original_detect(state)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(stand.runner, "detect_parked", spy_detect)
+
+    with pytest.raises(expected_exception):
+        resume.resume(SLUG)
+
+    assert detect_calls == [], "semantic-отказ не должен доходить до parked detection"
+    assert len(stand.driver.calls) == calls_before
+    assert stand.mutable_surfaces() == before
+
+
+def test_genesis_record_guards_write_once_snapshots_before_the_first_turn(
+    tmp_path: Path,
+) -> None:
+    """BEH-01 crash-окно (TASK-004): `run` пишет genesis-запись анкера сразу
+    после манифеста, и её состав — ровно четыре write-once снапшота, БЕЗ
+    `pipeline.json` (он и до первого хода легитимно переписывается,
+    например `create_session`, и сверка по нему дала бы ложное срабатывание
+    на этой законной правке).
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+
+    genesis = stand.anchor().last_record()
+
+    assert genesis is not None
+    assert genesis.kind == "genesis"
+    assert set(genesis.immutable) == {
+        "task.md",
+        "config.toml",
+        "checklists.toml",
+        "semantic_proof.json",
+    }
+    assert "pipeline.json" not in genesis.immutable
+
+
+def test_genesis_catches_a_snapshot_tampered_before_the_first_turn(
+    tmp_path: Path,
+) -> None:
+    """Подмена `semantic_proof.json` до первого хода — ловится genesis'ом.
+
+    До TASK-004 анкер в этом окне пуст (`last_record() is None`), и `resume`
+    пропускал бы сверку P9 целиком (приёмка PR #90, круг 9) — эта подмена
+    доехала бы до `load_semantic_proof` как обычный, честный proof.
+    """
+    stand = build_stand(tmp_path, live_pair())
+    start(stand)
+    calls_before = len(stand.driver.calls)
+    proof_path = stand.pipeline_dir() / "semantic_proof.json"
+    proof_path.write_text(
+        proof_path.read_text(encoding="utf-8") + " ", encoding="utf-8"
+    )
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        stand.resume.resume(SLUG)
+
+    assert "genesis" in str(excinfo.value)
+    assert stand.manifest().phase is PipelinePhase.FAILED
+    assert len(stand.driver.calls) == calls_before
+    # Fail-closed держится анкером: второй resume приходит к тому же отказу.
+    with pytest.raises(ControlPlaneTampered):
+        stand.rebuild().resume.resume(SLUG)
+
+
+def test_genesis_does_not_false_positive_on_legitimate_manifest_churn(
+    tmp_path: Path,
+) -> None:
+    """`pipeline.json` легитимно переписывается до первого хода (`create_session`,
+    затем bootstrap ревизии) — genesis, не сторожащий манифест, не должен
+    принять это за подмену. Регрессия того самого расчёта, который решил
+    не включать `pipeline.json` в genesis (см. докстринг `PipelineRunner.run`).
+    """
+    stand = build_stand(tmp_path, {"spec-r1": Script(), "pair-r1": Script()})
+    start(stand)
+    assert stand.manifest().phase is PipelinePhase.DONE
+    manifest_before = (stand.pipeline_dir() / "pipeline.json").read_bytes()
+
+    with pytest.raises(PipelineNotResumable):
+        stand.resume.resume(SLUG)
+
+    # Терминальный отказ пришёл из шага 1 (§8.1), а не из ложной подмены P9:
+    # манифест по-прежнему тот, что записал штатный прогон.
+    assert (stand.pipeline_dir() / "pipeline.json").read_bytes() == manifest_before

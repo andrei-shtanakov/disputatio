@@ -10,9 +10,9 @@
 
 `load_semantic_proof` вызывается здесь напрямую, а не через
 `PipelineResume.resume`: встраивание в порядок §8.1 (P9 → манифест →
-semantic proof → …) — предмет TASK-004 той же очереди задач; этот набор
-проверяет функцию как самостоятельный, полностью тестируемый шаг (BEH-01,
-BEH-12, BEH-13, BEH-15).
+semantic proof → …) сделано в `tests/runtime/test_pipeline_resume.py`
+(TASK-004, BEH-09/10/11/17/20); этот набор проверяет функцию как
+самостоятельный, полностью тестируемый шаг (BEH-01, BEH-12, BEH-13, BEH-15).
 """
 
 import dataclasses

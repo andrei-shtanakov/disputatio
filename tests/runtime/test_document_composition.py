@@ -17,7 +17,7 @@ from disputatio.contracts import PipelineKind, PipelinePhase, TransitionReason
 from disputatio.runtime import composition
 from disputatio.runtime.composition import build_pipeline
 from disputatio.runtime.config import AgentConfig, LimitsConfig
-from disputatio.runtime.errors import AdoptionScopeError, ConfigError
+from disputatio.runtime.errors import AdoptionScopeError, SemanticDrift
 from disputatio.runtime.git import GitCli
 from disputatio.runtime.layout import round_dir
 from disputatio.runtime.pipeline_adopt import (
@@ -120,7 +120,11 @@ def test_document_pipeline_builds_no_boundary_policy(
 
 
 def test_resume_with_config_of_other_kind_mutates_nothing(tmp_path: Path) -> None:
-    """P0: отказ **до любой мутации**, а не просто отказ.
+    """Вид неизменяем: отказ **до любой мутации**, а не просто отказ.
+
+    Вид больше не сверяется отдельной проверкой P0 (TASK-004 WS-disputatio-65)
+    — расхождение `kind` теперь ловит semantic comparison как поле итоговой
+    immutable-проекции, одним и тем же путём с любым другим drift'ом (BEH-18).
 
     `pytest.raises` доказывает только исключение. Норматив (§2 P0, §10)
     сильнее: реализация, успевшая переиграть раунд, дописать журнал или
@@ -131,8 +135,9 @@ def test_resume_with_config_of_other_kind_mutates_nothing(tmp_path: Path) -> Non
     stand = _live_document(tmp_path)
     before = stand.mutable_surfaces()
 
-    with pytest.raises(ConfigError, match="вид"):
+    with pytest.raises(SemanticDrift) as excinfo:
         stand.resume_with(stand.config_of_kind(PipelineKind.PAIR)).resume(SLUG)
+    assert "kind" in {diff.field for diff in excinfo.value.diffs}
 
     assert stand.mutable_surfaces() == before
 

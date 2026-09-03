@@ -12,7 +12,10 @@ config.toml».
 """
 
 from collections.abc import Sequence
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
+
+if TYPE_CHECKING:  # pragma: no cover - только для аннотации, импорта нет
+    from disputatio.runtime.pipeline_semantic_proof import ProjectionDiff
 
 #: Причины BEH-15 (WS-disputatio-65): пять способов, которыми доказательство
 #: immutable-проекции перестаёт быть доказательством. Закрытый набор, а не
@@ -209,5 +212,44 @@ class UnprovableSemantics(DisputatioError):
             "доказательство не перезаписывается автоматически: восстановите "
             f"удостоверенные данные ({artifact!r}) из контроля версий/бэкапа "
             "либо завершите или пересоздайте пайплайн (`disp pipeline run "
+            "--slug <новый-слаг>`)."
+        )
+
+
+class SemanticDrift(DisputatioError):
+    """Живая immutable-проекция `[pipeline]` разошлась с удостоверенной (BEH-11).
+
+    Отдельный класс, а не `UnprovableSemantics`: там доказательство нечем
+    доверять (файл отсутствует/повреждён/противоречив), здесь оно доверено
+    целиком, а расходится ЗНАЧЕНИЕ живого конфига (FR-09, FR-10). `diffs`
+    несёт уже отредактированные `ProjectionDiff`
+    (`pipeline_semantic_proof.diff_projections`): тексты чеклистов и команды
+    gate'ов там всегда `None` независимо от реальных значений (BEH-14/FR-14)
+    — редактирование не забота этого класса, он просто перечисляет то, что
+    получил.
+    """
+
+    def __init__(
+        self, *, slug: str, schema_version: str, diffs: Sequence["ProjectionDiff"]
+    ) -> None:
+        self.diffs = tuple(diffs)
+        fields = ", ".join(diff.field for diff in self.diffs)
+        lines = "\n".join(
+            f"  - {diff.field}"
+            + (
+                ""
+                if diff.old is None and diff.new is None
+                else f": {diff.old!r} → {diff.new!r}"
+            )
+            for diff in self.diffs
+        )
+        super().__init__(
+            f"semantic drift пайплайна {slug!r} (канонизация проекции v"
+            f"{schema_version}): живая immutable-проекция [pipeline] "
+            f"разошлась с удостоверенной в {len(self.diffs)} поле(ях) "
+            f"({fields}):\n{lines}\nresume остановлен ДО запуска или "
+            "возобновления сессии, gate'ов и любых мутаций (BEH-11) — "
+            "приведите живой конфиг к удостоверенному состоянию либо "
+            "заведите пайплайн заново новым слагом (`disp pipeline run "
             "--slug <новый-слаг>`)."
         )
