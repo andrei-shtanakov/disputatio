@@ -68,7 +68,7 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-08
 **Traces to:** [FR-07]
 
 ### TASK-004: P9 предшествует чтению ожидаемой семантики (+4 смежных BEH)
-P2 | TODO   Est: 0.5d
+P2 | 🔄 IN_PROGRESS   Est: 0.5d
 
 Реализовать сценарии BEH-09, BEH-10, BEH-11, BEH-17, BEH-20.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-09 (—BEH-20)
