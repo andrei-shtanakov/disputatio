@@ -85,13 +85,22 @@ def table_array(container: Mapping[str, Any], key: str) -> Sequence[Mapping[str,
     return value
 
 
+_GATE_KEYS: frozenset[str] = frozenset({"name", "cmd", "enabled"})
+
+
 def gate(item: Mapping[str, Any], *, where: str) -> GateSpec:
     """Один `GateSpec` из элемента массива таблиц `[[<where>]]`.
 
     `enabled` необязателен и по умолчанию `True` — тем же дефолтом, что у
     самого `GateSpec`: два разных ответа на «гейт без флага включён?»
     разошлись бы молча, и разошлись бы в сторону пропущенной проверки.
+
+    Схема закрытая (FR-07): неизвестный ключ элемента — `TypeError`, а не
+    молча проигнорированное поле, которое оператор считал бы действующим.
     """
+    unknown = set(item) - _GATE_KEYS
+    if unknown:
+        raise TypeError(f"{where} содержит неизвестные ключи: {sorted(unknown)}")
     enabled = item.get("enabled", True)
     if not isinstance(enabled, bool):
         raise TypeError(f"{where}.enabled обязан быть true/false")
