@@ -19,7 +19,7 @@ approved_at: '2026-09-02T23:58:37Z'
 Сгенерировано task_bridge из behaviour-spec бандла WS-disputatio-65 (шаг 3 плана развития конвейера; группировка задач — по Feature-секциям). Draft: исполнение только после человеческого approve.
 
 ### TASK-001: Run атомарно фиксирует версионированную immutable-модель (+3 смежных BEH)
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-01, BEH-12, BEH-13, BEH-15.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-01 (—BEH-15)
