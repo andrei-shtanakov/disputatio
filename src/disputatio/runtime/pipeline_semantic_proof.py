@@ -9,10 +9,12 @@ Milestone 1 (disputatio#65) называет разрыв: `resume` сегодн
 BEH-12, BEH-13, BEH-15):
 
 * **BEH-01** — `run` до первой сессии обязан зафиксировать версионированное
-  доказательство итоговой immutable-проекции ОДНОЙ атомарной записью с первым
-  intent'ом (`write_semantic_proof`, вызывается `PipelineRunner.run` до
-  первой записи `pipeline.json` — тем же приёмом, каким уже фиксируются
-  `task.md`/`config.toml`/`checklists.toml`).
+  доказательство итоговой immutable-проекции (`write_semantic_proof`,
+  вызывается `PipelineRunner.run` до первой записи `pipeline.json` — тем же
+  приёмом, каким уже фиксируются `task.md`/`config.toml`/`checklists.toml`):
+  каждый снапшот пишется своей отдельной атомарной операцией, но все они —
+  включая `semantic_proof.json` — обязаны лечь на диск до манифеста, чтобы
+  первая же запись манифеста уже несла на него ссылку.
 * **BEH-12/BEH-13/BEH-15** — `load_semantic_proof` восстанавливает эту
   проекцию на `resume` fail-closed: недоказуемость (отсутствие, порча digest,
   ошибка разбора, несовместимая версия, внутреннее противоречие) любого
@@ -125,10 +127,11 @@ def write_semantic_proof(
 
     Вызывающий (`PipelineRunner.run`) обязан вызвать эту функцию ДО первой
     записи `pipeline.json` и передать её результат полем `semantic_proof`
-    ТОЙ ЖЕ конструкции состояния — так доказательство ложится на диск в то же
-    неделимое окно, что и `task.md`/`config.toml`/`checklists.toml`, и первая
-    запись манифеста уже способна нести на него ссылку (BEH-01: «одной
-    записью с первым intent'ом»).
+    ТОЙ ЖЕ конструкции состояния — доказательство ложится на диск своей
+    отдельной атомарной записью, но в то же некоммитнутое окно, что и
+    `task.md`/`config.toml`/`checklists.toml`, до манифеста, так что первая
+    же запись манифеста с первым intent'ом уже способна нести на него ссылку
+    (BEH-01).
 
     `config_ref`/`checklists_ref` — те же `FileRef`, что и `state.config`/
     `state.checklists` манифеста: доказательство удостоверяет РОВНО эти два
@@ -205,7 +208,10 @@ def load_semantic_proof(pipeline_dir: Path, state: PipelineState) -> Mapping[str
             "parse_error", ref.path, "верхний уровень доказательства — не объект"
         )
     version = proof.get("projection_schema_version")
-    if version not in SUPPORTED_PROJECTION_SCHEMA_VERSIONS:
+    if (
+        not isinstance(version, str)
+        or version not in SUPPORTED_PROJECTION_SCHEMA_VERSIONS
+    ):
         raise UnprovableSemantics(
             "unsupported_version",
             ref.path,

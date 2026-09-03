@@ -15,6 +15,7 @@ semantic proof → …) — предмет TASK-004 той же очереди �
 BEH-12, BEH-13, BEH-15).
 """
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ import pytest
 
 from disputatio.contracts import PipelineKind, PipelineState
 from disputatio.runtime.errors import UnprovableSemantics
+from disputatio.runtime.pipeline_config import DEFAULT_MAX_ARCHITECTURAL_RETURNS
 from disputatio.runtime.pipeline_runner import PipelineRunner, SessionCreation
 from disputatio.runtime.pipeline_semantic_proof import (
     PROJECTION_SCHEMA_VERSION,
@@ -33,8 +35,19 @@ from disputatio.runtime.pipeline_semantic_proof import (
     build_projection,
     load_semantic_proof,
 )
+from disputatio.verifier import GateSpec
 
-from ._pipeline_stand import PLAN_PATH, SLUG, SPEC_PATH, Script, Stand, build_stand
+from ._pipeline_stand import (
+    DOC_CHECKLIST_TEXTS,
+    DOCUMENT_PATH,
+    PLAN_PATH,
+    SLUG,
+    SPEC_PATH,
+    Script,
+    Stand,
+    _config_of_kind,
+    build_stand,
+)
 
 
 def _doc_stand(tmp_path: Path) -> Stand:
@@ -104,11 +117,12 @@ def _fixed_clock() -> Any:
 
 
 def test_run_commits_versioned_proof_atomically(tmp_path: Path) -> None:
-    """`run` до первой сессии фиксирует `semantic_proof` В ТОЙ ЖЕ атомарной
-    записи манифеста, что и первый intent (BEH-01, FR-01): доказательство
-    несёт версию канонизации и полную immutable-проекцию `[pipeline]`, а крах
-    между этой записью и первой сессией (здесь — фабрика, которая никогда
-    успешно не отрабатывает) не мешает — proof уже на диске.
+    """`run` до первой сессии фиксирует `semantic_proof` СВОЕЙ атомарной
+    записью, предшествующей манифесту с первым intent'ом (BEH-01, FR-01):
+    доказательство несёт версию канонизации и полную immutable-проекцию
+    `[pipeline]`, а крах между этой записью и первой сессией (здесь —
+    фабрика, которая никогда успешно не отрабатывает) не мешает — proof уже
+    на диске и манифест уже способен на него ссылаться.
     """
     stand = build_stand(tmp_path, {}, kind=PipelineKind.PAIR)
 
@@ -147,8 +161,8 @@ def test_run_commits_versioned_proof_atomically(tmp_path: Path) -> None:
     ref = state.semantic_proof
     assert ref is not None, (
         "манифест не несёт ссылки на доказательство immutable-проекции — "
-        "`run` обязан зафиксировать её атомарно, до первой сессии, одной "
-        "записью с первым intent'ом"
+        "`run` обязан зафиксировать её атомарно и до первой сессии, раньше "
+        "манифеста с первым intent'ом"
     )
     assert ref.path == SEMANTIC_PROOF_NAME
 
@@ -376,9 +390,177 @@ def test_proof_errors_are_distinct_safe_and_actionable(tmp_path: Path) -> None:
     reasons.add(excinfo.value.reason)
     (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
 
+    contradictory = {**_proof_json(stand, state), "pipeline_id": "another-slug"}
+    contradictory_state = _rewrite_proof_with_matching_digest(
+        stand, state, contradictory
+    )
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, contradictory_state)
+    reasons.add(excinfo.value.reason)
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
     assert reasons == {
         "missing",
         "digest_mismatch",
         "parse_error",
         "unsupported_version",
+        "contradiction",
     }
+
+
+def test_projection_schema_version_non_string_is_unsupported_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """Не-строковая `projection_schema_version` — тоже `unsupported_version`,
+    а не необработанный `TypeError` (BEH-15): членство в
+    `SUPPORTED_PROJECTION_SCHEMA_VERSIONS` (frozenset) проверяется через
+    `hash()`, и нетипизированное значение из недоверенного JSON (список,
+    объект) обязано остаться диагностируемой причиной, а не уронить fail-closed
+    гарантию исключением, которое `UnprovableSemantics` не отбирает.
+    """
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+    before = _proof_bytes(stand, state)
+
+    unhashable = {**_proof_json(stand, state), "projection_schema_version": []}
+    unhashable_state = _rewrite_proof_with_matching_digest(stand, state, unhashable)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, unhashable_state)
+    assert excinfo.value.reason == "unsupported_version"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+
+# ---------------------------------------------------------------------------
+# BEH-13/15 — структурно негодные заявки источника и верхнего уровня
+# ---------------------------------------------------------------------------
+
+
+def test_source_entry_structural_defects_are_parse_error(tmp_path: Path) -> None:
+    """`_verify_source` отказывает `parse_error`, когда заявка источника
+    структурно негодна (BEH-13, BEH-15): не объект вовсе, либо несёт `path`/
+    `sha256` не строкового типа. Ветки, которые проверка digest'а самого
+    proof-файла не задевает — заявка внутри валидного, самосогласованного по
+    digest JSON.
+    """
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+    before = _proof_bytes(stand, state)
+
+    not_a_mapping = _proof_json(stand, state)
+    not_a_mapping["sources"]["config"] = "not-a-mapping"
+    not_a_mapping_state = _rewrite_proof_with_matching_digest(
+        stand, state, not_a_mapping
+    )
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, not_a_mapping_state)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == "config"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+    wrong_field_types = _proof_json(stand, state)
+    wrong_field_types["sources"]["config"] = {"path": 1, "sha256": 2}
+    wrong_field_types_state = _rewrite_proof_with_matching_digest(
+        stand, state, wrong_field_types
+    )
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, wrong_field_types_state)
+    assert excinfo.value.reason == "parse_error"
+    assert excinfo.value.artifact == "config"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+    # Восстановленный proof снова читается штатно — тампер не задел диск.
+    assert _proof_bytes(stand, state) == before
+    assert load_semantic_proof(pipeline_dir, state) is not None
+
+
+def test_top_level_structural_defects_are_parse_error(tmp_path: Path) -> None:
+    """Верхний уровень доказательства структурно негоден тремя способами
+    (BEH-13, BEH-15), каждый — валидный, самосогласованный по digest JSON,
+    отличный от простого «не разбирается как JSON» (уже покрыт BEH-12):
+    верхний уровень — не объект, `projection` отсутствует/не объект,
+    `sources` отсутствует/не объект.
+    """
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    pipeline_dir = stand.pipeline_dir()
+    before = _proof_bytes(stand, state)
+
+    not_a_mapping_state = _rewrite_proof_with_matching_digest(stand, state, [])  # type: ignore[arg-type]
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, not_a_mapping_state)
+    assert excinfo.value.reason == "parse_error"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+    no_projection = _proof_json(stand, state)
+    del no_projection["projection"]
+    no_projection_state = _rewrite_proof_with_matching_digest(
+        stand, state, no_projection
+    )
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, no_projection_state)
+    assert excinfo.value.reason == "parse_error"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+    no_sources = _proof_json(stand, state)
+    del no_sources["sources"]
+    no_sources_state = _rewrite_proof_with_matching_digest(stand, state, no_sources)
+    with pytest.raises(UnprovableSemantics) as excinfo:
+        load_semantic_proof(pipeline_dir, no_sources_state)
+    assert excinfo.value.reason == "parse_error"
+    (pipeline_dir / SEMANTIC_PROOF_NAME).write_bytes(before)
+
+    assert _proof_bytes(stand, state) == before
+
+
+# ---------------------------------------------------------------------------
+# build_projection — содержимое проекции по видам и непустые extra_gates
+# ---------------------------------------------------------------------------
+
+
+def test_build_projection_document_kind_names_document_path(tmp_path: Path) -> None:
+    """Проекция вида `document` называет `document_path` конкретным путём
+    (BEH-01/FR-01) — а не только совпадает сама с собой при повторном
+    вызове, как утверждает сравнение в `test_run_commits_versioned_proof_atomically`
+    для вида `pair`.
+    """
+    stand = _doc_stand(tmp_path)
+    state = stand.manifest()
+    proof = _proof_json(stand, state)
+
+    assert proof["projection"]["document_path"] == DOCUMENT_PATH
+    assert "spec_path" not in proof["projection"]
+    assert "plan_path" not in proof["projection"]
+
+
+def test_build_projection_names_checklist_and_gate_content_literally(
+    tmp_path: Path,
+) -> None:
+    """`build_projection` несёт РЕАЛЬНЫЕ значения чеклистов и непустых
+    `extra_gates`, а не только производную от собственного вызова структуру:
+    конфиг стенда собран напрямую (а не через фейковый `run`), с одним
+    добавленным гейтом, чтобы список гейтов проекции был проверен хотя бы
+    раз непустым.
+    """
+    doc_config = _config_of_kind(
+        PipelineKind.DOCUMENT,
+        anchor_path=tmp_path / "anchors",
+        max_architectural_returns=DEFAULT_MAX_ARCHITECTURAL_RETURNS,
+        doc_checklist_order=("B1", "B3"),
+    )
+    gated_config = dataclasses.replace(
+        doc_config,
+        extra_gates=(GateSpec(name="lint", cmd="ruff check .", enabled=True),),
+    )
+
+    projection = build_projection(gated_config)
+
+    assert projection["checklists"]["doc"] == {
+        "order": ["B1", "B3"],
+        "texts": dict(DOC_CHECKLIST_TEXTS),
+        "findings_item": "B3",
+    }
+    assert projection["gates"] == [
+        {"name": "lint", "cmd": "ruff check .", "enabled": True}
+    ]
