@@ -55,15 +55,15 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-02 (—BEH-21
 **Traces to:** [FR-02, FR-17, FR-03, FR-04, FR-10, FR-05, FR-06, FR-14, FR-18, FR-07, FR-19]
 
 ### TASK-003: Неизвестный pipeline-ключ отвергается закрытой схемой
-P2 | 🔍 REVIEW   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d
 
 Реализовать сценарии BEH-08.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-08
 **Depends on:** [TASK-002]
 
 **Checklist:**
-- [ ] реализовать BEH-08: Неизвестный pipeline-ключ отвергается закрытой схемой
-- [ ] проверка группы: tests/runtime/test_pipeline_config.py::test_unknown_pipeline_keys_fail_closed_at_every_schema_level (kind: atp) зелёные на BEH-08
+- [x] реализовать BEH-08: Неизвестный pipeline-ключ отвергается закрытой схемой
+- [x] проверка группы: tests/runtime/test_pipeline_config.py::test_unknown_pipeline_keys_fail_closed_at_every_schema_level (kind: atp) зелёные на BEH-08
 
 **Traces to:** [FR-07]
 

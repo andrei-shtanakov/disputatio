@@ -1,0 +1,98 @@
+{
+  "claims": [
+    {
+      "blob_sha": "5f7f70b1533c4fca29bf3fc0c1b093f869ac64bb",
+      "checkpoint_sha": "5fe1ee2d3385335dad649cc01cff04bfd5504522",
+      "created_at": "2026-09-03T14:01:27.401200",
+      "path": "tests/test_task_003_red.py",
+      "status": "active"
+    }
+  ],
+  "complete": true,
+  "gates": {
+    "review": {
+      "checkpoint_sha": "fb07d5d9b099434d2e3d880317e6fac0244d0fb0",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "review fixed of review checkpoint f0e1f48d52000c0ba3ccca736172d9c26ad7b208 at merge candidate fb07d5d9b099434d2e3d880317e6fac0244d0fb0",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T15:41:15.262806"
+    },
+    "tdd.claims": {
+      "checkpoint_sha": "fb07d5d9b099434d2e3d880317e6fac0244d0fb0",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "claims intact",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T15:41:15.342201"
+    },
+    "tdd.red": {
+      "checkpoint_sha": "fb07d5d9b099434d2e3d880317e6fac0244d0fb0",
+      "config_hash": "ca26e27bb3067ebb",
+      "detail": "red confirmed: tests/test_task_003_red.py::test_unknown_pipeline_keys_fail_closed_at_every_schema_level at 5fe1ee2d3385 in uv.lock:520fa8d81e23ca92",
+      "status": "satisfied",
+      "timestamp": "2026-09-03T15:41:15.283899"
+    }
+  },
+  "judged_commit": "fb07d5d9b099434d2e3d880317e6fac0244d0fb0",
+  "namespace": "c9cacecf60255ba2",
+  "phases": [
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-03T13:58:39.166844"
+    },
+    {
+      "detail": "tests/test_task_003_red.py::test_unknown_pipeline_keys_fail_closed_at_every_schema_level",
+      "phase": "red_verifying",
+      "timestamp": "2026-09-03T14:01:22.979474"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-03T14:01:27.460438"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-03T14:15:16.803894"
+    },
+    {
+      "detail": null,
+      "phase": "red_authoring",
+      "timestamp": "2026-09-03T15:28:40.829192"
+    },
+    {
+      "detail": null,
+      "phase": "green_implementing",
+      "timestamp": "2026-09-03T15:28:40.908304"
+    },
+    {
+      "detail": null,
+      "phase": "green_verifying",
+      "timestamp": "2026-09-03T15:41:15.243447"
+    },
+    {
+      "detail": "skipped",
+      "phase": "refactoring",
+      "timestamp": "2026-09-03T15:41:15.343473"
+    }
+  ],
+  "red": {
+    "baseline_sha": "5bf7fd51db68df8597649a6458a820e9a246cf9e",
+    "commit_sha": "5fe1ee2d3385335dad649cc01cff04bfd5504522",
+    "config_hash": "ca26e27bb3067ebb",
+    "environment_id": "uv.lock:520fa8d81e23ca92",
+    "execution_mode": "tdd",
+    "outcome": "expected_fail",
+    "selector": "tests/test_task_003_red.py::test_unknown_pipeline_keys_fail_closed_at_every_schema_level",
+    "status": "active",
+    "timestamp": "2026-09-03T14:01:27.399624"
+  },
+  "remedies": [],
+  "schema": "disputatio/tdd-evidence/v1",
+  "source": {
+    "spec_runner_version": "spec-runner 2.35.0"
+  },
+  "state_namespace": "c9cacecf60255ba2",
+  "task_id": "TASK-003",
+  "waivers": []
+}
