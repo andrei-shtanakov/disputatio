@@ -39,6 +39,7 @@ from disputatio.contracts import (
     SessionOutcome,
     TransitionReason,
 )
+from disputatio.events import IntegrityAnchor
 from disputatio.runtime import StatusEntry
 from disputatio.runtime.errors import (
     ConfigError,
@@ -57,6 +58,7 @@ from ._pipeline_stand import (
     PLAN_PATH,
     SLUG,
     SPEC_PATH,
+    Boom,
     Script,
     Stand,
     build_stand,
@@ -953,3 +955,42 @@ def test_genesis_does_not_false_positive_on_legitimate_manifest_churn(
     # Терминальный отказ пришёл из шага 1 (§8.1), а не из ложной подмены P9:
     # манифест по-прежнему тот, что записал штатный прогон.
     assert (stand.pipeline_dir() / "pipeline.json").read_bytes() == manifest_before
+
+
+def test_crash_between_manifest_and_genesis_leaves_anchor_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Крах между записью манифеста и genesis-записью — принятое узкое окно.
+
+    `run` пишет манифест и ТОЛЬКО ПОТОМ `anchor.append_genesis(...)`; между
+    ними нет двухфазного commit'а (докстринги `PipelineRunner.run`,
+    `PipelineResume._verify_integrity`, `IntegrityAnchor.append_genesis`
+    называют это узкое окно принятой ценой). Тест ловит именно эту границу
+    прямым крахом `append_genesis`, а не окольным путём через факторию: и
+    манифест, и все четыре write-once снапшота уже на диске, анкер создан,
+    но пуст — как и до появления genesis-записи. Следующий `resume`
+    обязан отнестись к пустому анкеру так же, как раньше: не поднять
+    `ControlPlaneTampered` и доиграть тот же `next_action`.
+    """
+    stand = build_stand(tmp_path, {"spec-r1": Script(), "pair-r1": Script()})
+    monkeypatch.setattr(
+        IntegrityAnchor,
+        "append_genesis",
+        lambda self, snapshot: (_ for _ in ()).throw(Boom("обрыв до genesis-записи")),
+    )
+
+    start(stand)
+
+    anchor = stand.anchor()
+    assert anchor.path.is_file(), "анкер создаётся до манифеста — крах его не стирает"
+    assert anchor.last_record() is None, (
+        "append_genesis упал ДО записи: анкер обязан остаться пуст"
+    )
+    for name in ("task.md", "config.toml", "checklists.toml", "semantic_proof.json"):
+        assert (stand.pipeline_dir() / name).is_file(), name
+    assert (stand.pipeline_dir() / "pipeline.json").is_file()
+
+    monkeypatch.undo()
+    stand.rebuild()
+    state = stand.resume.resume(SLUG)
+    assert state.phase is PipelinePhase.DONE
