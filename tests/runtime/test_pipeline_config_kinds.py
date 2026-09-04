@@ -237,3 +237,65 @@ def test_pair_accessors_keep_previous_boundaries(tmp_path: Path) -> None:
     assert config.scope_paths("spec") == ("docs/spec.md",)
     assert config.scope_paths("pair") == ("docs/plan.md",)
     assert config.documents() == ("docs/spec.md", "docs/plan.md")
+
+
+# --- BEH-18: формы взаимоисключающи, смена вида — drift (TASK-006) ----
+
+
+def test_pipeline_forms_remain_exclusive_and_kind_change_is_drift(
+    tmp_path: Path,
+) -> None:
+    """Консолидированная приёмка BEH-18 (WS-disputatio-65 TASK-006).
+
+    Поведение доставлено ранее (эксклюзивность форм — схема закрытой
+    секции, TASK-003 и PR #64; смена вида как drift — semantic comparison
+    TASK-004, включая манифестную половину P0 из приёмки PR #93), поэтому
+    задача закрыта tdd-waiver/v1 (spec/.tdd-evidence/waivers/…/TASK-006),
+    а этот тест — её зелёная регрессия ровно по цели checklist'а: обе
+    стороны исключения форм и drift смены вида В ОБОИХ направлениях —
+    направление PAIR→DOCUMENT до него не проверял никто.
+    """
+    from disputatio.runtime.errors import SemanticDrift
+
+    from ._pipeline_stand import Script, build_stand, start
+
+    # Формы взаимоисключающи: смешанная секция и половина пары — отказ,
+    # называющий обе схемы (C3).
+    for body in (
+        '[pipeline]\ndocument_path = "d.md"\nspec_path = "s.md"\n'
+        'plan_path = "p.md"\n' + _DOC_CHECKLIST,
+        '[pipeline]\nspec_path = "s.md"\n',
+    ):
+        with pytest.raises(ConfigError) as refusal:
+            load_pipeline_config(_write(tmp_path, body + _AGENTS))
+        assert "document_path" in str(refusal.value)
+        assert "spec_path" in str(refusal.value)
+
+    # DOCUMENT → PAIR: смена вида — drift, не миграция.
+    doc_stand = build_stand(
+        tmp_path / "doc",
+        {"doc-r1": Script(outcome="park", raise_after_write=True)},
+        kind=PipelineKind.DOCUMENT,
+    )
+    start(doc_stand)
+    with pytest.raises(SemanticDrift) as doc_excinfo:
+        doc_stand.resume_with(doc_stand.config_of_kind(PipelineKind.PAIR)).resume(
+            "pair-docs"
+        )
+    assert "kind" in {diff.field for diff in doc_excinfo.value.diffs}
+
+    # PAIR → DOCUMENT: симметрия, ранее не покрытая ни одним тестом.
+    pair_stand = build_stand(
+        tmp_path / "pair",
+        {
+            "spec-r1": Script(),
+            "pair-r1": Script(outcome="park", issues=(), raise_after_write=True),
+        },
+        kind=PipelineKind.PAIR,
+    )
+    start(pair_stand)
+    with pytest.raises(SemanticDrift) as pair_excinfo:
+        pair_stand.resume_with(pair_stand.config_of_kind(PipelineKind.DOCUMENT)).resume(
+            "pair-docs"
+        )
+    assert "kind" in {diff.field for diff in pair_excinfo.value.diffs}

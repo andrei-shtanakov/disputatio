@@ -99,15 +99,15 @@ Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-16
 **Traces to:** [FR-16]
 
 ### TASK-006: Формы pair и document остаются взаимоисключающими
-P2 | TODO   Est: 0.5d
+P2 | ✅ DONE   Est: 0.5d — tdd-waiver/v1 (red-unverifiable: поведение доставлено TASK-003/TASK-004; санкция владельца 2026-09-04; регрессия test_pipeline_forms_remain_exclusive_and_kind_change_is_drift)
 
 Реализовать сценарии BEH-18.
 Source: workstreams/WS-disputatio-65/spec/15-behaviour-spec.md#BEH-18
 **Depends on:** [TASK-005]
 
 **Checklist:**
-- [ ] реализовать BEH-18: Формы pair и document остаются взаимоисключающими
-- [ ] проверка группы: tests/runtime/test_pipeline_config_kinds.py::test_pipeline_forms_remain_exclusive_and_kind_change_is_drift (kind: atp) зелёные на BEH-18
+- [x] реализовать BEH-18: Формы pair и document остаются взаимоисключающими
+- [x] проверка группы: tests/runtime/test_pipeline_config_kinds.py::test_pipeline_forms_remain_exclusive_and_kind_change_is_drift (kind: atp) зелёные на BEH-18
 
 **Traces to:** [FR-18]
 
