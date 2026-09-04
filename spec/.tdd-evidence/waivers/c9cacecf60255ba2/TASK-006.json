@@ -1,0 +1,7 @@
+{
+  "schema": "tdd-waiver/v1",
+  "task_id": "TASK-006",
+  "reason": "Red-unverifiable: поведение BEH-18 полностью доставлено до старта задачи. Эксклюзивность форм [pipeline] — закрытая схема секции (TASK-003, PR #92; исходно PR #64), покрыта test_every_form_refusal_names_both_schemas/test_foreign_key_refusal_also_names_the_key; «смена вида — drift, не миграция» — semantic comparison TASK-004 (PR #93), включая манифестную половину P0 (фикс-коммит e174078 приёмки PR #93), покрыта test_resume_with_config_of_other_kind_mutates_nothing. Эмпирика red-паса (лог TASK-006-red-20260903-210319): агент дополнительно написал scratch-тест непокрытого направления PAIR→DOCUMENT на том же стенде — прошёл немедленно; честный красный тест невозможен — всё, что проверяет реальное поведение, зелено сразу. Закрыто зелёной регрессией ровно по цели checklist'а: tests/runtime/test_pipeline_config_kinds.py::test_pipeline_forms_remain_exclusive_and_kind_change_is_drift (обе стороны исключения форм + drift в обоих направлениях).",
+  "approved_by": "human",
+  "baseline_sha": "0a9658a9769351531b32993dc4a8a6dce693006a"
+}
