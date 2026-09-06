@@ -101,7 +101,11 @@ from disputatio.runtime import (
 from disputatio.runtime.composition import PipelineDeps, build_pipeline
 from disputatio.runtime.layout import session_dir
 from disputatio.runtime.loop import drive, resume_session
-from disputatio.runtime.pipeline_config import load_session_profile
+from disputatio.runtime.pipeline_config import (
+    load_session_profile,
+    toplevel_root,
+    validate_anchor_path,
+)
 from disputatio.runtime.pipeline_export import export_pipeline
 from disputatio.runtime.pipeline_integrity import (
     MANIFEST_NAME,
@@ -382,6 +386,11 @@ def cmd_pipeline_phase(
     содержимое манифеста то же, что было в момент остановки, и других
     доказательств фазе не нужно.
 
+    Прежде этого судится сам анкер: `validate_anchor_path` тем же
+    fail-closed, что у `run` и `resume`. Журнал, уехавший в рабочее дерево,
+    анкером не является — доверять ему значило бы принимать доказательство
+    от проверяемой стороны.
+
     Три исхода вместо двух, потому что «доказательства нет» и «доказательство
     не сошлось» — разные решения потребителя:
 
@@ -406,6 +415,16 @@ def cmd_pipeline_phase(
     """
     root = Path(args.root)
     config = load_pipeline_config(_config_path(args, root))
+    # Containment анкера — до всякого доверия к нему, тем же судом, что у
+    # `run` и `resume`. Пропустить его нельзя именно здесь: `anchor_path`
+    # классифицирован `mutable` (правка не даёт semantic drift), конфиг
+    # штатно лежит в репозитории, то есть в зоне записи автора, — и анкер,
+    # уехавший в рабочее дерево, автору достижим. Подделав обе стороны
+    # сверки разом, он получил бы `DONE` с кодом `0` от команды, заведённой
+    # ради недоверия к манифесту. `git rev-parse --show-prefix` под
+    # `toplevel_root` read-only не ломает: индекс, в отличие от `git
+    # status`, он не трогает.
+    validate_anchor_path(config.anchor_path, toplevel_root(GitCli(root), root))
     anchor = _pipeline_anchor(config, root, args.slug)
     record = _terminal_record(anchor, args.slug)
     if record is None:

@@ -725,6 +725,42 @@ def test_broken_anchor_at_the_terminal_transition_does_not_report_failure(
     assert stand.manifest()["phase"] == PipelinePhase.DONE.value
 
 
+def test_phase_refuses_an_anchor_inside_the_authors_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Анкер в рабочем дереве — не анкер, и фазу по нему подтверждать нельзя.
+
+    Это не гипотетика, а прямая дорога: `anchor_path` классифицирован
+    `mutable` (semantic drift на его правку не срабатывает), конфиг
+    штатно лежит в репозитории — то есть в зоне записи автора, — а сам
+    журнал автору тогда достижим. Подделав обе стороны сверки разом
+    (отметку и манифест), автор получил бы `DONE` с кодом `0` от команды,
+    заведённой ради недоверия к манифесту.
+
+    `run` и `resume` этот конфиг отвергают (`validate_anchor_path`), и
+    команда, извлекающая из анкера доверие, обязана судить его так же:
+    иначе она — единственная дыра в том самом контуре, который проверяет.
+    """
+    inside = Path(".disputatio") / "anchors"
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    stand.config_path.write_text(
+        stand.config_path.read_text(encoding="utf-8").replace(
+            f'anchor_path = "{stand.anchor_root.as_posix()}"',
+            f'anchor_path = "{(stand.workspace / inside).as_posix()}"',
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == "", "фаза по анкеру внутри дерева наружу не уходит"
+    assert "вне репозитория" in captured.err
+
+
 def test_phase_on_a_missing_anchor_is_a_domain_error_not_a_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
