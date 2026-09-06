@@ -74,6 +74,7 @@ from disputatio.contracts import (
     Verdict,
 )
 from disputatio.events import (
+    AnchorCorrupted,
     AnchorRecord,
     FilePipelineStateStore,
     FileStateStore,
@@ -735,6 +736,39 @@ def test_non_terminal_writes_leave_no_terminal_record(tmp_path: Path) -> None:
         PipelinePhase.FAILED,
     )
     assert "terminal" not in kinds
+
+
+def test_broken_anchor_does_not_swallow_the_terminal_events(tmp_path: Path) -> None:
+    """Сбой записи отметки не отменяет события уже совершённого перехода (P8).
+
+    Журнал событий объявлен производным и best-effort: манифест — источник
+    истины, поток — его тень. Отметка пишется ПОСЛЕ эмиссии именно поэтому:
+    повреждённый анкер (штатно возможное состояние, §8.1 шаг 0) иначе съедал
+    бы `phase_change`/`exported` терминального перехода, который на диске уже
+    произошёл, — и наблюдатель видел бы пайплайн навсегда застрявшим в
+    предпоследней фазе.
+    """
+    harness = build_harness(tmp_path, converged_pair())
+    original = IntegrityAnchor.append_terminal
+
+    def boom(self: IntegrityAnchor, **kwargs: object) -> None:
+        raise AnchorCorrupted("журнал повреждён")
+
+    IntegrityAnchor.append_terminal = boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(AnchorCorrupted):
+            harness.runner.run(SLUG, "полировать пару")
+    finally:
+        IntegrityAnchor.append_terminal = original  # type: ignore[method-assign]
+
+    kinds = [
+        event.type.value
+        for event in read_pipeline_events(
+            pipeline_dir(harness.workspace, SLUG) / "events.jsonl"
+        )
+    ]
+    assert harness.store.load(SLUG).phase is PipelinePhase.DONE
+    assert "exported" in kinds, "событие перехода, случившегося на диске, потеряно"
 
 
 def _anchor_records(harness: Harness) -> list[AnchorRecord]:
