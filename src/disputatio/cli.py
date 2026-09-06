@@ -51,7 +51,6 @@
 
 import argparse
 import secrets
-import shlex
 import sys
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
@@ -90,7 +89,6 @@ from disputatio.runtime import (
     GitCli,
     PipelineConfig,
     PipelineNotResumable,
-    RuntimeConfig,
     base_rev,
     build_runtime,
     load_config_file,
@@ -104,7 +102,6 @@ from disputatio.runtime.pipeline_config import load_session_profile
 from disputatio.runtime.pipeline_export import export_pipeline
 from disputatio.runtime.pipeline_resume import missing_manifest_message
 from disputatio.runtime.steps import StepContext
-from disputatio.verifier import GateSpec
 
 EXIT_OK: Final = 0
 """Сессия дошла до `DONE` — в том числе эскалацией: она не сбой ([REQ-018])."""
@@ -209,7 +206,6 @@ def cmd_run(
         base_commit=base_rev(root, _FIRST_ROUND, base_commit=_HEAD_REVISION),
         task_prompt=args.task,
     )
-    _reject_unconvergeable_gates(config)
     deps = build_runtime(config, root, git=GitCli(root), now=now)
     # Имя сессии известно только теперь: всё, что упадёт дальше, журналируется
     # её именем, а не пустым — иначе событие `error` не привязать к сессии.
@@ -244,78 +240,6 @@ def cmd_run(
         _drive_to_terminal(
             call, outcome=lambda: _saved_state(deps.store, config.session_id)
         )
-    )
-
-
-def _is_executable_gate(gate: GateSpec) -> bool:
-    """Гейт, который заведомо запустится: включён и команда разбирается.
-
-    Разбор — тот же `shlex.split`, что и в `run_gate_command`: пустой argv
-    там отвергается `ValueError` до `Popen`, то есть невыполнимость видна
-    без запуска. Неразбираемая кавычка (`ValueError` самого `shlex`) — тот
-    же класс: команда не станет исполняемой ни при каком окружении.
-    """
-    if not gate.enabled:
-        return False
-    try:
-        return bool(shlex.split(gate.cmd))
-    except ValueError:
-        return False
-
-
-def _reject_unconvergeable_gates(config: RuntimeConfig) -> None:
-    """Отказ до первого вызова агента, если сойтись нельзя по построению.
-
-    §4.3: `pass` требует хотя бы одного выполненного гейта, значит набор,
-    в котором выполнить нечего, даёт `indeterminate` в каждом раунде, а
-    §5.1 п.2 пропускает без гейтов только `analyze` с ПУСТЫМ набором.
-    Обе несходимости видны статически: пустой набор вне `analyze` и набор,
-    где все гейты `enabled=false`, — в любом режиме.
-
-    Проверка живёт здесь, а не в загрузчике конфига: сессия без гейтов
-    законна по типу и по [REQ-010], несходимой её делает пара «конфиг +
-    режим запуска», а режим приходит из argv. Отказ до `bootstrap_session`
-    по той же причине, что и pre-flight: негодный запуск не оставляет
-    `.disputatio/`.
-
-    Цена отсутствия отказа — не эстетика: сессия крутила бы платные раунды
-    до `max_rounds` и заканчивалась `DEADLOCK` с причиной `max_rounds`,
-    которая называет симптом, а не причину.
-
-    **Покрыты все статически различимые случаи заведения новой сессии.**
-    Гейт, чью команду `shlex` разбирает в пустой argv, невыполним так же
-    наглядно, как выключенный: `run_gate_command` отвергает её `ValueError`
-    ещё до `Popen`.
-
-    Непокрытого два, и оба намеренно. Гейт, объявленный включённым и не
-    запустившийся уже в рантайме (нет бинаря → `skip` по конвенции
-    `run_gate`), даёт `indeterminate` в каждом раунде и выгорает так же —
-    до `max_rounds`, с той же неинформативной причиной, причём автор
-    диагностики не видит вовсе: в его промпт идут только `fail`-гейты. И
-    `cmd_resume` эту проверку не зовёт: унаследованная сессия ещё способна
-    дойти штатным путём `DEADLOCK → ESCALATED → EXPORTING` до частичного
-    экспорта, ради которого продолжение и запускают, — отказ отнял бы у
-    неё этот исход, ничего не дав взамен.
-
-    Лечится и то, и другое не здесь: остановка после раунда без единого
-    выполненного гейта — новое условие §5 со своим кодом причины, то есть
-    отдельная нормативная развилка
-    (`todo://disputatio/indeterminate-stop-reason`).
-    """
-    if any(_is_executable_gate(gate) for gate in config.gates):
-        return
-    if config.mode is Mode.ANALYZE and not config.gates:
-        return
-    what = (
-        "ни один гейт не выполним (выключен или задан невыполнимой командой)"
-        if config.gates
-        else "гейтов нет ни одного"
-    )
-    raise ConfigError(
-        f"сойтись невозможно по построению: режим `{config.mode.value}`, {what}. "
-        "Сходимость требует хотя бы одного выполненного гейта (SPEC-001 §4.3); "
-        "без гейтов допустим только режим `analyze` с пустым набором "
-        "(§5.1 п.2). Включите гейт в профиле или запустите с `--mode analyze`."
     )
 
 
