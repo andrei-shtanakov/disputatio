@@ -513,6 +513,52 @@ def test_analyze_run_without_gates_still_converges(
     assert _SESSION_ID_RE.match(_session_id(capsys))
 
 
+def test_gateless_develop_run_ends_unconverged_with_a_symptom_reason(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Деградировавший путь наблюдается целиком, а не выводится из предикатов.
+
+    `develop` без гейтов до §4.3 сходился на первом `approve`; теперь
+    `overall == indeterminate` в каждом раунде, сходимость невозможна, и
+    сессия уходит штатным `DEADLOCK → ESCALATED → EXPORTING(partial)`.
+    Тест пинит именно то, что записано в §4.3 как открытый хвост:
+    завершение честное (`converged: false`), но причина называет **симптом**
+    (`max_rounds`), а код возврата — `0`, то есть по коду несошедшаяся
+    сессия неотличима от успешной. Когда пункт
+    `todo://disputatio/indeterminate-stop-reason` будет взят, красным станет
+    этот тест — и это правильный сигнал: исход изменится намеренно.
+    """
+    bench = _bench(
+        git_repo,
+        monkeypatch,
+        profile=_profile(gates=(), max_rounds=1),
+        author_replies=[_proposal(1)],
+        reviewer_replies=[_approve(1)],
+    )
+
+    code = _main(bench.argv())
+
+    session_id = _session_id(capsys)
+    state = FileStateStore(git_repo).load(session_id)
+    decision = json.loads(
+        (session_dir(git_repo) / "rounds" / "001" / "decision.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    verification = json.loads(
+        (session_dir(git_repo) / "rounds" / "001" / "verification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert code == 0
+    assert state.state is SessionPhase.DONE
+    assert verification["overall"] == "indeterminate"
+    assert verification["gates"] == []
+    assert decision["outcome"] == "deadlock"
+    assert decision["reason"] == "max_rounds"
+
+
 def test_config_snapshot_replaces_only_the_fields_owned_by_the_run(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
