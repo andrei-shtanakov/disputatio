@@ -57,6 +57,7 @@ These constrain almost every implementation decision; violating them breaks resu
 `DECIDING` checks stopping conditions **strictly top-down, first match is terminal** (§5): converged → budget hit → oscillation → max_rounds. Two rules that are easy to get wrong:
 
 - `verification.overall == fail` does **not** block the transition to `REVIEWING` — the reviewer weighs the failure itself. It *does* block `CONVERGED`.
+- `overall` has a third value, `indeterminate`: no gate actually ran (empty set or all `skip`). `pass` requires at least one executed `pass` — an unverified round is never green (§4.3). Outwardly `indeterminate` behaves like `fail` in two rules of three (blocks `CONVERGED`, not `REVIEWING`); the only path to convergence without an executed gate is the §5.1 п.2 carve-out for `analyze` with an empty gate set. The third rule differs: the §4.4 validation below rejects `approve` on `fail` **only** — extending it to `indeterminate` would send a legitimate empty-gate `analyze` review into schema-retry and drop the session into `FAILED`.
 - Anti-sycophancy: a round-1 `approve` is only accepted for `analyze` mode without code changes; otherwise the orchestrator forces one substantive review cycle.
 - Partial results are always exported, with `manifest.json` honestly recording `converged: false` plus open issues.
 
@@ -75,7 +76,7 @@ Git discipline: the working directory is a git repo; each accepted round is a co
 
 ## Artifact schemas
 
-All schemas are pydantic models tagged `"schema": "disputatio/v1"`; incompatible changes bump to v2. `proposal.md` is the exception — free markdown with a YAML frontmatter carrying the machine-readable fields.
+All schemas are pydantic models tagged `"schema": "disputatio/v1"`; incompatible changes bump to v2 — where "incompatible" means the meaning or structure of fields. Widening a closed enum keeps the tag: `overall` gained `indeterminate` inside v1 (SPEC-001 §4.3), because old artifacts still read and the only reader of `verification.json` is this codebase's own resume (`runtime/history.load_verification`). Forward compatibility of v1 is explicitly not promised. `proposal.md` is the exception — free markdown with a YAML frontmatter carrying the machine-readable fields.
 
 Validation rules the orchestrator enforces on `review.json` (§4.4) — these are the anti-hallucination core, not optional polish:
 

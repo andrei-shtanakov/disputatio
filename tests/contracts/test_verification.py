@@ -52,7 +52,20 @@ def spec_4_3_example() -> dict[str, Any]:
 
 
 def test_overall_outside_pass_fail_rejected() -> None:
-    """`overall` вне {pass, fail} (в т.ч. "skip") отклоняется ValidationError."""
+    """`overall` вне {pass, fail, indeterminate} отклоняется ValidationError.
+
+    `skip` в этом списке не по алфавиту: статус гейта на верхний уровень
+    не поднимается — «часть пропущена» и «итог неизвестен» разные вещи,
+    и второе называется `indeterminate` (§4.3).
+
+    Имя теста осталось от двузначного enum намеренно: на него ссылается
+    селектор claim'а TASK-003 в архиве сертификации волны 1
+    (`spec/.tdd-evidence/claims/ws-w-contracts/TASK-003.json`), а архив
+    неизменяем (`harness_files`). Переименование сделало бы записанный
+    red-цикл невоспроизводимым, и починить это было бы уже нечем —
+    резолвимость селекторов репо считает инвариантом не-вакуумности
+    evidence (`test_claim_selectors_resolve_to_existing_tests`).
+    """
     try:
         from disputatio.contracts.verification import VerificationReport
     except ImportError as exc:  # red-фаза: verification.py ещё не создан
@@ -60,11 +73,23 @@ def test_overall_outside_pass_fail_rejected() -> None:
             "src/disputatio/contracts/verification.py ещё не создан"
         ) from exc
 
-    for invalid in ("skip", "warn", ""):
+    for invalid in ("skip", "warn", "", "unknown"):
         payload = copy.deepcopy(spec_4_3_example())
         payload["overall"] = invalid
         with pytest.raises(ValidationError):
             VerificationReport.model_validate(payload)
+
+
+def test_overall_indeterminate_is_accepted() -> None:
+    """Третье значение §4.3 читается артефактом наравне с pass/fail."""
+    from disputatio.contracts.verification import OverallStatus, VerificationReport
+
+    payload = copy.deepcopy(spec_4_3_example())
+    payload["overall"] = "indeterminate"
+
+    report = VerificationReport.model_validate(payload)
+
+    assert report.overall is OverallStatus.INDETERMINATE
 
 
 def test_spec_4_3_example_validates() -> None:

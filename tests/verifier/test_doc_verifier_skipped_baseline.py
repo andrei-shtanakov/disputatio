@@ -18,6 +18,7 @@
 from pathlib import Path
 
 from disputatio.contracts.verification import GateStatus, OverallStatus
+from disputatio.verifier.config import GateSpec
 from disputatio.verifier.doc_verifier import DocVerifier
 
 _CONTENT_GATES = ("doc-paths", "doc-links", "doc-anchors", "doc-line-refs")
@@ -102,4 +103,32 @@ def test_a_clean_document_still_passes(tmp_git_repo: Path) -> None:
 
     report = verifier.verify(1)
 
+    assert report.overall is OverallStatus.PASS
+
+
+def test_skipped_extra_gate_does_not_sink_a_passing_baseline(
+    tmp_git_repo: Path,
+) -> None:
+    """`skip` у `extra`-гейта не роняет отчёт в `indeterminate` (§4.3).
+
+    Правило «нет ни одного выполненного `pass` ⇒ не `pass`» проверяется
+    именно здесь: baseline §6 неотключаем, поэтому его выполненные гейты
+    и есть то самое свидетельство, а `skip` добавленного конфигом гейта —
+    ровно тот случай, ради которого `skip` не считается провалом.
+    """
+    spec = tmp_git_repo / "spec.md"
+    spec.write_text("# спека\n\nтекст без ссылок\n", encoding="utf-8")
+    verifier = DocVerifier(
+        doc_paths=(spec,),
+        allowed=("spec.md",),
+        repo_root=tmp_git_repo,
+        patch_reader=lambda round_no: "",
+        extra=[GateSpec(name="lint", cmd="disputatio-no-such-binary")],
+    )
+
+    report = verifier.verify(1)
+
+    assert [gate.status for gate in report.gates if gate.name == "lint"] == [
+        GateStatus.SKIP
+    ]
     assert report.overall is OverallStatus.PASS

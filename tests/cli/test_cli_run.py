@@ -253,13 +253,23 @@ def _approve(round_no: int) -> str:
     return review.model_dump_json(by_alias=True)
 
 
+_TRIVIAL_GATE = GateSpec(name="noop", cmd="true", enabled=True)
+
+
 def _profile(
     *,
-    gates: tuple[GateSpec, ...] = (),
+    gates: tuple[GateSpec, ...] = (_TRIVIAL_GATE,),
     schema_retries: int = 1,
     max_rounds: int = 5,
 ) -> RuntimeConfig:
-    """Профиль запуска: агенты, лимиты и гейты — свои, остальное негодное."""
+    """Профиль запуска: агенты, лимиты и гейты — свои, остальное негодное.
+
+    Гейт по умолчанию — настоящий, но пустой (`true`): прогон CLI идёт в
+    режиме `develop`, а там сходимость требует хотя бы одного фактически
+    выполненного гейта (§4.3, §5.1 п.2). Без него сессия честно не
+    сходилась бы, и проверка проводки CLI утонула бы в лишних раундах.
+    Ловушка `_forbid_real_processes` минирует только агентские CLI.
+    """
     return RuntimeConfig(
         session_id=_PROFILE_ID,
         mode=Mode.ANALYZE,
@@ -484,6 +494,69 @@ def test_dirty_working_tree_exits_two_and_leaves_no_session_dir(
     assert not session_dir(git_repo).exists()
     assert bench.launcher.argvs == []
     assert capsys.readouterr().out == ""
+
+
+def test_analyze_run_without_gates_still_converges(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Карман §5.1 п.2 сквозь весь CLI: `analyze` с пустым набором доходит до 0.
+
+    Правило §4.3 отняло зелёный вердикт у пустого набора, и это законное
+    исключение легко было бы задеть заодно — здесь оно проверено не на
+    предикате, а на настоящем прогоне.
+    """
+    bench = _bench(git_repo, monkeypatch, profile=_profile(gates=()))
+
+    code = _main(bench.argv("--mode", "analyze"))
+
+    assert code == 0
+    assert _SESSION_ID_RE.match(_session_id(capsys))
+
+
+def test_gateless_develop_run_ends_unconverged_with_a_symptom_reason(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Деградировавший путь наблюдается целиком, а не выводится из предикатов.
+
+    `develop` без гейтов до §4.3 сходился на первом `approve`; теперь
+    `overall == indeterminate` в каждом раунде, сходимость невозможна, и
+    сессия уходит штатным `DEADLOCK → ESCALATED → EXPORTING(partial)`.
+    Тест пинит именно то, что записано в §4.3 как открытый хвост:
+    завершение честное (`converged: false`), но причина называет **симптом**
+    (`max_rounds`), а код возврата — `0`, то есть по коду несошедшаяся
+    сессия неотличима от успешной. Когда пункт
+    `todo://disputatio/indeterminate-stop-reason` будет взят, красным станет
+    этот тест — и это правильный сигнал: исход изменится намеренно.
+    """
+    bench = _bench(
+        git_repo,
+        monkeypatch,
+        profile=_profile(gates=(), max_rounds=1),
+        author_replies=[_proposal(1)],
+        reviewer_replies=[_approve(1)],
+    )
+
+    code = _main(bench.argv())
+
+    session_id = _session_id(capsys)
+    state = FileStateStore(git_repo).load(session_id)
+    decision = json.loads(
+        (session_dir(git_repo) / "rounds" / "001" / "decision.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    verification = json.loads(
+        (session_dir(git_repo) / "rounds" / "001" / "verification.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert code == 0
+    assert state.state is SessionPhase.DONE
+    assert verification["overall"] == "indeterminate"
+    assert verification["gates"] == []
+    assert decision["outcome"] == "deadlock"
+    assert decision["reason"] == "max_rounds"
 
 
 def test_config_snapshot_replaces_only_the_fields_owned_by_the_run(

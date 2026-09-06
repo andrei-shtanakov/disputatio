@@ -173,6 +173,72 @@ def test_converged_true_for_analyze_with_empty_gates() -> None:
     assert is_converged(inputs) is True
 
 
+def test_converged_false_when_develop_run_has_no_executed_gate() -> None:
+    """Шов §4.3 ↔ §5.1: develop без единого выполненного гейта не сходится.
+
+    Отчёт собирается настоящим `compute_overall`, а не подставленным
+    значением: пункт «не `pass` без фактического `pass`» имеет силу лишь
+    тогда, когда обе половины — агрегатор и критерий сходимости — говорят
+    одно. Прежняя редакция отдавала на пустом наборе `pass`, и раунд, где
+    не выполнено ни одной проверки, проходил детерминированную половину
+    критерия.
+    """
+    from disputatio.core.deciding import is_converged
+    from disputatio.verifier.aggregate import compute_overall
+
+    inputs = make_inputs(
+        round=2,
+        mode=Mode.DEVELOP,
+        review=make_review(verdict=Verdict.APPROVE),
+        verification=make_verification(overall=compute_overall([]), gates=[]),
+    )
+
+    assert is_converged(inputs) is False
+
+
+def test_converged_false_when_every_gate_was_skipped() -> None:
+    """Набор из одних `skip` не сходится ни в одном режиме (§4.3).
+
+    Карман §5.1 п.2 выписан для **пустого** набора в `analyze`: гейты,
+    которые заявлены и не выполнились, — это не «проверок не предполагалось»,
+    а «проверки не состоялись».
+    """
+    from disputatio.core.deciding import is_converged
+    from disputatio.verifier.aggregate import compute_overall
+
+    skipped = [
+        GateResult(name="tests", cmd="pytest -q", status=GateStatus.SKIP),
+        GateResult(name="types", cmd="pyrefly check", status=GateStatus.SKIP),
+    ]
+    inputs = make_inputs(
+        round=2,
+        mode=Mode.ANALYZE,
+        review=make_review(verdict=Verdict.APPROVE),
+        verification=make_verification(overall=compute_overall(skipped), gates=skipped),
+    )
+
+    assert is_converged(inputs) is False
+
+
+def test_converged_true_for_analyze_with_indeterminate_and_empty_gates() -> None:
+    """`analyze` с пустым набором сходится и при `indeterminate` (§5.1 п.2).
+
+    Единственный законный путь к сходимости без выполненных гейтов;
+    решает его критерий §5.1, а не агрегатор.
+    """
+    from disputatio.core.deciding import is_converged
+    from disputatio.verifier.aggregate import compute_overall
+
+    inputs = make_inputs(
+        round=2,
+        mode=Mode.ANALYZE,
+        review=make_review(verdict=Verdict.APPROVE),
+        verification=make_verification(overall=compute_overall([]), gates=[]),
+    )
+
+    assert is_converged(inputs) is True
+
+
 def test_converged_false_when_carried_issue_is_blocker() -> None:
     """approve+pass, но carried blocker → converged ложь [REQ-007]."""
     from disputatio.core.deciding import is_converged
