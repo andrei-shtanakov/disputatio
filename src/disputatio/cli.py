@@ -76,6 +76,8 @@ from disputatio.contracts import (
 )
 from disputatio.core import SessionFsm
 from disputatio.events import (
+    AnchorCorrupted,
+    AnchorRecord,
     FilePipelineStateStore,
     FileStateStore,
     IntegrityAnchor,
@@ -85,6 +87,7 @@ from disputatio.events import (
 )
 from disputatio.runtime import (
     ConfigError,
+    ControlPlaneTampered,
     DisputatioError,
     GitCli,
     PipelineConfig,
@@ -404,7 +407,7 @@ def cmd_pipeline_phase(
     root = Path(args.root)
     config = load_pipeline_config(_config_path(args, root))
     anchor = _pipeline_anchor(config, root, args.slug)
-    record = anchor.terminal_record()
+    record = _terminal_record(anchor, args.slug)
     if record is None:
         print(
             f"фаза пайплайна {args.slug!r} анкером не подтверждена: терминальной "
@@ -422,6 +425,41 @@ def cmd_pipeline_phase(
     )
     print(record.phase, flush=True)
     return EXIT_OK
+
+
+def _terminal_record(anchor: IntegrityAnchor, slug: str) -> AnchorRecord | None:
+    """Терминальная отметка; сбои чтения журнала — доменные ошибки (§3.1).
+
+    Перевод обязателен, и разница кодов здесь не косметическая. Голое
+    исключение уходит мимо `main` (тот ловит только `DisputatioError`) и
+    завершает процесс кодом `1` — тем самым, которым `phase` сообщает
+    «пайплайн ещё в работе». Завершённый пайплайн, чей журнал искали не там,
+    читался бы машинно как незавершённый, а испорченный журнал — как
+    работающий, то есть команда молчала бы ровно о том, ради сигнализации о
+    чём написана.
+
+    Диагнозы те же, что у `resume` над тем же журналом
+    (`pipeline_resume._verify_integrity`): «журнал не там» — ошибка запуска с
+    инструкцией про `--config`, порча — нарушение control plane. Анкер вынесен
+    из дерева автора именно затем, чтобы его содержимое никто мимо
+    оркестратора не менял, и повреждение одной строки не вправе давать более
+    мягкий ответ, чем подмена файла, который эта строка описывает.
+    """
+    try:
+        return anchor.terminal_record()
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"журнала целостности {anchor.path} не существует, а `run` "
+            f"создаёт его первым действием (§3.1) — значит фаза пайплайна "
+            f"{slug!r} ищется не там: укажите тот же конфиг, что и при "
+            "запуске (`--config`), чтобы `anchor_path` совпал"
+        ) from exc
+    except AnchorCorrupted as exc:
+        raise ControlPlaneTampered(
+            f"журнал целостности пайплайна {slug!r} повреждён: {exc}. Фазу "
+            "по нему подтвердить нельзя, и отвечать «подтверждения нет» на "
+            "испорченный анкер значило бы выдать вмешательство за работу"
+        ) from exc
 
 
 def cmd_pipeline_export(

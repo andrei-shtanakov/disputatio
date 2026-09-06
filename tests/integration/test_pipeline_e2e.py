@@ -695,6 +695,56 @@ def test_phase_touches_nothing_but_the_lock_file_in_the_empty_anchor_window(
     )
 
 
+def test_phase_on_a_missing_anchor_is_a_domain_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Журнал ищется не там → код 2 с инструкцией, а не traceback и код 1.
+
+    Ровно тот промах, который уже описан для `resume`: пайплайн запущен с
+    нестандартным `anchor_path`, а `phase` зовут без `--config`. Разница
+    кодов здесь не косметическая — необработанное исключение завершает
+    процесс кодом `1`, то есть тем самым, которым команда сообщает «пайплайн
+    ещё в работе»: завершённый пайплайн машинно читался бы как незавершённый.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    capsys.readouterr()
+
+    code = main(["pipeline", "phase", "--slug", SLUG, "--root", str(stand.workspace)])
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+    assert "--config" in captured.err
+
+
+def test_phase_on_a_corrupted_anchor_reports_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Порча журнала — подмена (код 2), а не «подтверждения нет» (код 1).
+
+    Анкер вынесен из дерева автора именно затем, чтобы его содержимое никто
+    мимо оркестратора не менял. Ответ «отметки нет» на испорченный журнал
+    сообщал бы потребителю «пайплайн ещё работает» ровно в том случае, ради
+    сигнализации о котором команда и написана.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    journal = (
+        stand.anchor_root
+        / next(path.name for path in stand.anchor_root.iterdir() if path.is_dir())
+        / f"{SLUG}.jsonl"
+    )
+    journal.write_text("{это не json}\n", encoding="utf-8")
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+
+
 def test_phase_refuses_a_forged_manifest_without_touching_the_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1390,7 +1440,7 @@ def test_bad_slug_is_a_domain_error_not_a_traceback(
     """
     stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
 
-    for command in ("status", "export"):
+    for command in ("status", "phase", "export"):
         code = main(
             [
                 "pipeline",
