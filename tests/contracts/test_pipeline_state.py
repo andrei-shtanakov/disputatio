@@ -502,3 +502,35 @@ def test_pipeline_state_not_in_manifest_forbids_snapshot_field() -> None:
     }
     with pytest.raises(ValidationError):
         PipelineState.model_validate(payload)
+
+
+def test_terminal_pipeline_phases_are_derived_not_relisted() -> None:
+    """Терминальность выводится из таблицы §2, а не переписывается списком.
+
+    Проверяется не значение, а СВОЙСТВО: набор дополняет непереходные фазы
+    до полного перечисления. Тест с ожидаемым списком `(DONE, FAILED)` был
+    бы четвёртой копией того же знания и ловил бы ровно ту ошибку, которую
+    вывод уже исключает.
+
+    Цена расхождения не абстрактна: фаза, попавшая в один список и не
+    попавшая в другой, дала бы пайплайн, который `resume` вести
+    отказывается, а терминальной отметки анкера не получает — то есть
+    `disp pipeline phase` навсегда отвечал бы «не подтверждена» на честно
+    остановленный пайплайн.
+    """
+    from disputatio.contracts import TERMINAL_PIPELINE_PHASES, PipelinePhase
+    from disputatio.contracts.pipeline import _NON_TERMINAL_PHASES
+
+    assert set(TERMINAL_PIPELINE_PHASES) | set(_NON_TERMINAL_PHASES) == set(
+        PipelinePhase
+    )
+    assert not set(TERMINAL_PIPELINE_PHASES) & set(_NON_TERMINAL_PHASES)
+
+
+def test_terminal_pipeline_phases_never_start_an_edge() -> None:
+    """Из терминальной фазы рёбер нет — то, чем терминальность и определена."""
+    from disputatio.contracts import ALLOWED_TRANSITIONS, TERMINAL_PIPELINE_PHASES
+
+    sources = {source for source, _ in ALLOWED_TRANSITIONS}
+
+    assert not sources & set(TERMINAL_PIPELINE_PHASES)

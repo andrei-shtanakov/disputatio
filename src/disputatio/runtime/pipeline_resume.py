@@ -49,8 +49,8 @@ from pathlib import Path
 from typing import Final, Literal
 
 from disputatio.contracts import (
+    TERMINAL_PIPELINE_PHASES,
     NextAction,
-    PipelinePhase,
     PipelineState,
     PipelineStateStore,
     SessionRecord,
@@ -92,9 +92,6 @@ from disputatio.runtime.pipeline_semantic_proof import (
 )
 
 WorktreeClass = Literal["clean", "legal_patch", "unattributed"]
-
-#: Терминальные фазы пайплайна (§2): рёбер из них в таблице нет вовсе.
-_TERMINAL_PHASES: Final = (PipelinePhase.DONE, PipelinePhase.FAILED)
 
 #: `kind` интентов, продвигающих конкретную ревизию: их replay обязан
 #: убедиться, что ревизия ещё жива (§8.1 шаг 1).
@@ -495,7 +492,7 @@ class PipelineResume:
             raise PipelineNotResumable(
                 missing_manifest_message(self._workspace_root, slug, anchor)
             ) from exc
-        if state.phase in _TERMINAL_PHASES:
+        if state.phase in TERMINAL_PIPELINE_PHASES:
             raise PipelineNotResumable(
                 f"пайплайн {slug!r} в терминальной фазе {state.phase.value}: "
                 "рёбер из неё в таблице §2 нет — возобновлять нечего"

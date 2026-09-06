@@ -160,6 +160,20 @@ _NON_TERMINAL_PHASES: Final = (
     PipelinePhase.ESCALATED,
 )
 
+#: Фазы, из которых ПАЙПЛАЙН не выходит (§2) — не путать с `core.TERMINAL_PHASES`,
+#: которая про фазы сессии: понятия разные, и имя обязано их различать.
+#: **Выводятся**, а не
+#: перечисляются: терминальность — свойство таблицы переходов, и второй
+#: список тех же имён разошёлся бы с первым молча. Знание нужно троим —
+#: `resume` (возобновлять нечего), `_mark_terminal` (кому писать отметку
+#: анкера) и самой таблице, — и цена расхождения не абстрактна: фаза,
+#: попавшая в один список и не попавшая в другой, дала бы пайплайн, который
+#: `resume` вести отказывается, а отметки не получает, то есть `phase`
+#: навсегда отвечает «не подтверждена» на честно остановленный пайплайн.
+TERMINAL_PIPELINE_PHASES: Final = tuple(
+    phase for phase in PipelinePhase if phase not in _NON_TERMINAL_PHASES
+)
+
 ALLOWED_TRANSITIONS: Final[
     dict[tuple[PipelinePhase, PipelinePhase], frozenset[TransitionReason]]
 ] = {

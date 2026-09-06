@@ -68,6 +68,7 @@ from disputatio.contracts import (
     ENTRY_PHASE,
     SESSIONS_FIELD_BY_CONTOUR,
     TERMINAL_CONTOUR,
+    TERMINAL_PIPELINE_PHASES,
     BoundaryVerdict,
     BudgetUsed,
     Documents,
@@ -138,11 +139,6 @@ GENESIS_SESSION_ID: Final = "__genesis__"
 GENESIS_ROUND: Final = 1
 GENESIS_OPERATION_ID: Final = "genesis"
 
-#: Фазы, из которых пайплайн не выходит (§2): именно они получают отметку в
-#: анкере. `ESCALATED` терминальной НЕ является — из неё идёт `EXPORTING`, и
-#: отметка на ней объявила бы остановленным пайплайн, который ещё пишет
-#: результат.
-TERMINAL_PIPELINE_PHASES: Final = (PipelinePhase.DONE, PipelinePhase.FAILED)
 
 #: Снапшоты верхнего уровня (§4.1); их пути попадают в манифест относительными.
 TASK_SNAPSHOT_NAME: Final = "task.md"
