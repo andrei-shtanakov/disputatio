@@ -129,15 +129,15 @@ SESSIONS_DIR_NAME: Final = "sessions"
 #: обязательные поля `AnchorRecord`. Сверка genesis идёт по `.immutable`
 #: (хешам write-once снапшотов), а не по identity, поэтому конкретные
 #: значения здесь — фиксированные метки, а не вычисление.
+GENESIS_SESSION_ID: Final = "__genesis__"
+GENESIS_ROUND: Final = 1
+GENESIS_OPERATION_ID: Final = "genesis"
+
 #: Фазы, из которых пайплайн не выходит (§2): именно они получают отметку в
 #: анкере. `ESCALATED` терминальной НЕ является — из неё идёт `EXPORTING`, и
 #: отметка на ней объявила бы остановленным пайплайн, который ещё пишет
 #: результат.
 TERMINAL_PIPELINE_PHASES: Final = (PipelinePhase.DONE, PipelinePhase.FAILED)
-
-GENESIS_SESSION_ID: Final = "__genesis__"
-GENESIS_ROUND: Final = 1
-GENESIS_OPERATION_ID: Final = "genesis"
 
 #: Снапшоты верхнего уровня (§4.1); их пути попадают в манифест относительными.
 TASK_SNAPSHOT_NAME: Final = "task.md"
