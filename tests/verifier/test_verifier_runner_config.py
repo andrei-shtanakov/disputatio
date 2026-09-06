@@ -30,13 +30,15 @@ def _python_cmd(code: str) -> str:
 def test_non_positive_tail_lines_rejected_at_construction(
     tmp_git_repo: Path, tail_lines: int
 ) -> None:
-    """Невалидный `tail_lines` — `ValueError` конструктора, не ложный `pass`.
+    """Невалидный `tail_lines` — `ValueError` конструктора, не тихая потеря.
 
     Без этой проверки лимит доехал бы до `capture.run_gate_command`, чей
     `ValueError` `run_gate` обязан гасить в `skip` ([REQ-011]): каждый gate
-    стал бы «пропущенным» с причиной `invalid command`, а `overall` —
-    зелёным ([REQ-008]). Ошибка конфигурации однонаправленно опасна именно
-    в эту сторону, поэтому падает громко и до запуска процессов.
+    стал бы «пропущенным» с причиной `invalid command`, а раунд —
+    доказывающим ровно ничего. Зелёным `overall` при этом больше не
+    выходит — набор из одних `skip` даёт `indeterminate` (§4.3), — но цена
+    осталась той же: ошибка конфигурации молча съедала бы все проверки,
+    поэтому падает громко и до запуска процессов.
     """
     with pytest.raises(ValueError, match="tail_lines"):
         VerifierRunner([], tmp_git_repo, tail_lines=tail_lines)
