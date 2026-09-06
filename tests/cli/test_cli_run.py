@@ -496,6 +496,62 @@ def test_dirty_working_tree_exits_two_and_leaves_no_session_dir(
     assert capsys.readouterr().out == ""
 
 
+def test_develop_run_without_an_executable_gate_is_refused_at_start(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Конфиг, который не может сойтись, отвергается до первого вызова агента.
+
+    После §4.3 сходимость требует хотя бы одного выполненного гейта, и
+    `develop` без гейтов недостижим по построению — это видно статически.
+    Без отказа сессия крутила бы платные раунды до `max_rounds` и
+    заканчивалась `DEADLOCK` с причиной `max_rounds`, которая о настоящей
+    причине («сходиться не на чем») не говорит ничего.
+    """
+    bench = _bench(git_repo, monkeypatch, profile=_profile(gates=()))
+
+    code = _main(bench.argv())
+
+    assert code == 2
+    assert not session_dir(git_repo).exists()
+    assert bench.launcher.argvs == []
+    assert capsys.readouterr().out == ""
+
+
+def test_analyze_run_without_gates_is_allowed(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Карман §5.1 п.2 не задет: `analyze` с пустым набором запускается.
+
+    Отказ обязан различать «гейтов не предполагалось» и «гейты объявлены и
+    ни один не выполним»: первое — законный режим анализа.
+    """
+    bench = _bench(git_repo, monkeypatch, profile=_profile(gates=()))
+
+    code = _main(bench.argv("--mode", "analyze"))
+
+    assert code == 0
+    assert _SESSION_ID_RE.match(_session_id(capsys))
+
+
+def test_run_with_every_gate_disabled_is_refused_at_start(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Все гейты `enabled=false` — тоже несходимость, и тоже в любом режиме.
+
+    Отключённый гейт даёт `skip`, набор из одних `skip` — `indeterminate`
+    (§4.3), а карман §5.1 п.2 выписан только для ПУСТОГО набора: «гейты
+    объявлены и все выключены» — это не «проверок не предполагалось».
+    """
+    disabled = (GateSpec(name="tests", cmd="true", enabled=False),)
+    bench = _bench(git_repo, monkeypatch, profile=_profile(gates=disabled))
+
+    code = _main(bench.argv("--mode", "analyze"))
+
+    assert code == 2
+    assert not session_dir(git_repo).exists()
+    assert bench.launcher.argvs == []
+
+
 def test_config_snapshot_replaces_only_the_fields_owned_by_the_run(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

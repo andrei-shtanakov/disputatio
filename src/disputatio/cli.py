@@ -89,6 +89,7 @@ from disputatio.runtime import (
     GitCli,
     PipelineConfig,
     PipelineNotResumable,
+    RuntimeConfig,
     base_rev,
     build_runtime,
     load_config_file,
@@ -206,6 +207,7 @@ def cmd_run(
         base_commit=base_rev(root, _FIRST_ROUND, base_commit=_HEAD_REVISION),
         task_prompt=args.task,
     )
+    _reject_unconvergeable_gates(config)
     deps = build_runtime(config, root, git=GitCli(root), now=now)
     # Имя сессии известно только теперь: всё, что упадёт дальше, журналируется
     # её именем, а не пустым — иначе событие `error` не привязать к сессии.
@@ -240,6 +242,42 @@ def cmd_run(
         _drive_to_terminal(
             call, outcome=lambda: _saved_state(deps.store, config.session_id)
         )
+    )
+
+
+def _reject_unconvergeable_gates(config: RuntimeConfig) -> None:
+    """Отказ до первого вызова агента, если сойтись нельзя по построению.
+
+    §4.3: `pass` требует хотя бы одного выполненного гейта, значит набор,
+    в котором выполнить нечего, даёт `indeterminate` в каждом раунде, а
+    §5.1 п.2 пропускает без гейтов только `analyze` с ПУСТЫМ набором.
+    Обе несходимости видны статически: пустой набор вне `analyze` и набор,
+    где все гейты `enabled=false`, — в любом режиме.
+
+    Проверка живёт здесь, а не в загрузчике конфига: сессия без гейтов
+    законна по типу и по [REQ-010], несходимой её делает пара «конфиг +
+    режим запуска», а режим приходит из argv. Отказ до `bootstrap_session`
+    по той же причине, что и pre-flight: негодный запуск не оставляет
+    `.disputatio/`.
+
+    Цена отсутствия отказа — не эстетика: сессия крутила бы платные раунды
+    до `max_rounds` и заканчивалась `DEADLOCK` с причиной `max_rounds`,
+    которая называет симптом, а не причину.
+    """
+    if any(gate.enabled for gate in config.gates):
+        return
+    if config.mode is Mode.ANALYZE and not config.gates:
+        return
+    what = (
+        "все гейты выключены (`enabled = false`)"
+        if config.gates
+        else "гейтов нет ни одного"
+    )
+    raise ConfigError(
+        f"сойтись невозможно по построению: режим `{config.mode.value}`, {what}. "
+        "Сходимость требует хотя бы одного выполненного гейта (SPEC-001 §4.3); "
+        "без гейтов допустим только режим `analyze` с пустым набором "
+        "(§5.1 п.2). Включите гейт в профиле или запустите с `--mode analyze`."
     )
 
 

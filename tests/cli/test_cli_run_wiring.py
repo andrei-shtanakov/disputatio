@@ -184,8 +184,15 @@ def _approve(round_no: int) -> str:
     return review.model_dump_json(by_alias=True)
 
 
-def _profile(*, gates: tuple[GateSpec, ...] = ()) -> RuntimeConfig:
-    """Профиль запуска; поля, которыми владеет запуск, заведомо негодные."""
+def _profile(
+    *, gates: tuple[GateSpec, ...] = (GateSpec(name="noop", cmd="true", enabled=True),)
+) -> RuntimeConfig:
+    """Профиль запуска; поля, которыми владеет запуск, заведомо негодные.
+
+    Гейт по умолчанию настоящий и пустой: `develop` без выполнимого гейта
+    отвергается стартом (§4.3, `_reject_unconvergeable_gates`), и проверка
+    проводки не дошла бы до предмета.
+    """
     return RuntimeConfig(
         session_id="ИДЕНТИФИКАТОР-ИЗ-ПРОФИЛЯ",
         mode=Mode.DEVELOP,
@@ -244,7 +251,7 @@ def _setup(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    gates: tuple[GateSpec, ...] = (),
+    gates: tuple[GateSpec, ...] = (GateSpec(name="noop", cmd="true", enabled=True),),
     raises: bool = False,
 ) -> SpyLauncher:
     """Кладёт профиль рядом с репозиторием и собирает подмены запуска."""

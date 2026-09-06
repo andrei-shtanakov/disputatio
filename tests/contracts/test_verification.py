@@ -2,7 +2,7 @@
 
 Импорты `disputatio.contracts.verification` выполняются внутри тестов: на
 момент red-чекпоинта модуля ещё нет, и импорт на уровне модуля сломал бы
-collection. Red-селектор (`test_overall_outside_pass_fail_rejected` —
+collection. Red-селектор (`test_overall_outside_the_enum_rejected` —
 закрытие бэклог-пункта об отклонении невалидного `overall`) превращает
 ImportError в AssertionError — гейт принимает red только при падении
 assertion'ом.
@@ -51,8 +51,13 @@ def spec_4_3_example() -> dict[str, Any]:
     }
 
 
-def test_overall_outside_pass_fail_rejected() -> None:
-    """`overall` вне {pass, fail} (в т.ч. "skip") отклоняется ValidationError."""
+def test_overall_outside_the_enum_rejected() -> None:
+    """`overall` вне {pass, fail, indeterminate} отклоняется ValidationError.
+
+    `skip` в этом списке не по алфавиту: статус гейта на верхний уровень
+    не поднимается — «часть пропущена» и «итог неизвестен» разные вещи,
+    и второе называется `indeterminate` (§4.3).
+    """
     try:
         from disputatio.contracts.verification import VerificationReport
     except ImportError as exc:  # red-фаза: verification.py ещё не создан
@@ -60,11 +65,23 @@ def test_overall_outside_pass_fail_rejected() -> None:
             "src/disputatio/contracts/verification.py ещё не создан"
         ) from exc
 
-    for invalid in ("skip", "warn", ""):
+    for invalid in ("skip", "warn", "", "unknown"):
         payload = copy.deepcopy(spec_4_3_example())
         payload["overall"] = invalid
         with pytest.raises(ValidationError):
             VerificationReport.model_validate(payload)
+
+
+def test_overall_indeterminate_is_accepted() -> None:
+    """Третье значение §4.3 читается артефактом наравне с pass/fail."""
+    from disputatio.contracts.verification import OverallStatus, VerificationReport
+
+    payload = copy.deepcopy(spec_4_3_example())
+    payload["overall"] = "indeterminate"
+
+    report = VerificationReport.model_validate(payload)
+
+    assert report.overall is OverallStatus.INDETERMINATE
 
 
 def test_spec_4_3_example_validates() -> None:
