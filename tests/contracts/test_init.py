@@ -95,6 +95,7 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "TERMINAL_CONTOUR",
         "ENTRY_PHASE",
         "SESSIONS_FIELD_BY_CONTOUR",
+        "TERMINAL_PIPELINE_PHASES",
         "PHASES_BY_KIND",
         "EDGES_BY_KIND",
         "PipelineKind",

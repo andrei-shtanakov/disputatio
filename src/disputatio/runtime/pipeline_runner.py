@@ -68,6 +68,7 @@ from disputatio.contracts import (
     ENTRY_PHASE,
     SESSIONS_FIELD_BY_CONTOUR,
     TERMINAL_CONTOUR,
+    TERMINAL_PIPELINE_PHASES,
     BoundaryVerdict,
     BudgetUsed,
     Documents,
@@ -95,13 +96,18 @@ from disputatio.contracts import (
 )
 from disputatio.core import TERMINAL_PHASES
 from disputatio.events import (
+    AnchorCorrupted,
     FileStateStore,
     IntegrityAnchor,
     PipelineEvent,
     PipelineEventType,
     atomic_write,
 )
-from disputatio.runtime.errors import ConfigError, PipelineAlreadyExists
+from disputatio.runtime.errors import (
+    ConfigError,
+    ControlPlaneTampered,
+    PipelineAlreadyExists,
+)
 from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
 from disputatio.runtime.history import load_decision, load_review
 from disputatio.runtime.layout import REVIEW_NAME, round_dir
@@ -111,6 +117,7 @@ from disputatio.runtime.pipeline_config import (
     check_run_preconditions,
 )
 from disputatio.runtime.pipeline_export import ExportFn
+from disputatio.runtime.pipeline_integrity import MANIFEST_NAME
 from disputatio.runtime.pipeline_semantic_proof import write_semantic_proof
 from disputatio.verifier import resolve_inside
 
@@ -131,6 +138,7 @@ SESSIONS_DIR_NAME: Final = "sessions"
 GENESIS_SESSION_ID: Final = "__genesis__"
 GENESIS_ROUND: Final = 1
 GENESIS_OPERATION_ID: Final = "genesis"
+
 
 #: Снапшоты верхнего уровня (§4.1); их пути попадают в манифест относительными.
 TASK_SNAPSHOT_NAME: Final = "task.md"
@@ -1219,7 +1227,87 @@ class PipelineRunner:
         self._store.save(persisted)
         for event in events:
             self._sink.emit(event)
+        # После эмиссии, а не между `save` и `emit`: журнал событий объявлен
+        # производным и best-effort, и точка отказа перед ним сузила бы это
+        # обещание — повреждённый анкер (штатно возможное состояние, §8.1
+        # шаг 0) съедал бы `phase_change`/`error` терминального перехода.
+        # Порядок «манифест → отметка» при этом сохраняется: хеш снимается с
+        # файла, который уже лежит на диске.
+        self._mark_terminal(persisted)
         return persisted
+
+    def _mark_terminal(self, state: PipelineState) -> None:
+        """Отмечает остановку пайплайна в анкере (§4.2) — после записи манифеста.
+
+        Порядок обязателен: хеш снимается с того файла, который УЖЕ лежит на
+        диске. Отметка, снятая до `save`, доказывала бы состояние, которого
+        там нет. Вызов идёт и после эмиссии событий: сбой записи в анкер не
+        вправе отменять `phase_change`/`error` уже совершённого перехода.
+
+        **Крах между двумя записями неустраним, и дописать отметку позже
+        нельзя.** Терминальный пайплайн сюда больше не приходит: `advance`
+        при `next_action is None` возвращает состояние, ничего не записывая,
+        `_fail` из `FAILED` выходит раньше записи, а из `DONE` рёбер нет
+        вовсе, и `resume` отвергает терминальную фазу ещё при загрузке. Но
+        починить это ленивым восстановлением значило бы выдать отметку по
+        манифесту — то есть позволить подделанному `DONE` доказать самого
+        себя, а отметка ровно для того и заведена, чтобы манифесту не
+        верить. Поэтому окно остаётся: пайплайн, убитый в этой щели, честно
+        отвечает `phase` кодом «фаза анкером не подтверждена» — навсегда.
+        Щель того же рода, что и у genesis-записи (`append_genesis`), и
+        закрывается она тем же — двухфазным commit'ом, которого у нас нет.
+
+        Отсутствующий журнал не создаётся, но и не пропускается молча: `run`
+        заводит его первым действием (§3.1), поэтому «файла нет» означает не
+        раннюю стадию и не легаси-пайплайн, а удаление извне — то есть
+        аномалию control plane, и трактовать её мягче порчи журнала нельзя.
+        Создать файл здесь тем более нельзя: он означал бы, что дальше
+        сверять нечего, а `resume`, застав анкер отсутствующим, обязан
+        сказать «журнал не там», а не «пайплайн чист».
+        """
+        if state.phase not in TERMINAL_PIPELINE_PHASES:
+            return
+        anchor = IntegrityAnchor(
+            self._config.anchor_path, self._workspace_root, state.pipeline_id
+        )
+        if not anchor.path.is_file():
+            # Исчезновение журнала мягче его порчи трактовать нельзя: тот же
+            # файл, пропавший к `resume`, уже считается основанием для отказа.
+            # Молчание стоило бы дважды — `run` отвечал бы нулём об аномалии
+            # control plane, а поздний `phase` выдавал бы диагноз про забытый
+            # `--config`, уводя оператора искать конфиг, с которым всё в
+            # порядке. Ветки «легаси-пайплайн без журнала» не существует:
+            # `run` создаёт его первым действием (§3.1).
+            raise ControlPlaneTampered(
+                f"пайплайн {state.pipeline_id!r} дошёл до {state.phase.value}, "
+                f"но журнал целостности {anchor.path} исчез: `run` создаёт его "
+                "первым действием, значит файл удалён извне. Терминальная "
+                "отметка не записана, и `disp pipeline phase` эту фазу "
+                "подтвердить не сможет"
+            )
+        manifest = self._pipeline_dir(state.pipeline_id) / MANIFEST_NAME
+        try:
+            anchor.append_terminal(
+                pipeline_id=state.pipeline_id,
+                phase=state.phase.value,
+                manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            )
+        except AnchorCorrupted as exc:
+            # Порча журнала — нарушение control plane, и молчать о ней нельзя.
+            # Но и отчитываться провалом нельзя тоже: переход уже совершён,
+            # манифест и `result/` на диске. Голое `AnchorCorrupted` ушло бы
+            # мимо `main` (тот ловит `DisputatioError`) и завершило процесс
+            # кодом `1` — тем самым, которым `run` обозначает `FAILED`, так
+            # что успешно завершённый пайплайн читался бы скриптом как
+            # упавший. Доменная ошибка даёт код `2`: результат есть, но
+            # фаза не подтверждена и с анкером надо разбираться.
+            raise ControlPlaneTampered(
+                f"пайплайн {state.pipeline_id!r} дошёл до "
+                f"{state.phase.value} — манифест и результат записаны, — но "
+                f"журнал целостности повреждён: {exc}. Терминальная отметка "
+                "не записана, поэтому `disp pipeline phase` эту фазу "
+                "подтвердить не сможет; разберите журнал вручную"
+            ) from exc
 
     def _recompute_budget(self, state: PipelineState) -> BudgetUsed:
         """Пересчёт бюджета по диску (§4.2) — общий с операторскими решениями."""

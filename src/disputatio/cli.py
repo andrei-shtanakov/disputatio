@@ -4,13 +4,13 @@
 `main(argv) -> int` делает вход обычной функцией — тест вызывает её
 напрямую, не порождая процесса и не завися от того, установлен ли пакет.
 Команд верхнего уровня три: `run` заводит сессию, `resume` продолжает
-прерванную ([REQ-020], [DESIGN-020]), а группа `pipeline` несёт четыре
-команды пайплайна полировки пары (SPEC-002 §3.1). Каждая выбирается
+прерванную ([REQ-020], [DESIGN-020]), а группа `pipeline` несёт пять
+команд пайплайна полировки пары (SPEC-002 §3.1). Каждая выбирается
 `set_defaults(handler=…)`, и каждая объявляет `--root` сама: глобальный флаг
 заставлял бы пользователя помнить, что часть аргументов идёт до имени
 команды, а часть после.
 
-Пайплайн — отдельная группа, а не четыре имени в общем списке: предмет у
+Пайплайн — отдельная группа, а не пять имён в общем списке: предмет у
 него другой (`--slug` против `session_id`), и плоский список заставлял бы
 читателя `--help` угадывать, к какому объекту относится команда.
 
@@ -76,6 +76,8 @@ from disputatio.contracts import (
 )
 from disputatio.core import SessionFsm
 from disputatio.events import (
+    AnchorCorrupted,
+    AnchorRecord,
     FilePipelineStateStore,
     FileStateStore,
     IntegrityAnchor,
@@ -85,6 +87,7 @@ from disputatio.events import (
 )
 from disputatio.runtime import (
     ConfigError,
+    ControlPlaneTampered,
     DisputatioError,
     GitCli,
     PipelineConfig,
@@ -98,9 +101,18 @@ from disputatio.runtime import (
 from disputatio.runtime.composition import PipelineDeps, build_pipeline
 from disputatio.runtime.layout import session_dir
 from disputatio.runtime.loop import drive, resume_session
-from disputatio.runtime.pipeline_config import load_session_profile
+from disputatio.runtime.pipeline_config import (
+    load_session_profile,
+    toplevel_root,
+    validate_anchor_path,
+)
 from disputatio.runtime.pipeline_export import export_pipeline
+from disputatio.runtime.pipeline_integrity import (
+    MANIFEST_NAME,
+    verify_terminal_mark,
+)
 from disputatio.runtime.pipeline_resume import missing_manifest_message
+from disputatio.runtime.pipeline_runner import pipeline_dir_of
 from disputatio.runtime.steps import StepContext
 
 EXIT_OK: Final = 0
@@ -356,6 +368,136 @@ def cmd_pipeline_status(
     return EXIT_OK
 
 
+def cmd_pipeline_phase(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline phase` — фаза остановленного пайплайна, подтверждённая P9.
+
+    Отвечает на вопрос потребителя «пайплайн для слага уже завершился?»
+    единственным способом, который не требует ему верить манифесту. Читать
+    `pipeline.json` напрямую нельзя: он объявлен immutable control plane, его
+    подмена обязана обнаруживаться, — а `status` до этой команды рендерил
+    фазу без всякой сверки, показывая анкер лишь как «есть/нет». Верифицирующий
+    путь был один и мутирующий: `resume`, который к тому же отвергает
+    терминальные фазы, то есть ровно те, о которых и спрашивают.
+
+    Источник ответа — терминальная отметка анкера, а не манифест: имя фазы
+    берётся из записи, а манифест лишь сверяется с её хешем. Совпал —
+    содержимое манифеста то же, что было в момент остановки, и других
+    доказательств фазе не нужно.
+
+    Прежде этого судится сам анкер: `validate_anchor_path` тем же
+    fail-closed, что у `run` и `resume`. Журнал, уехавший в рабочее дерево,
+    анкером не является — доверять ему значило бы принимать доказательство
+    от проверяемой стороны.
+
+    Три исхода вместо двух, потому что «доказательства нет» и «доказательство
+    не сошлось» — разные решения потребителя:
+
+    * `0` — фаза в stdout одной строкой;
+    * `1` — анкер фазу не подтверждает: пайплайн ещё в работе либо начат до
+      появления отметки. В stdout не уходит ничего: догадка, выданная за
+      проверенное, и есть то, что команда обязана исключить;
+    * `2` — подмена (или обычная ошибка запуска).
+
+    Пайплайн при этом не двигается ни на подмене: закрыть его `FAILED` —
+    обязанность `resume`, который его ведёт. Инспекция, меняющая состояние,
+    отвечала бы уже не на заданный вопрос.
+
+    Read-only здесь означает «не пишет ни байта в control plane», и одна
+    оговорка обязательна: чтение анкера берёт ту же блокировку, что и
+    запись, а `flock` требует файла — `<slug>.jsonl.lock` рядом с журналом
+    может быть создан этим чтением. Отказаться от блокировки нельзя:
+    `_seal_tail` укорачивает журнал, и читатель, попавший в это окно, склеил
+    бы хвост старого файла с началом новой строки и объявил бы подмену на
+    журнале, с которым всё в порядке. Ложная тревога о целостности дороже
+    пустого служебного файла.
+    """
+    root = Path(args.root)
+    config = load_pipeline_config(_config_path(args, root))
+    # Containment анкера — до всякого доверия к нему, тем же судом, что у
+    # `run` и `resume`. Пропустить его нельзя именно здесь: `anchor_path`
+    # классифицирован `mutable` (правка не даёт semantic drift), конфиг
+    # штатно лежит в репозитории, то есть в зоне записи автора, — и анкер,
+    # уехавший в рабочее дерево, автору достижим. Подделав обе стороны
+    # сверки разом, он получил бы `DONE` с кодом `0` от команды, заведённой
+    # ради недоверия к манифесту. `git rev-parse --show-prefix` под
+    # `toplevel_root` read-only не ломает: индекс, в отличие от `git
+    # status`, он не трогает.
+    validate_anchor_path(config.anchor_path, toplevel_root(GitCli(root), root))
+    anchor = _pipeline_anchor(config, root, args.slug)
+    record = _terminal_record(anchor, args.slug)
+    if record is None:
+        print(
+            f"фаза пайплайна {args.slug!r} анкером не подтверждена: терминальной "
+            f"отметки в {anchor.path} нет. Так выглядит пайплайн, который ещё "
+            "в работе (отметка пишется при остановке), и пайплайн, начатый до "
+            "её появления. Фазу без подтверждения отдаёт `disp pipeline status` "
+            "— но она ничем не проверена",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    verify_terminal_mark(
+        record,
+        pipeline_id=args.slug,
+        manifest_path=pipeline_dir_of(root, args.slug) / MANIFEST_NAME,
+    )
+    print(record.phase, flush=True)
+    return EXIT_OK
+
+
+def _terminal_record(anchor: IntegrityAnchor, slug: str) -> AnchorRecord | None:
+    """Терминальная отметка; сбои чтения журнала — доменные ошибки (§3.1).
+
+    Перевод обязателен, и разница кодов здесь не косметическая. Голое
+    исключение уходит мимо `main` (тот ловит только `DisputatioError`) и
+    завершает процесс кодом `1` — тем самым, которым `phase` сообщает
+    «пайплайн ещё в работе». Завершённый пайплайн, чей журнал искали не там,
+    читался бы машинно как незавершённый, а испорченный журнал — как
+    работающий, то есть команда молчала бы ровно о том, ради сигнализации о
+    чём написана.
+
+    Диагнозы те же, что у `resume` над тем же журналом
+    (`pipeline_resume._verify_integrity`): «журнал не там» — ошибка запуска с
+    инструкцией про `--config`, порча — нарушение control plane. Третья
+    ветка шире обеих: любой иной отказ ОС (каталог закрыт на запись — чтение
+    берёт блокировку, а она создаёт файл; чужой `.lock`; отвалившийся том)
+    тоже обязан стать доменной ошибкой, потому что цена промаха
+    фиксированная и не зависит от класса отказа. Анкер вынесен
+    из дерева автора именно затем, чтобы его содержимое никто мимо
+    оркестратора не менял, и повреждение одной строки не вправе давать более
+    мягкий ответ, чем подмена файла, который эта строка описывает.
+    """
+    try:
+        return anchor.terminal_record()
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"журнала целостности {anchor.path} не существует, а `run` "
+            f"создаёт его первым действием (§3.1) — значит фаза пайплайна "
+            f"{slug!r} ищется не там: укажите тот же конфиг, что и при "
+            "запуске (`--config`), чтобы `anchor_path` совпал"
+        ) from exc
+    except AnchorCorrupted as exc:
+        raise ControlPlaneTampered(
+            f"журнал целостности пайплайна {slug!r} повреждён: {exc}. Фазу "
+            "по нему подтвердить нельзя, и отвечать «подтверждения нет» на "
+            "испорченный анкер значило бы выдать вмешательство за работу"
+        ) from exc
+    except OSError as exc:
+        # Всё прочее, что ОС может ответить на чтение журнала: закрытый на
+        # запись каталог (чтение берёт блокировку, а она создаёт файл),
+        # чужой `.lock`, отвалившийся том. Ловится широко намеренно —
+        # перечислять классы отказов ОС значило бы оставить непойманным
+        # ровно тот, о котором не подумали, а цена промаха фиксированная:
+        # неперехваченное исключение уходит мимо `main` и завершает процесс
+        # кодом `1`, то есть отвечает «пайплайн ещё в работе» на аварию.
+        raise ConfigError(
+            f"журнал целостности {anchor.path} не читается ({exc}). Фаза "
+            f"пайплайна {slug!r} не подтверждена и не опровергнута: это "
+            "отказ доступа, а не ответ о состоянии пайплайна"
+        ) from exc
+
+
 def cmd_pipeline_export(
     args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
 ) -> int:
@@ -586,14 +728,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_pipeline_commands(commands: _SubParsers) -> None:
-    """Четыре команды `disp pipeline` (SPEC-002 §3.1).
+    """Пять команд `disp pipeline` (SPEC-002 §3.1).
 
-    Своя группа подкоманд, а не четыре имени верхнего уровня: пайплайн —
+    Своя группа подкоманд, а не пять имён верхнего уровня: пайплайн —
     другой объект, чем сессия (`--slug` против `session_id`), и общий
     плоский список заставлял бы читателя `--help` угадывать, у какой команды
     какой предмет.
 
-    `--config` объявлен у ВСЕХ четырёх, включая `status` и `export`. Это не
+    `--config` объявлен у ВСЕХ пяти, включая `status`, `phase` и `export`. Это не
     единообразие ради единообразия: живая конфигурация — единственный
     источник `anchor_root` (§8.1 шаг 0), а снапшот в каталоге пайплайна для
     этого негоден по построению — он лежит в дереве, доверять которому
@@ -647,6 +789,12 @@ def _add_pipeline_commands(commands: _SubParsers) -> None:
     status.set_defaults(handler=cmd_pipeline_status)
     _add_pipeline_common(status)
 
+    phase = actions.add_parser(
+        "phase", help="фаза пайплайна, подтверждённая анкером (read-only)"
+    )
+    phase.set_defaults(handler=cmd_pipeline_phase)
+    _add_pipeline_common(phase)
+
     export = actions.add_parser("export", help="пересобрать result/ по манифесту")
     export.set_defaults(handler=cmd_pipeline_export)
     export.add_argument(
@@ -683,7 +831,7 @@ _PIPELINE_FORMS_EPILOG: Final = """\
 
 
 def _add_pipeline_common(command: argparse.ArgumentParser) -> None:
-    """Общие аргументы всех четырёх команд §3.1: `--slug`, `--config`, `--root`."""
+    """Общие аргументы всех пяти команд §3.1: `--slug`, `--config`, `--root`."""
     command.set_defaults(journal=False)
     command.add_argument("--slug", required=True, help="имя пайплайна (§4.1)")
     command.add_argument(

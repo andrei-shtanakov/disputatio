@@ -19,13 +19,19 @@
 доступны до чтения рабочего дерева: `anchor_root` из конфига, `workspace_root`
 из cwd, `anchor_id` из `--slug`.
 
-**Записи трёх видов, и это обязательно.** `pre_turn` — снапшот перед ходом
+**Записи четырёх видов, и это обязательно.** `pre_turn` — снапшот перед ходом
 автора; `turn_completed` — отметка после успешной сверки, с той же identity.
 Без второго вида штатно завершённый ход оставлял бы последней запись
 `pre_turn`, а runtime сразу после сверки законно пишет артефакты раунда и
 двигает `session.json` — следующий `resume` прочитал бы эти штатные изменения
 как подмену и уронил пайплайн в `FAILED` на ровном месте. Сверка на resume
-применяется, только если последняя запись — `pre_turn`.
+применяется, только если последняя запись О ХОДЕ — `pre_turn`.
+
+`terminal` (четвёртый вид) отмечает остановку пайплайна и связывает его
+идентификатор, имя терминальной фазы и хеш манифеста: без неё состояние покоя
+не покрывал никто, и фаза остановленного пайплайна не подтверждалась ничем.
+Сверка хода смотрит сквозь такие отметки (`last_turn_record`) — иначе запись,
+дописанная после закрытия, накрыла бы собой `pre_turn` подменённого хода.
 
 `genesis` (WS-disputatio-65 BEH-01, TASK-004) закрывает крайний случай того
 же обрыва: до ПЕРВОГО хода автора анкер пуст, и `pre_turn`, с которым можно
@@ -53,7 +59,13 @@ from disputatio.events.pipeline_paths import validate_slug
 
 FINGERPRINT_LENGTH: Final = 16
 
-AnchorKind = Literal["pre_turn", "turn_completed", "genesis"]
+AnchorKind = Literal["pre_turn", "turn_completed", "genesis", "terminal"]
+
+#: Identity терминальной записи: пайплайн остановлен, хода за ней нет, и
+#: `session_id`/`round` называть нечем — сентинел занимает обязательные поля
+#: так же, как `__genesis__` до первого хода.
+TERMINAL_SESSION_ID: Final = "__terminal__"
+TERMINAL_ROUND: Final = 0
 
 
 class AnchorCorrupted(Exception):
@@ -82,6 +94,12 @@ class AnchorRecord(ArtifactChild):
     operation_id: str
     immutable: dict[str, str] = Field(default_factory=dict)
     append_only: dict[str, AppendOnlyEntry] = Field(default_factory=dict)
+    #: Поля терминальной записи. Необязательные, потому что схема расширена
+    #: добавлением: журнал пайплайна, начатого до их появления, читается той
+    #: же моделью. У прочих видов записи они пусты — «фаза» и «пайплайн» вне
+    #: остановки описываются манифестом, а не анкером.
+    pipeline_id: str | None = None
+    phase: str | None = None
 
     @property
     def key(self) -> tuple[str, str, int, str]:
@@ -194,6 +212,40 @@ class IntegrityAnchor:
             )
         )
 
+    def append_terminal(
+        self, *, pipeline_id: str, phase: str, manifest_sha256: str
+    ) -> None:
+        """Отмечает остановку пайплайна: чем доказывается фаза в покое (§4.2).
+
+        До этой записи анкер о состоянии покоя не говорил ничего: `genesis`
+        покрывает write-once файлы пайплайна, но `pipeline.json` в него не
+        входит намеренно (манифест легитимно переписывается), полная сверка
+        идёт только против `pre_turn` — то есть внутри оборванного хода, — а
+        `turn_completed` несёт одну identity. Значит у остановленного
+        пайплайна содержимое манифеста не покрывал никто, и вопрос «эта фаза
+        настоящая?» упирался в тот самый файл, недостижимость которого анкер
+        и обеспечивает.
+
+        Связываются три вещи, потому что каждая по отдельности подделывается:
+        идентификатор пайплайна (журнал лежит по слагу, но имя файла — не
+        доказательство), название фазы и хеш манифеста в момент остановки.
+
+        `operation_id` включает фазу: ключ идемпотентности —
+        `{kind, session_id, round, operation_id}`, и без фазы в нём вторая
+        терминальная запись слилась бы с первой.
+        """
+        self._append(
+            AnchorRecord(
+                kind="terminal",
+                session_id=TERMINAL_SESSION_ID,
+                round=TERMINAL_ROUND,
+                operation_id=f"terminal-{phase}",
+                immutable={"pipeline.json": manifest_sha256},
+                pipeline_id=pipeline_id,
+                phase=phase,
+            )
+        )
+
     def last_record(self) -> AnchorRecord | None:
         """Последняя запись журнала — без аргументов, identity приходит из неё.
 
@@ -215,6 +267,37 @@ class IntegrityAnchor:
         with exclusive_lock(self._path):
             records = self._read()
         return records[-1] if records else None
+
+    def last_turn_record(self) -> AnchorRecord | None:
+        """Последняя запись О ХОДЕ: терминальные отметки пропускаются (P9).
+
+        Сверка хода обязана смотреть сквозь них. Отметка дописывается после
+        закрытия пайплайна — в том числе закрытия подменой control plane, — и
+        читатель, берущий просто последнюю запись, получил бы вместо
+        `pre_turn` подменённого хода отметку о его закрытии: второй `resume`
+        над тем же деревом промолчал бы там, где первый отказал. Запись,
+        добавленная в анкер позже, ослабить его не вправе.
+        """
+        with exclusive_lock(self._path):
+            records = self._read()
+        for record in reversed(records):
+            if record.kind != "terminal":
+                return record
+        return None
+
+    def terminal_record(self) -> AnchorRecord | None:
+        """Отметка об остановке пайплайна, если она есть (§4.2).
+
+        Отдельный поиск, а не `last_record()`: вопрос «остановлен ли
+        пайплайн» отличается от «что было последним», и ответ на первый не
+        должен зависеть от того, дописал ли кто-то что-то после.
+        """
+        with exclusive_lock(self._path):
+            records = self._read()
+        for record in reversed(records):
+            if record.kind == "terminal":
+                return record
+        return None
 
     def _append(self, record: AnchorRecord) -> None:
         """Дописывает запись, если её ключа ещё нет; fsync перед возвратом.

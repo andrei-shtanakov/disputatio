@@ -59,6 +59,7 @@ from disputatio.contracts import (
     Severity,
     Verdict,
 )
+from disputatio.events import AnchorCorrupted
 from disputatio.runtime import composition
 from disputatio.runtime.pipeline_runner import artifact_root_of, pipeline_dir_of
 
@@ -620,6 +621,314 @@ def test_status_explains_the_directory_without_manifest_window(
     # такой сессии не существует, и журнал под неё — файл, который никто не
     # читает (§8, [REQ-010]).
     assert not (stand.workspace / ".disputatio" / "events.jsonl").exists()
+
+
+def test_phase_prints_the_phase_backed_by_the_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`disp pipeline phase` отдаёт одну строку — фазу из терминальной отметки.
+
+    Ответ берётся из анкера, а не из манифеста: манифест автору достижим, и
+    команда, читающая фазу оттуда, повторяла бы то самое доверие к файлу,
+    ради недостижимости которого анкер и вынесен из дерева (P9). Манифест
+    участвует только как сверяемое: его хеш обязан совпасть с записанным.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    assert code == EXIT_OK
+    assert capsys.readouterr().out == f"{PipelinePhase.DONE.value}\n"
+
+
+def test_phase_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`phase` не пишет на диск ни байта — то же требование, что у `status`.
+
+    Ради этого свойства команда и заведена: верифицированную фазу до неё
+    отдавал только мутирующий `resume`, который вдобавок отвергает
+    терминальные фазы — то есть ровно те, о которых и спрашивают.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    before = tree_snapshot(tmp_path)
+    code = run_cli(stand, "phase")
+    after = tree_snapshot(tmp_path)
+
+    assert code == EXIT_OK
+    assert after == before
+
+
+def test_phase_touches_nothing_but_the_lock_file_in_the_empty_anchor_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Единственная запись `phase` на диск — служебный lock, и только в окне.
+
+    `run` заводит пустой журнал первым действием, а файл блокировки рядом
+    появляется лишь с первой записью в него: между этими двумя моментами
+    чтение анкера создаёт `<slug>.jsonl.lock` само. Обещание команды —
+    «ни байта в control plane», и вот его буквальная проверка: каталог
+    пайплайна не изменился, а из нового в дереве — ровно пустой lock.
+
+    Отказаться от блокировки было бы хуже: `_seal_tail` укорачивает журнал,
+    и чтение без неё объявило бы подмену на журнале, с которым всё в порядке.
+    """
+    monkeypatch.setattr(
+        "disputatio.events.IntegrityAnchor.append_genesis",
+        lambda self, snapshot: (_ for _ in ()).throw(Boom("крах до genesis")),
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+    capsys.readouterr()
+    before = tree_snapshot(tmp_path)
+
+    code = run_cli(stand, "phase")
+
+    after = tree_snapshot(tmp_path)
+    appeared = set(after) - set(before)
+    assert code == EXIT_FAILED
+    assert [Path(path).name for path in appeared] == [f"{SLUG}.jsonl.lock"]
+    assert all(after[path] == before[path] for path in before), (
+        "существующие файлы обязаны остаться байт-в-байт теми же"
+    )
+
+
+def test_broken_anchor_at_the_terminal_transition_does_not_report_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Пайплайн дошёл до `DONE`, анкер повреждён: код 2, а не 1 и не traceback.
+
+    Различие кодов существенно: `1` у `run` означает `FAILED` ([DESIGN-019]),
+    и успешно завершённый пайплайн, отчитавшийся им, читался бы скриптом как
+    упавший. Нулём отвечать тоже нельзя — отметки нет, фаза не подтверждена,
+    и оператор обязан узнать об этом сейчас, а не на первом `phase`.
+    """
+    monkeypatch.setattr(
+        "disputatio.events.IntegrityAnchor.append_terminal",
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AnchorCorrupted("журнал повреждён")
+        ),
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    capsys.readouterr()
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert "повреждён" in captured.err
+    # Переход состоялся и остался на диске: отказ записи отметки его не
+    # отменяет — иначе диагностика уничтожала бы результат.
+    assert stand.manifest()["phase"] == PipelinePhase.DONE.value
+
+
+def test_phase_refuses_an_anchor_inside_the_authors_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Анкер в рабочем дереве — не анкер, и фазу по нему подтверждать нельзя.
+
+    Это не гипотетика, а прямая дорога: `anchor_path` классифицирован
+    `mutable` (semantic drift на его правку не срабатывает), конфиг
+    штатно лежит в репозитории — то есть в зоне записи автора, — а сам
+    журнал автору тогда достижим. Подделав обе стороны сверки разом
+    (отметку и манифест), автор получил бы `DONE` с кодом `0` от команды,
+    заведённой ради недоверия к манифесту.
+
+    `run` и `resume` этот конфиг отвергают (`validate_anchor_path`), и
+    команда, извлекающая из анкера доверие, обязана судить его так же:
+    иначе она — единственная дыра в том самом контуре, который проверяет.
+    """
+    inside = Path(".disputatio") / "anchors"
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    stand.config_path.write_text(
+        stand.config_path.read_text(encoding="utf-8").replace(
+            f'anchor_path = "{stand.anchor_root.as_posix()}"',
+            f'anchor_path = "{(stand.workspace / inside).as_posix()}"',
+        ),
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == "", "фаза по анкеру внутри дерева наружу не уходит"
+    assert "вне репозитория" in captured.err
+
+
+def test_phase_on_a_missing_anchor_is_a_domain_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Журнал ищется не там → код 2 с инструкцией, а не traceback и код 1.
+
+    Ровно тот промах, который уже описан для `resume`: пайплайн запущен с
+    нестандартным `anchor_path`, а `phase` зовут без `--config`. Разница
+    кодов здесь не косметическая — необработанное исключение завершает
+    процесс кодом `1`, то есть тем самым, которым команда сообщает «пайплайн
+    ещё в работе»: завершённый пайплайн машинно читался бы как незавершённый.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    capsys.readouterr()
+
+    code = main(["pipeline", "phase", "--slug", SLUG, "--root", str(stand.workspace)])
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+    assert "--config" in captured.err
+
+
+def test_phase_on_an_unwritable_anchor_directory_is_a_domain_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Отказ ОС при чтении журнала — код 2, а не «пайплайн ещё в работе».
+
+    Чтение анкера берёт файловую блокировку, а она создаёт файл: каталог
+    журнала, закрытый на запись (read-only mount, ужесточённые права,
+    чужой `.lock`), даёт `PermissionError`. Это `OSError`, а не доменная
+    ошибка, значит без перевода она ушла бы мимо `main` traceback'ом и с
+    кодом `1` — тем, который спека объявила ответом «отметки нет, пайплайн
+    в работе». Завершённый пайплайн читался бы скриптом как незавершённый.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    journal_dir = next(path for path in stand.anchor_root.iterdir() if path.is_dir())
+    for path in journal_dir.iterdir():
+        path.chmod(0o400)
+    journal_dir.chmod(0o500)
+    capsys.readouterr()
+
+    try:
+        code = run_cli(stand, "phase")
+    finally:
+        journal_dir.chmod(0o700)
+        for path in journal_dir.iterdir():
+            path.chmod(0o600)
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+    assert "журнал" in captured.err
+
+
+def test_phase_on_a_corrupted_anchor_reports_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Порча журнала — подмена (код 2), а не «подтверждения нет» (код 1).
+
+    Анкер вынесен из дерева автора именно затем, чтобы его содержимое никто
+    мимо оркестратора не менял. Ответ «отметки нет» на испорченный журнал
+    сообщал бы потребителю «пайплайн ещё работает» ровно в том случае, ради
+    сигнализации о котором команда и написана.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    journal = (
+        stand.anchor_root
+        / next(path.name for path in stand.anchor_root.iterdir() if path.is_dir())
+        / f"{SLUG}.jsonl"
+    )
+    journal.write_text("{это не json}\n", encoding="utf-8")
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+
+
+def test_phase_refuses_a_forged_manifest_without_touching_the_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Подмена манифеста после остановки ловится и НЕ закрывает пайплайн.
+
+    Разделение обязанностей: `resume` на подмене закрывает пайплайн
+    `FAILED`, потому что он его двигает; инспекция обязана остаться
+    read-only — иначе вопрос о состоянии сам меняет состояние, и потребитель,
+    спросивший «завершилось ли», получал бы «уже нет».
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    manifest_path = stand.pipeline_dir() / "pipeline.json"
+    forged = json.loads(manifest_path.read_text(encoding="utf-8"))
+    forged["phase"] = PipelinePhase.PAIR_LOOP.value
+    manifest_path.write_text(json.dumps(forged), encoding="utf-8")
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == "", "фаза подменённого манифеста наружу не уходит"
+    assert "pipeline.json" in captured.err
+    # Подделка на месте: команда её не «починила» и не переписала.
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["phase"] == (
+        PipelinePhase.PAIR_LOOP.value
+    )
+
+
+def test_phase_refuses_when_the_anchor_cannot_vouch_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Пайплайн в работе: подтверждать нечего — отказ кодом, а не догадка.
+
+    Терминальной отметки ещё нет, а фаза из манифеста ничем не подтверждена:
+    отдать её значило бы выдать за проверенное то, что не проверялось.
+    Отдельный код (`1`) отличает «доказательства нет» от «подмена» (`2`) —
+    потребителю это разные решения.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "author")] = [
+        Turn(text="", boom=True),
+        *converging("spec-r1", "spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILED
+    assert captured.out == ""
+    assert "не подтверждена" in captured.err
+
+
+def test_crash_between_manifest_and_mark_leaves_the_phase_unverifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Щель между записью манифеста и отметкой не закрывается задним числом.
+
+    Пайплайн, убитый ровно в ней, остаётся без отметки навсегда: терминальное
+    состояние в runner больше не приходит, а дописать отметку по манифесту
+    значило бы позволить подделанному `DONE` доказать самого себя — ровно то,
+    ради чего отметка и заведена. Тест пинит честный исход (`1`, «не
+    подтверждена»), а не желаемый: молчаливое восстановление здесь было бы
+    дырой, а не удобством.
+    """
+    monkeypatch.setattr(
+        "disputatio.runtime.pipeline_runner.PipelineRunner._mark_terminal",
+        lambda self, state: None,
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    assert stand.manifest()["phase"] == PipelinePhase.DONE.value
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILED
+    assert captured.out == ""
+    assert "не подтверждена" in captured.err
 
 
 def test_resume_custom_anchor_requires_config(
@@ -1230,7 +1539,7 @@ def test_bad_slug_is_a_domain_error_not_a_traceback(
     """
     stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
 
-    for command in ("status", "export"):
+    for command in ("status", "phase", "export"):
         code = main(
             [
                 "pipeline",
