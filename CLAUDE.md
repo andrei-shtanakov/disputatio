@@ -76,7 +76,7 @@ Git discipline: the working directory is a git repo; each accepted round is a co
 
 ## Artifact schemas
 
-All schemas are pydantic models tagged `"schema": "disputatio/v1"`; incompatible changes bump to v2. `proposal.md` is the exception — free markdown with a YAML frontmatter carrying the machine-readable fields.
+All schemas are pydantic models tagged `"schema": "disputatio/v1"`; incompatible changes bump to v2 — where "incompatible" means the meaning or structure of fields. Widening a closed enum keeps the tag: `overall` gained `indeterminate` inside v1 (SPEC-001 §4.3), because old artifacts still read and the only reader of `verification.json` is this codebase's own resume (`runtime/history.load_verification`). Forward compatibility of v1 is explicitly not promised. `proposal.md` is the exception — free markdown with a YAML frontmatter carrying the machine-readable fields.
 
 Validation rules the orchestrator enforces on `review.json` (§4.4) — these are the anti-hallucination core, not optional polish:
 
