@@ -50,8 +50,13 @@ from disputatio.runtime.pipeline_config import validate_anchor_path
 #: `pipeline.json` — тот самый манифест, ради недостижимости которого анкер и
 #: вынесен из дерева; снапшоты task/config/checklists неизменны на весь
 #: пайплайн, и их хеши записаны в манифесте.
+#: Имя манифеста. Публичная константа, потому что о нём знают двое: снапшот
+#: P9 (здесь) и терминальная отметка анкера (`pipeline_runner._mark_terminal`)
+#: — второй литерал разошёлся бы с первым молча.
+MANIFEST_NAME: Final = "pipeline.json"
+
 _PIPELINE_IMMUTABLE: Final = (
-    "pipeline.json",
+    MANIFEST_NAME,
     "task.md",
     "config.toml",
     "checklists.toml",
@@ -274,6 +279,55 @@ class PipelineIntegrityPolicy:
                 round=record.round,
                 operation_id=record.operation_id,
             )
+        )
+
+
+def verify_terminal_mark(
+    record: AnchorRecord, *, pipeline_id: str, manifest_path: Path
+) -> None:
+    """Сверяет терминальную отметку с манифестом на диске (§4.2, P9).
+
+    Отметка связывает три вещи, и проверяются все три: идентификатор
+    пайплайна (журнал лежит по слагу, но имя файла доказательством не
+    является — перенесённый или подставленный журнал назвал бы чужую фазу),
+    название фазы и хеш манифеста. Совпадение хеша означает, что содержимое
+    манифеста то же, что было в момент остановки, — и фазе из записи больше
+    доказательств не требуется.
+
+    Отказ — `ControlPlaneTampered`, как и у сверки хода: расхождение
+    отметки с деревом относится к тому же классу, что и расхождение
+    pre-turn снапшота, и мягче отвечать на него нельзя.
+    """
+    if record.kind != "terminal" or record.phase is None:
+        raise ControlPlaneTampered(
+            "терминальная отметка анкера неполна: "
+            f"kind={record.kind!r}, phase={record.phase!r}. Запись без имени "
+            "фазы ничего не доказывает"
+        )
+    if record.pipeline_id != pipeline_id:
+        raise ControlPlaneTampered(
+            f"терминальная отметка описывает пайплайн {record.pipeline_id!r}, "
+            f"а спрошен {pipeline_id!r}: журнал целостности принадлежит не "
+            "этому пайплайну"
+        )
+    recorded = record.immutable.get(MANIFEST_NAME)
+    if recorded is None:
+        raise ControlPlaneTampered(
+            f"терминальная отметка не несёт хеша {MANIFEST_NAME}: сверять фазу не с чем"
+        )
+    try:
+        actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ControlPlaneTampered(
+            f"{MANIFEST_NAME} не читается ({exc}), а анкер утверждает фазу "
+            f"{record.phase!r}: подтвердить её нечем"
+        ) from exc
+    if actual != recorded:
+        raise ControlPlaneTampered(
+            f"целостность control plane нарушена (P9, terminal): "
+            f"{MANIFEST_NAME} изменился после остановки пайплайна "
+            f"({recorded[:12]}… → {actual[:12]}…). Анкер помнит фазу "
+            f"{record.phase!r}; что говорит манифест сейчас — не доказательство"
         )
 
 

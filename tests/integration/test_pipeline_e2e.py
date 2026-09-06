@@ -622,6 +622,102 @@ def test_status_explains_the_directory_without_manifest_window(
     assert not (stand.workspace / ".disputatio" / "events.jsonl").exists()
 
 
+def test_phase_prints_the_phase_backed_by_the_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`disp pipeline phase` отдаёт одну строку — фазу из терминальной отметки.
+
+    Ответ берётся из анкера, а не из манифеста: манифест автору достижим, и
+    команда, читающая фазу оттуда, повторяла бы то самое доверие к файлу,
+    ради недостижимости которого анкер и вынесен из дерева (P9). Манифест
+    участвует только как сверяемое: его хеш обязан совпасть с записанным.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    assert code == EXIT_OK
+    assert capsys.readouterr().out == f"{PipelinePhase.DONE.value}\n"
+
+
+def test_phase_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`phase` не пишет на диск ни байта — то же требование, что у `status`.
+
+    Ради этого свойства команда и заведена: верифицированную фазу до неё
+    отдавал только мутирующий `resume`, который вдобавок отвергает
+    терминальные фазы — то есть ровно те, о которых и спрашивают.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+
+    before = tree_snapshot(tmp_path)
+    code = run_cli(stand, "phase")
+    after = tree_snapshot(tmp_path)
+
+    assert code == EXIT_OK
+    assert after == before
+
+
+def test_phase_refuses_a_forged_manifest_without_touching_the_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Подмена манифеста после остановки ловится и НЕ закрывает пайплайн.
+
+    Разделение обязанностей: `resume` на подмене закрывает пайплайн
+    `FAILED`, потому что он его двигает; инспекция обязана остаться
+    read-only — иначе вопрос о состоянии сам меняет состояние, и потребитель,
+    спросивший «завершилось ли», получал бы «уже нет».
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    manifest_path = stand.pipeline_dir() / "pipeline.json"
+    forged = json.loads(manifest_path.read_text(encoding="utf-8"))
+    forged["phase"] = PipelinePhase.PAIR_LOOP.value
+    manifest_path.write_text(json.dumps(forged), encoding="utf-8")
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == "", "фаза подменённого манифеста наружу не уходит"
+    assert "pipeline.json" in captured.err
+    # Подделка на месте: команда её не «починила» и не переписала.
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["phase"] == (
+        PipelinePhase.PAIR_LOOP.value
+    )
+
+
+def test_phase_refuses_when_the_anchor_cannot_vouch_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Пайплайн в работе: подтверждать нечего — отказ кодом, а не догадка.
+
+    Терминальной отметки ещё нет, а фаза из манифеста ничем не подтверждена:
+    отдать её значило бы выдать за проверенное то, что не проверялось.
+    Отдельный код (`1`) отличает «доказательства нет» от «подмена» (`2`) —
+    потребителю это разные решения.
+    """
+    turns = happy_path_turns()
+    turns[("spec-r1", "author")] = [
+        Turn(text="", boom=True),
+        *converging("spec-r1", "spec"),
+    ]
+    stand = build_stand(tmp_path, monkeypatch, turns)
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILED
+    assert captured.out == ""
+    assert "не подтверждена" in captured.err
+
+
 def test_resume_custom_anchor_requires_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

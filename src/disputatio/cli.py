@@ -100,7 +100,12 @@ from disputatio.runtime.layout import session_dir
 from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.pipeline_config import load_session_profile
 from disputatio.runtime.pipeline_export import export_pipeline
+from disputatio.runtime.pipeline_integrity import (
+    MANIFEST_NAME,
+    verify_terminal_mark,
+)
 from disputatio.runtime.pipeline_resume import missing_manifest_message
+from disputatio.runtime.pipeline_runner import pipeline_dir_of
 from disputatio.runtime.steps import StepContext
 
 EXIT_OK: Final = 0
@@ -353,6 +358,60 @@ def cmd_pipeline_status(
     config = load_pipeline_config(_config_path(args, root))
     anchor = _pipeline_anchor(config, root, args.slug)
     print(render_status(_manifest(root, args.slug, anchor), anchor.path))
+    return EXIT_OK
+
+
+def cmd_pipeline_phase(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp pipeline phase` — фаза остановленного пайплайна, подтверждённая P9.
+
+    Отвечает на вопрос потребителя «пайплайн для слага уже завершился?»
+    единственным способом, который не требует ему верить манифесту. Читать
+    `pipeline.json` напрямую нельзя: он объявлен immutable control plane, его
+    подмена обязана обнаруживаться, — а `status` до этой команды рендерил
+    фазу без всякой сверки, показывая анкер лишь как «есть/нет». Верифицирующий
+    путь был один и мутирующий: `resume`, который к тому же отвергает
+    терминальные фазы, то есть ровно те, о которых и спрашивают.
+
+    Источник ответа — терминальная отметка анкера, а не манифест: имя фазы
+    берётся из записи, а манифест лишь сверяется с её хешем. Совпал —
+    содержимое манифеста то же, что было в момент остановки, и других
+    доказательств фазе не нужно.
+
+    Три исхода вместо двух, потому что «доказательства нет» и «доказательство
+    не сошлось» — разные решения потребителя:
+
+    * `0` — фаза в stdout одной строкой;
+    * `1` — анкер фазу не подтверждает: пайплайн ещё в работе либо начат до
+      появления отметки. В stdout не уходит ничего: догадка, выданная за
+      проверенное, и есть то, что команда обязана исключить;
+    * `2` — подмена (или обычная ошибка запуска).
+
+    Пайплайн при этом не двигается ни на подмене: закрыть его `FAILED` —
+    обязанность `resume`, который его ведёт. Инспекция, меняющая состояние,
+    отвечала бы уже не на заданный вопрос.
+    """
+    root = Path(args.root)
+    config = load_pipeline_config(_config_path(args, root))
+    anchor = _pipeline_anchor(config, root, args.slug)
+    record = anchor.terminal_record()
+    if record is None:
+        print(
+            f"фаза пайплайна {args.slug!r} анкером не подтверждена: терминальной "
+            f"отметки в {anchor.path} нет. Так выглядит пайплайн, который ещё "
+            "в работе (отметка пишется при остановке), и пайплайн, начатый до "
+            "её появления. Фазу без подтверждения отдаёт `disp pipeline status` "
+            "— но она ничем не проверена",
+            file=sys.stderr,
+        )
+        return EXIT_FAILED
+    verify_terminal_mark(
+        record,
+        pipeline_id=args.slug,
+        manifest_path=pipeline_dir_of(root, args.slug) / MANIFEST_NAME,
+    )
+    print(record.phase, flush=True)
     return EXIT_OK
 
 
@@ -646,6 +705,12 @@ def _add_pipeline_commands(commands: _SubParsers) -> None:
     status = actions.add_parser("status", help="снимок пайплайна (read-only)")
     status.set_defaults(handler=cmd_pipeline_status)
     _add_pipeline_common(status)
+
+    phase = actions.add_parser(
+        "phase", help="фаза пайплайна, подтверждённая анкером (read-only)"
+    )
+    phase.set_defaults(handler=cmd_pipeline_phase)
+    _add_pipeline_common(phase)
 
     export = actions.add_parser("export", help="пересобрать result/ по манифесту")
     export.set_defaults(handler=cmd_pipeline_export)

@@ -111,6 +111,7 @@ from disputatio.runtime.pipeline_config import (
     check_run_preconditions,
 )
 from disputatio.runtime.pipeline_export import ExportFn
+from disputatio.runtime.pipeline_integrity import MANIFEST_NAME
 from disputatio.runtime.pipeline_semantic_proof import write_semantic_proof
 from disputatio.verifier import resolve_inside
 
@@ -128,6 +129,12 @@ SESSIONS_DIR_NAME: Final = "sessions"
 #: обязательные поля `AnchorRecord`. Сверка genesis идёт по `.immutable`
 #: (хешам write-once снапшотов), а не по identity, поэтому конкретные
 #: значения здесь — фиксированные метки, а не вычисление.
+#: Фазы, из которых пайплайн не выходит (§2): именно они получают отметку в
+#: анкере. `ESCALATED` терминальной НЕ является — из неё идёт `EXPORTING`, и
+#: отметка на ней объявила бы остановленным пайплайн, который ещё пишет
+#: результат.
+TERMINAL_PIPELINE_PHASES: Final = (PipelinePhase.DONE, PipelinePhase.FAILED)
+
 GENESIS_SESSION_ID: Final = "__genesis__"
 GENESIS_ROUND: Final = 1
 GENESIS_OPERATION_ID: Final = "genesis"
@@ -1217,9 +1224,40 @@ class PipelineRunner:
             update={"budget_used": self._recompute_budget(state)}
         )
         self._store.save(persisted)
+        self._mark_terminal(persisted)
         for event in events:
             self._sink.emit(event)
         return persisted
+
+    def _mark_terminal(self, state: PipelineState) -> None:
+        """Отмечает остановку пайплайна в анкере (§4.2) — после записи манифеста.
+
+        Порядок обязателен: хеш снимается с того файла, который УЖЕ лежит на
+        диске. Отметка, снятая до `save`, доказывала бы состояние, которого
+        там нет, а крах между двумя записями оставляет остановленный пайплайн
+        без отметки — и это восстановимо (`append_terminal` идемпотентен),
+        тогда как отметка без манифеста восстановлению не поддаётся.
+
+        Отсутствующий журнал не создаётся: `run` заводит его первым действием
+        (§3.1), и файл, появившийся здесь, означал бы, что дальше сверять
+        будет нечего, — а `resume`, застав анкер отсутствующим, обязан
+        сказать «журнал не там», а не «пайплайн чист». Пайплайн старше этой
+        правки остаётся без отметки, и команда `phase` честно отвечает «фаза
+        анкером не подтверждена».
+        """
+        if state.phase not in TERMINAL_PIPELINE_PHASES:
+            return
+        anchor = IntegrityAnchor(
+            self._config.anchor_path, self._workspace_root, state.pipeline_id
+        )
+        if not anchor.path.is_file():
+            return
+        manifest = self._pipeline_dir(state.pipeline_id) / MANIFEST_NAME
+        anchor.append_terminal(
+            pipeline_id=state.pipeline_id,
+            phase=state.phase.value,
+            manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        )
 
     def _recompute_budget(self, state: PipelineState) -> BudgetUsed:
         """Пересчёт бюджета по диску (§4.2) — общий с операторскими решениями."""

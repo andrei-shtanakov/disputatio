@@ -74,6 +74,7 @@ from disputatio.contracts import (
     Verdict,
 )
 from disputatio.events import (
+    AnchorRecord,
     FilePipelineStateStore,
     FileStateStore,
     IntegrityAnchor,
@@ -664,6 +665,82 @@ def test_same_slug_two_repos_no_collision(tmp_path: Path) -> None:
     assert first.anchor().path != second.anchor().path
     assert first.anchor().path.is_file()
     assert second.anchor().path.is_file()
+
+
+# --------------------------------------------------------------------------
+# Терминальная отметка анкера (§4.2)
+# --------------------------------------------------------------------------
+
+
+def _manifest_sha(harness: Harness) -> str:
+    """sha256 манифеста, как он лежит на диске."""
+    manifest = pipeline_dir(harness.workspace, SLUG) / "pipeline.json"
+    return hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+def test_done_pipeline_is_marked_in_the_anchor(tmp_path: Path) -> None:
+    """Остановка на `DONE` записана в анкер и связана с манифестом (§4.2).
+
+    Без этой записи анкер о состоянии покоя не говорил ничего: `genesis`
+    манифест не покрывает (он легитимно переписывается), `pre_turn` живёт
+    внутри хода, а `turn_completed` несёт одну identity. Фаза остановленного
+    пайплайна не подтверждалась ничем, и потребителю оставалось верить
+    файлу, недостижимость которого анкер и обеспечивает.
+    """
+    harness = build_harness(tmp_path, converged_pair())
+
+    state = harness.runner.run(SLUG, "полировать пару")
+
+    record = harness.anchor().last_record()
+    assert state.phase is PipelinePhase.DONE
+    assert record is not None
+    assert record.kind == "terminal"
+    assert record.pipeline_id == SLUG
+    assert record.phase == "DONE"
+    # Хеш снят ПОСЛЕ записи манифеста: запись, снятая до неё, доказывала бы
+    # состояние, которого на диске уже нет.
+    assert record.immutable == {"pipeline.json": _manifest_sha(harness)}
+
+
+def test_failed_pipeline_is_marked_in_the_anchor(tmp_path: Path) -> None:
+    """`FAILED` отмечается так же: терминальна не только удача (§2)."""
+    harness = build_harness(tmp_path, {"spec-r1": Script(outcome="failed")})
+
+    state = harness.runner.run(SLUG, "полировать пару")
+
+    record = harness.anchor().last_record()
+    assert state.phase is PipelinePhase.FAILED
+    assert record is not None
+    assert record.kind == "terminal"
+    assert record.phase == "FAILED"
+    assert record.immutable == {"pipeline.json": _manifest_sha(harness)}
+
+
+def test_non_terminal_writes_leave_no_terminal_record(tmp_path: Path) -> None:
+    """Пайплайн в работе терминальной отметки не получает.
+
+    Отметка — утверждение «пайплайн остановлен», и выданная незавершённому
+    прогону она превратила бы `phase` в источник ложного покоя.
+    """
+    scripts = returning_scripts()
+    scripts["pair-r1"].raise_after_write = True
+    harness = build_harness(tmp_path, scripts)
+
+    with pytest.raises(_Boom):
+        harness.runner.run(SLUG, "полировать пару")
+
+    kinds = [record.kind for record in _anchor_records(harness)]
+    assert harness.store.load(SLUG).phase not in (
+        PipelinePhase.DONE,
+        PipelinePhase.FAILED,
+    )
+    assert "terminal" not in kinds
+
+
+def _anchor_records(harness: Harness) -> list[AnchorRecord]:
+    """Все записи анкера стенда в порядке журнала."""
+    lines = harness.anchor().path.read_text(encoding="utf-8").splitlines()
+    return [AnchorRecord.model_validate(json.loads(line)) for line in lines if line]
 
 
 # --------------------------------------------------------------------------

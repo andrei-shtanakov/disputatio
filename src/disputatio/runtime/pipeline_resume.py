@@ -359,7 +359,10 @@ class PipelineResume:
         )
         anchor = IntegrityAnchor(self._config.anchor_path, self._workspace_root, slug)
         try:
-            record = anchor.last_record()
+            # Сквозь терминальные отметки: они дописываются ПОСЛЕ закрытия
+            # пайплайна, в том числе закрытия по подмене, и накрыли бы собой
+            # `pre_turn` подменённого хода (`last_turn_record`).
+            record = anchor.last_turn_record()
         except FileNotFoundError as exc:
             raise ConfigError(
                 f"журнала целостности {anchor.path} не существует, а `run` "

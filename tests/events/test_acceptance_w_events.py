@@ -31,6 +31,7 @@ POST_WAVE_MODULES = frozenset(
         "test_artifact_root.py",
         "test_pipeline_store.py",
         "test_integrity_anchor_corruption.py",
+        "test_integrity_anchor_terminal.py",
     }
 )
 """Модули `tests/events/`, пришедшие ПОСЛЕ приёмки волны 1.
@@ -39,7 +40,9 @@ POST_WAVE_MODULES = frozenset(
 (SPEC-002 §4.1), `test_pipeline_store.py` — хранилище манифеста, пути
 пайплайна, журнал событий и анкер целостности (§4.1, §4.2, P8, P9),
 `test_integrity_anchor_corruption.py` — строгость читателя анкера к
-повреждённой записи (§8.1 шаг 0, P9). Все трое —
+повреждённой записи (§8.1 шаг 0, P9), `test_integrity_anchor_terminal.py` —
+терминальную отметку, которой доказывается фаза остановленного пайплайна
+(§4.2). Все четверо —
 требования другой спеки, у которой ни claim'ов TASK-001…009, ни REQ-001…012
 нет и быть не может. Список именной, а не шаблон вроде «новее такой-то даты»:
 пропуск по признаку сделал бы приёмку волны 1 необязательной для любого
