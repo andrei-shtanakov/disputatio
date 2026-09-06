@@ -2,7 +2,7 @@
 
 Импорты `disputatio.contracts.verification` выполняются внутри тестов: на
 момент red-чекпоинта модуля ещё нет, и импорт на уровне модуля сломал бы
-collection. Red-селектор (`test_overall_outside_the_enum_rejected` —
+collection. Red-селектор (`test_overall_outside_pass_fail_rejected` —
 закрытие бэклог-пункта об отклонении невалидного `overall`) превращает
 ImportError в AssertionError — гейт принимает red только при падении
 assertion'ом.
@@ -51,12 +51,20 @@ def spec_4_3_example() -> dict[str, Any]:
     }
 
 
-def test_overall_outside_the_enum_rejected() -> None:
+def test_overall_outside_pass_fail_rejected() -> None:
     """`overall` вне {pass, fail, indeterminate} отклоняется ValidationError.
 
     `skip` в этом списке не по алфавиту: статус гейта на верхний уровень
     не поднимается — «часть пропущена» и «итог неизвестен» разные вещи,
     и второе называется `indeterminate` (§4.3).
+
+    Имя теста осталось от двузначного enum намеренно: на него ссылается
+    селектор claim'а TASK-003 в архиве сертификации волны 1
+    (`spec/.tdd-evidence/claims/ws-w-contracts/TASK-003.json`), а архив
+    неизменяем (`harness_files`). Переименование сделало бы записанный
+    red-цикл невоспроизводимым, и починить это было бы уже нечем —
+    резолвимость селекторов репо считает инвариантом не-вакуумности
+    evidence (`test_claim_selectors_resolve_to_existing_tests`).
     """
     try:
         from disputatio.contracts.verification import VerificationReport
