@@ -784,6 +784,39 @@ def test_phase_on_a_missing_anchor_is_a_domain_error_not_a_traceback(
     assert "--config" in captured.err
 
 
+def test_phase_on_an_unwritable_anchor_directory_is_a_domain_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Отказ ОС при чтении журнала — код 2, а не «пайплайн ещё в работе».
+
+    Чтение анкера берёт файловую блокировку, а она создаёт файл: каталог
+    журнала, закрытый на запись (read-only mount, ужесточённые права,
+    чужой `.lock`), даёт `PermissionError`. Это `OSError`, а не доменная
+    ошибка, значит без перевода она ушла бы мимо `main` traceback'ом и с
+    кодом `1` — тем, который спека объявила ответом «отметки нет, пайплайн
+    в работе». Завершённый пайплайн читался бы скриптом как незавершённый.
+    """
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    journal_dir = next(path for path in stand.anchor_root.iterdir() if path.is_dir())
+    for path in journal_dir.iterdir():
+        path.chmod(0o400)
+    journal_dir.chmod(0o500)
+    capsys.readouterr()
+
+    try:
+        code = run_cli(stand, "phase")
+    finally:
+        journal_dir.chmod(0o700)
+        for path in journal_dir.iterdir():
+            path.chmod(0o600)
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert captured.out == ""
+    assert "журнал" in captured.err
+
+
 def test_phase_on_a_corrupted_anchor_reports_tampering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
