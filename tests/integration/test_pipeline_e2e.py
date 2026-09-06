@@ -718,6 +718,35 @@ def test_phase_refuses_when_the_anchor_cannot_vouch_for_it(
     assert "не подтверждена" in captured.err
 
 
+def test_crash_between_manifest_and_mark_leaves_the_phase_unverifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Щель между записью манифеста и отметкой не закрывается задним числом.
+
+    Пайплайн, убитый ровно в ней, остаётся без отметки навсегда: терминальное
+    состояние в runner больше не приходит, а дописать отметку по манифесту
+    значило бы позволить подделанному `DONE` доказать самого себя — ровно то,
+    ради чего отметка и заведена. Тест пинит честный исход (`1`, «не
+    подтверждена»), а не желаемый: молчаливое восстановление здесь было бы
+    дырой, а не удобством.
+    """
+    monkeypatch.setattr(
+        "disputatio.runtime.pipeline_runner.PipelineRunner._mark_terminal",
+        lambda self, state: None,
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
+    assert stand.manifest()["phase"] == PipelinePhase.DONE.value
+    capsys.readouterr()
+
+    code = run_cli(stand, "phase")
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILED
+    assert captured.out == ""
+    assert "не подтверждена" in captured.err
+
+
 def test_resume_custom_anchor_requires_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
