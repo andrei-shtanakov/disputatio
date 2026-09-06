@@ -774,6 +774,36 @@ def test_broken_anchor_does_not_swallow_the_terminal_events(tmp_path: Path) -> N
     assert "exported" in kinds, "событие перехода, случившегося на диске, потеряно"
 
 
+def test_vanished_anchor_at_the_terminal_transition_is_not_silent(
+    tmp_path: Path,
+) -> None:
+    """Исчезнувший журнал — аномалия control plane, а не тихий пропуск.
+
+    Мягче порчи трактовать его нельзя: тот же файл, пропавший к `resume`,
+    уже считается основанием для отказа, а его повреждение на этом же
+    переходе даёт громкую ошибку. Молчание здесь стоило бы дважды: `run`
+    отвечал бы нулём об аномалии, а поздний `phase` выдавал бы диагноз про
+    забытый `--config` — то есть уводил бы оператора искать конфиг, с
+    которым всё в порядке.
+    """
+    harness = build_harness(tmp_path, converged_pair())
+    exporter = harness.exporter
+
+    def vanish(state: PipelineState, **kwargs: object) -> Path:
+        """Экспорт идёт последним шагом перед `DONE` — здесь журнал и пропадает."""
+        harness.anchor().path.unlink()
+        return exporter(state, **kwargs)
+
+    harness.runner._exporter = vanish  # type: ignore[assignment]
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        harness.runner.run(SLUG, "полировать пару")
+
+    assert "исчез" in str(excinfo.value)
+    # Переход состоялся: диагностика не отменяет уже записанный результат.
+    assert harness.store.load(SLUG).phase is PipelinePhase.DONE
+
+
 def _anchor_records(harness: Harness) -> list[AnchorRecord]:
     """Все записи анкера стенда в порядке журнала."""
     lines = harness.anchor().path.read_text(encoding="utf-8").splitlines()
