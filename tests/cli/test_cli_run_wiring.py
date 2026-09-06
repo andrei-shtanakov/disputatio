@@ -184,14 +184,14 @@ def _approve(round_no: int) -> str:
     return review.model_dump_json(by_alias=True)
 
 
-def _profile(
-    *, gates: tuple[GateSpec, ...] = (GateSpec(name="noop", cmd="true", enabled=True),)
-) -> RuntimeConfig:
+def _profile(*, gates: tuple[GateSpec, ...] = ()) -> RuntimeConfig:
     """Профиль запуска; поля, которыми владеет запуск, заведомо негодные.
 
-    Гейт по умолчанию настоящий и пустой: без единого выполненного гейта
-    `develop`-сессия не сходится (§4.3) и крутит раунды до лимита, а
-    проверка проводки утонула бы в них, не дойдя до предмета.
+    Умолчание — пустой набор гейтов, и это осознанно: ни один тест набора
+    до `VERIFYING` не доходит (два падают исключением до цикла, третий
+    возвращает 2 на несобираемом адаптере), а единственный, который
+    доходит до `DONE`, передаёт гейт явным аргументом. Правило §4.3
+    несходимости на пустом наборе здесь ничего не держит.
     """
     return RuntimeConfig(
         session_id="ИДЕНТИФИКАТОР-ИЗ-ПРОФИЛЯ",
@@ -251,7 +251,7 @@ def _setup(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    gates: tuple[GateSpec, ...] = (GateSpec(name="noop", cmd="true", enabled=True),),
+    gates: tuple[GateSpec, ...] = (),
     raises: bool = False,
 ) -> SpyLauncher:
     """Кладёт профиль рядом с репозиторием и собирает подмены запуска."""

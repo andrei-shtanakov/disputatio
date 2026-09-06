@@ -44,7 +44,6 @@ from disputatio.events import FileStateStore
 from disputatio.runtime import AgentConfig, LimitsConfig, RuntimeConfig
 from disputatio.runtime.budget import charge_step
 from disputatio.runtime.steps import StepContext
-from disputatio.verifier.config import GateSpec
 
 _FROZEN_NOW = datetime(2026, 8, 10, 15, 34, 56, tzinfo=timezone(timedelta(hours=3)))
 
@@ -80,10 +79,7 @@ def _profile() -> RuntimeConfig:
             max_wall_seconds=3600,
             schema_retries=0,
         ),
-        # Гейт настоящий и пустой: без выполненного гейта `develop`-сессия
-        # не сходится (§4.3) и до предмета теста — исхода после начисления
-        # бюджета — дошла бы не тем путём.
-        gates=(GateSpec(name="noop", cmd="true", enabled=True),),
+        gates=(),
         attachments=(),
     )
 
