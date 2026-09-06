@@ -660,6 +660,41 @@ def test_phase_is_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert after == before
 
 
+def test_phase_touches_nothing_but_the_lock_file_in_the_empty_anchor_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Единственная запись `phase` на диск — служебный lock, и только в окне.
+
+    `run` заводит пустой журнал первым действием, а файл блокировки рядом
+    появляется лишь с первой записью в него: между этими двумя моментами
+    чтение анкера создаёт `<slug>.jsonl.lock` само. Обещание команды —
+    «ни байта в control plane», и вот его буквальная проверка: каталог
+    пайплайна не изменился, а из нового в дереве — ровно пустой lock.
+
+    Отказаться от блокировки было бы хуже: `_seal_tail` укорачивает журнал,
+    и чтение без неё объявило бы подмену на журнале, с которым всё в порядке.
+    """
+    monkeypatch.setattr(
+        "disputatio.events.IntegrityAnchor.append_genesis",
+        lambda self, snapshot: (_ for _ in ()).throw(Boom("крах до genesis")),
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    with pytest.raises(Boom):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+    capsys.readouterr()
+    before = tree_snapshot(tmp_path)
+
+    code = run_cli(stand, "phase")
+
+    after = tree_snapshot(tmp_path)
+    appeared = set(after) - set(before)
+    assert code == EXIT_FAILED
+    assert [Path(path).name for path in appeared] == [f"{SLUG}.jsonl.lock"]
+    assert all(after[path] == before[path] for path in before), (
+        "существующие файлы обязаны остаться байт-в-байт теми же"
+    )
+
+
 def test_phase_refuses_a_forged_manifest_without_touching_the_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
