@@ -398,7 +398,7 @@
   `from: devtools#disp-document-mode-issue`). Спека behaviour-конвейера devtools
   (§5, OQ-1) закладывала авторинг документов бандла через `disp --mode document`.
   Такого CLI-способа нет: `disp run --mode` принимает только `develop|analyze`
-  (`SESSION_MODES`, `src/disputatio/cli.py:120`), а `disp pipeline` жёстко ведёт
+  (константа `SESSION_MODES` в `src/disputatio/cli.py`), а `disp pipeline` жёстко ведёт
   пару «спека + план». devtools временно гоняет `disp run --mode develop` (opt-in
   бэкенд `--author-backend disp` в behaviour-runner, devtools PR #89) — работает,
   но develop-цикл заточен под кодовую задачу, а не под полировку одного
@@ -681,9 +681,10 @@
   — принят inbox-запрос devtools (#68, `slug:` в теле issue совпадает).
   Верифицированного read-only источника фазы у нас нет: `disp pipeline status`
   рендерит фазу из `pipeline.json` БЕЗ проверки integrity anchor
-  (`cli.py:355` → `render_status(_manifest(root, args.slug, anchor), anchor.path)`
-  — anchor только отображается «есть/нет»), а `_verify_integrity`
-  (`runtime/pipeline_resume.py:355`) вызывается только из мутирующего `resume`,
+  (`cli.py::cmd_pipeline_status` → `render_status(_manifest(root, args.slug,
+  anchor), anchor.path)` — anchor только отображается «есть/нет»), а
+  `pipeline_resume.py::_verify_integrity` вызывается только из мутирующего
+  `resume`,
   который к тому же отвергает терминальные фазы. Читать манифест напрямую
   потребителю нельзя — это обход нашей же защиты: `pipeline.json` объявлен
   immutable control plane, и `tests/runtime/test_pipeline_integrity.py` прямо

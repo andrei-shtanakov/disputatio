@@ -51,6 +51,7 @@
 
 import argparse
 import secrets
+import shlex
 import sys
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
@@ -103,6 +104,7 @@ from disputatio.runtime.pipeline_config import load_session_profile
 from disputatio.runtime.pipeline_export import export_pipeline
 from disputatio.runtime.pipeline_resume import missing_manifest_message
 from disputatio.runtime.steps import StepContext
+from disputatio.verifier import GateSpec
 
 EXIT_OK: Final = 0
 """Сессия дошла до `DONE` — в том числе эскалацией: она не сбой ([REQ-018])."""
@@ -245,6 +247,22 @@ def cmd_run(
     )
 
 
+def _is_executable_gate(gate: GateSpec) -> bool:
+    """Гейт, который заведомо запустится: включён и команда разбирается.
+
+    Разбор — тот же `shlex.split`, что и в `run_gate_command`: пустой argv
+    там отвергается `ValueError` до `Popen`, то есть невыполнимость видна
+    без запуска. Неразбираемая кавычка (`ValueError` самого `shlex`) — тот
+    же класс: команда не станет исполняемой ни при каком окружении.
+    """
+    if not gate.enabled:
+        return False
+    try:
+        return bool(shlex.split(gate.cmd))
+    except ValueError:
+        return False
+
+
 def _reject_unconvergeable_gates(config: RuntimeConfig) -> None:
     """Отказ до первого вызова агента, если сойтись нельзя по построению.
 
@@ -264,7 +282,10 @@ def _reject_unconvergeable_gates(config: RuntimeConfig) -> None:
     до `max_rounds` и заканчивалась `DEADLOCK` с причиной `max_rounds`,
     которая называет симптом, а не причину.
 
-    **Покрыты только статические случаи, и это предел по построению.** Гейт,
+    **Покрыты все статически различимые случаи, и это предел по построению.**
+    Гейт, чью команду `shlex` разбирает в пустой argv, невыполним так же
+    наглядно, как выключенный: `run_gate_command` отвергает её `ValueError`
+    ещё до `Popen`. А вот гейт,
     объявленный включённым и не запустившийся уже в рантайме (нет бинаря →
     `skip` по конвенции `run_gate`), даёт `indeterminate` в каждом раунде и
     выгорает ровно так же — до `max_rounds`, с той же неинформативной
@@ -274,12 +295,12 @@ def _reject_unconvergeable_gates(config: RuntimeConfig) -> None:
     то есть отдельная нормативная развилка
     (`todo://disputatio/indeterminate-stop-reason`).
     """
-    if any(gate.enabled for gate in config.gates):
+    if any(_is_executable_gate(gate) for gate in config.gates):
         return
     if config.mode is Mode.ANALYZE and not config.gates:
         return
     what = (
-        "все гейты выключены (`enabled = false`)"
+        "ни один гейт не выполним (выключен или задан невыполнимой командой)"
         if config.gates
         else "гейтов нет ни одного"
     )

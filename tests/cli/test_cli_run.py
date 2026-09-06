@@ -552,6 +552,26 @@ def test_run_with_every_gate_disabled_is_refused_at_start(
     assert bench.launcher.argvs == []
 
 
+def test_run_with_an_unparsable_gate_command_is_refused_at_start(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Включённый гейт с невыполнимой командой — та же статическая несходимость.
+
+    `shlex.split("")` пуст, `run_gate_command` отвергает такую команду
+    `ValueError` ещё до `Popen`, а `run_gate` отображает отказ в `skip`.
+    Значит гейт объявлен, но выполнить его нельзя — и это видно без
+    запуска, ровно как выключенный.
+    """
+    unparsable = (GateSpec(name="tests", cmd="   ", enabled=True),)
+    bench = _bench(git_repo, monkeypatch, profile=_profile(gates=unparsable))
+
+    code = _main(bench.argv())
+
+    assert code == 2
+    assert not session_dir(git_repo).exists()
+    assert bench.launcher.argvs == []
+
+
 def test_config_snapshot_replaces_only_the_fields_owned_by_the_run(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
