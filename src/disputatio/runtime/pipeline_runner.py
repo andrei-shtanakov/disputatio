@@ -95,13 +95,18 @@ from disputatio.contracts import (
 )
 from disputatio.core import TERMINAL_PHASES
 from disputatio.events import (
+    AnchorCorrupted,
     FileStateStore,
     IntegrityAnchor,
     PipelineEvent,
     PipelineEventType,
     atomic_write,
 )
-from disputatio.runtime.errors import ConfigError, PipelineAlreadyExists
+from disputatio.runtime.errors import (
+    ConfigError,
+    ControlPlaneTampered,
+    PipelineAlreadyExists,
+)
 from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
 from disputatio.runtime.history import load_decision, load_review
 from disputatio.runtime.layout import REVIEW_NAME, round_dir
@@ -1271,11 +1276,28 @@ class PipelineRunner:
         if not anchor.path.is_file():
             return
         manifest = self._pipeline_dir(state.pipeline_id) / MANIFEST_NAME
-        anchor.append_terminal(
-            pipeline_id=state.pipeline_id,
-            phase=state.phase.value,
-            manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-        )
+        try:
+            anchor.append_terminal(
+                pipeline_id=state.pipeline_id,
+                phase=state.phase.value,
+                manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            )
+        except AnchorCorrupted as exc:
+            # Порча журнала — нарушение control plane, и молчать о ней нельзя.
+            # Но и отчитываться провалом нельзя тоже: переход уже совершён,
+            # манифест и `result/` на диске. Голое `AnchorCorrupted` ушло бы
+            # мимо `main` (тот ловит `DisputatioError`) и завершило процесс
+            # кодом `1` — тем самым, которым `run` обозначает `FAILED`, так
+            # что успешно завершённый пайплайн читался бы скриптом как
+            # упавший. Доменная ошибка даёт код `2`: результат есть, но
+            # фаза не подтверждена и с анкером надо разбираться.
+            raise ControlPlaneTampered(
+                f"пайплайн {state.pipeline_id!r} дошёл до "
+                f"{state.phase.value} — манифест и результат записаны, — но "
+                f"журнал целостности повреждён: {exc}. Терминальная отметка "
+                "не записана, поэтому `disp pipeline phase` эту фазу "
+                "подтвердить не сможет; разберите журнал вручную"
+            ) from exc
 
     def _recompute_budget(self, state: PipelineState) -> BudgetUsed:
         """Пересчёт бюджета по диску (§4.2) — общий с операторскими решениями."""

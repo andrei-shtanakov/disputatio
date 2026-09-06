@@ -87,6 +87,7 @@ from disputatio.events.paths import SESSION_DIR_NAME
 from disputatio.events.pipeline_paths import pipeline_dir, session_artifact_root
 from disputatio.runtime import (
     ConfigError,
+    ControlPlaneTampered,
     DirtyWorkingTree,
     PipelineAlreadyExists,
     PipelineConfig,
@@ -756,7 +757,9 @@ def test_broken_anchor_does_not_swallow_the_terminal_events(tmp_path: Path) -> N
 
     IntegrityAnchor.append_terminal = boom  # type: ignore[method-assign]
     try:
-        with pytest.raises(AnchorCorrupted):
+        # Порча переводится в доменную ошибку: голое `AnchorCorrupted` ушло
+        # бы мимо `main` и завершило успешный прогон кодом `FAILED`.
+        with pytest.raises(ControlPlaneTampered):
             harness.runner.run(SLUG, "полировать пару")
     finally:
         IntegrityAnchor.append_terminal = original  # type: ignore[method-assign]

@@ -59,6 +59,7 @@ from disputatio.contracts import (
     Severity,
     Verdict,
 )
+from disputatio.events import AnchorCorrupted
 from disputatio.runtime import composition
 from disputatio.runtime.pipeline_runner import artifact_root_of, pipeline_dir_of
 
@@ -693,6 +694,35 @@ def test_phase_touches_nothing_but_the_lock_file_in_the_empty_anchor_window(
     assert all(after[path] == before[path] for path in before), (
         "существующие файлы обязаны остаться байт-в-байт теми же"
     )
+
+
+def test_broken_anchor_at_the_terminal_transition_does_not_report_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Пайплайн дошёл до `DONE`, анкер повреждён: код 2, а не 1 и не traceback.
+
+    Различие кодов существенно: `1` у `run` означает `FAILED` ([DESIGN-019]),
+    и успешно завершённый пайплайн, отчитавшийся им, читался бы скриптом как
+    упавший. Нулём отвечать тоже нельзя — отметки нет, фаза не подтверждена,
+    и оператор обязан узнать об этом сейчас, а не на первом `phase`.
+    """
+    monkeypatch.setattr(
+        "disputatio.events.IntegrityAnchor.append_terminal",
+        lambda self, **kwargs: (_ for _ in ()).throw(
+            AnchorCorrupted("журнал повреждён")
+        ),
+    )
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+    capsys.readouterr()
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    captured = capsys.readouterr()
+    assert code == EXIT_ERROR
+    assert "повреждён" in captured.err
+    # Переход состоялся и остался на диске: отказ записи отметки его не
+    # отменяет — иначе диагностика уничтожала бы результат.
+    assert stand.manifest()["phase"] == PipelinePhase.DONE.value
 
 
 def test_phase_on_a_missing_anchor_is_a_domain_error_not_a_traceback(
