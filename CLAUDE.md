@@ -57,6 +57,7 @@ These constrain almost every implementation decision; violating them breaks resu
 `DECIDING` checks stopping conditions **strictly top-down, first match is terminal** (§5): converged → budget hit → oscillation → max_rounds. Two rules that are easy to get wrong:
 
 - `verification.overall == fail` does **not** block the transition to `REVIEWING` — the reviewer weighs the failure itself. It *does* block `CONVERGED`.
+- `overall` has a third value, `indeterminate`: no gate actually ran (empty set or all `skip`). `pass` requires at least one executed `pass` — an unverified round is never green (§4.3). Outwardly `indeterminate` behaves like `fail` (blocks `CONVERGED`, not `REVIEWING`); the only path to convergence without an executed gate is the §5.1 п.2 carve-out for `analyze` with an empty gate set.
 - Anti-sycophancy: a round-1 `approve` is only accepted for `analyze` mode without code changes; otherwise the orchestrator forces one substantive review cycle.
 - Partial results are always exported, with `manifest.json` honestly recording `converged: false` plus open issues.
 

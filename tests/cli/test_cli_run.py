@@ -253,13 +253,23 @@ def _approve(round_no: int) -> str:
     return review.model_dump_json(by_alias=True)
 
 
+_TRIVIAL_GATE = GateSpec(name="noop", cmd="true", enabled=True)
+
+
 def _profile(
     *,
-    gates: tuple[GateSpec, ...] = (),
+    gates: tuple[GateSpec, ...] = (_TRIVIAL_GATE,),
     schema_retries: int = 1,
     max_rounds: int = 5,
 ) -> RuntimeConfig:
-    """Профиль запуска: агенты, лимиты и гейты — свои, остальное негодное."""
+    """Профиль запуска: агенты, лимиты и гейты — свои, остальное негодное.
+
+    Гейт по умолчанию — настоящий, но пустой (`true`): прогон CLI идёт в
+    режиме `develop`, а там сходимость требует хотя бы одного фактически
+    выполненного гейта (§4.3, §5.1 п.2). Без него сессия честно не
+    сходилась бы, и проверка проводки CLI утонула бы в лишних раундах.
+    Ловушка `_forbid_real_processes` минирует только агентские CLI.
+    """
     return RuntimeConfig(
         session_id=_PROFILE_ID,
         mode=Mode.ANALYZE,

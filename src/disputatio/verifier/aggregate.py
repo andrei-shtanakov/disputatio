@@ -8,20 +8,27 @@ from disputatio.contracts.verification import GateResult, GateStatus, OverallSta
 
 
 def compute_overall(gates: list[GateResult]) -> OverallStatus:
-    """`fail`, если есть хотя бы один `fail`-gate; иначе `pass`.
+    """Агрегация §4.3, три правила сверху вниз, первое сработавшее.
 
-    `skip` — не провал: отключённый или пропущенный гейт ничего не
-    доказывает, но и ничего не опровергает, поэтому пустой список и список
-    из одних `skip` дают `pass` ([DESIGN-009]). Утечь на верхний уровень
-    `skip` не может по типу: `OverallStatus` — enum из двух значений.
+    `fail` при хотя бы одном `fail`-гейте; иначе `pass` при хотя бы одном
+    выполненном `pass`; иначе `indeterminate` — набор пуст либо состоит из
+    одних `skip`.
+
+    `skip` не провал (отключённый или не запустившийся гейт ничего не
+    опровергает), но и не свидетельство: раунд, где не выполнено ни одной
+    проверки, зелёного вердикта не получает. Прежняя редакция отдавала
+    здесь `pass` — fail-open в самом приборе, поскольку `pass` открывает
+    дорогу к `CONVERGED`. Единственный законный путь к сходимости без
+    выполненных гейтов остался один — карман §5.1 п.2 для `analyze` с
+    пустым набором, и решает его `core.deciding`, а не агрегатор.
 
     Сравнение через `==`, а не `is` — конвенция [REQ-015]/[DESIGN-013]:
     `model_copy(update=...)` и `model_construct` кладут в поле сырую
     строку без ревалидации, и `is`-сравнение молча пропустило бы такой
     `fail`. `GateStatus` — `StrEnum`, поэтому `==` ловит оба представления.
-    Ошибка здесь однонаправленно опасна: ложный `pass` открывает дорогу
-    к `CONVERGED` ([REQ-008]).
     """
     if any(gate.status == GateStatus.FAIL for gate in gates):
         return OverallStatus.FAIL
-    return OverallStatus.PASS
+    if any(gate.status == GateStatus.PASS for gate in gates):
+        return OverallStatus.PASS
+    return OverallStatus.INDETERMINATE

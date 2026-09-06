@@ -62,7 +62,7 @@ _REQUIREMENT_COVERAGE: Final[dict[str, tuple[tuple[str, str], ...]]] = {
         ("test_verifier_runner.py", "test_gates_keep_config_order_and_identity"),
         (
             "test_verifier_runner.py",
-            "test_empty_gate_list_gives_no_gates_and_overall_pass",
+            "test_empty_gate_list_gives_no_gates_and_overall_indeterminate",
         ),
     ),
     "REQ-003": (
@@ -107,7 +107,12 @@ _REQUIREMENT_COVERAGE: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     ),
     "REQ-008": (
         ("test_aggregate.py", "test_any_fail_gate_makes_overall_fail"),
-        ("test_aggregate.py", "test_empty_gate_list_makes_overall_pass"),
+        ("test_aggregate.py", "test_empty_gate_list_makes_overall_indeterminate"),
+        ("test_aggregate.py", "test_only_skip_gates_make_overall_indeterminate"),
+        (
+            "test_aggregate.py",
+            "test_at_least_one_pass_without_fail_makes_overall_pass",
+        ),
         ("test_verifier_runner.py", "test_single_failing_gate_makes_overall_fail"),
     ),
     "REQ-009": (

@@ -57,16 +57,16 @@ def test_any_fail_gate_makes_overall_fail(
     "statuses",
     [
         (GateStatus.PASS,),
-        (GateStatus.SKIP,),
         (GateStatus.PASS, GateStatus.PASS),
-        (GateStatus.SKIP, GateStatus.SKIP),
+        (GateStatus.PASS, GateStatus.SKIP),
+        (GateStatus.SKIP, GateStatus.PASS),
         (GateStatus.PASS, GateStatus.SKIP, GateStatus.PASS),
     ],
 )
-def test_gates_without_fail_make_overall_pass(
+def test_at_least_one_pass_without_fail_makes_overall_pass(
     statuses: tuple[GateStatus, ...],
 ) -> None:
-    """Список из `pass`/`skip` даёт `overall == pass`: `skip` не проваливает."""
+    """`pass` — когда есть выполненный гейт и нет ни одного `fail` (§4.3)."""
     aggregate = _import_aggregate()
 
     gates = [_gate(status, name=f"gate-{i}") for i, status in enumerate(statuses)]
@@ -74,11 +74,51 @@ def test_gates_without_fail_make_overall_pass(
     assert aggregate.compute_overall(gates) is OverallStatus.PASS
 
 
-def test_empty_gate_list_makes_overall_pass() -> None:
-    """Пустой список gates — `overall == pass` ([DESIGN-009])."""
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        (GateStatus.SKIP,),
+        (GateStatus.SKIP, GateStatus.SKIP),
+        (GateStatus.SKIP, GateStatus.SKIP, GateStatus.SKIP),
+    ],
+)
+def test_only_skip_gates_make_overall_indeterminate(
+    statuses: tuple[GateStatus, ...],
+) -> None:
+    """Набор из одних `skip` не доказывает ничего — `indeterminate` (§4.3).
+
+    `skip` по-прежнему не провал, но и не свидетельство: раунд, в котором
+    не выполнено ни одного гейта, зелёного вердикта не получает.
+    """
     aggregate = _import_aggregate()
 
-    assert aggregate.compute_overall([]) is OverallStatus.PASS
+    gates = [_gate(status, name=f"gate-{i}") for i, status in enumerate(statuses)]
+
+    assert aggregate.compute_overall(gates) is OverallStatus.INDETERMINATE
+
+
+def test_empty_gate_list_makes_overall_indeterminate() -> None:
+    """Пустой набор гейтов — `indeterminate`, а не `pass` (§4.3).
+
+    Прежнее правило отдавало здесь `pass`: конфигурация без единого гейта
+    получала зелёный вердикт и открывала дорогу к `CONVERGED`.
+    """
+    aggregate = _import_aggregate()
+
+    assert aggregate.compute_overall([]) is OverallStatus.INDETERMINATE
+
+
+def test_fail_beats_indeterminate_when_no_gate_passed() -> None:
+    """`fail` рядом с одними `skip` даёт `fail`, а не `indeterminate` (§4.3).
+
+    Порядок правил — сверху вниз: провал сильнее отсутствия свидетельства,
+    хотя ни один гейт в наборе не выполнен успешно.
+    """
+    aggregate = _import_aggregate()
+
+    gates = [_gate(GateStatus.SKIP, name="a"), _gate(GateStatus.FAIL, name="b")]
+
+    assert aggregate.compute_overall(gates) is OverallStatus.FAIL
 
 
 def test_compute_overall_does_not_mutate_input() -> None:

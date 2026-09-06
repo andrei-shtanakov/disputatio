@@ -279,6 +279,23 @@ def test_approve_on_passed_gates_passes() -> None:
     assert check_verdict_vs_verification(review, make_verification("pass")) is None
 
 
+def test_approve_on_indeterminate_gates_is_not_rejected_at_validation() -> None:
+    """REQ-010: правило §4.4 сторожит только `fail`, а не `indeterminate`.
+
+    «Одобряю, но тесты красные» — противоречие; «одобряю, проверок не
+    было» им не является: в `analyze` с пустым набором это законный
+    исход (§5.1 п.2). Сходимость при `indeterminate` в прочих режимах
+    блокирует критерий §5.1, а не валидация ревью, — иначе законное
+    analyze-ревью уходило бы в schema-retry и сессия падала бы в FAILED.
+    """
+    from disputatio.contracts.validation import check_verdict_vs_verification
+
+    review = make_review([], verdict="approve")
+    verification = make_verification("indeterminate")
+
+    assert check_verdict_vs_verification(review, verification) is None
+
+
 def test_request_changes_on_failed_gates_passes() -> None:
     """REQ-010: правило касается только approve — request_changes при fail → None."""
     from disputatio.contracts.validation import check_verdict_vs_verification

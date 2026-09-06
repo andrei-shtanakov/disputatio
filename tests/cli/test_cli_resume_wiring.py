@@ -44,6 +44,7 @@ from disputatio.events import FileStateStore
 from disputatio.runtime import AgentConfig, LimitsConfig, RuntimeConfig
 from disputatio.runtime.layout import session_dir
 from disputatio.runtime.steps import StepContext
+from disputatio.verifier.config import GateSpec
 
 _FROZEN_NOW = datetime(2026, 8, 10, 15, 34, 56, tzinfo=timezone(timedelta(hours=3)))
 
@@ -183,7 +184,12 @@ def _approve(round_no: int) -> str:
 
 
 def _profile(*, schema_retries: int) -> RuntimeConfig:
-    """Профиль запуска; поля, которыми владеет запуск, заведомо негодные."""
+    """Профиль запуска; поля, которыми владеет запуск, заведомо негодные.
+
+    Гейт `true` — настоящий и пустой: запуск идёт в `develop`, где §4.3
+    требует хотя бы одного выполненного гейта, иначе сессия не сойдётся и
+    проводка часов утонет в лишних раундах.
+    """
     return RuntimeConfig(
         session_id="ИДЕНТИФИКАТОР-ИЗ-ПРОФИЛЯ",
         mode=Mode.ANALYZE,
@@ -197,7 +203,7 @@ def _profile(*, schema_retries: int) -> RuntimeConfig:
             max_wall_seconds=3600,
             schema_retries=schema_retries,
         ),
-        gates=(),
+        gates=(GateSpec(name="noop", cmd="true", enabled=True),),
         attachments=(),
     )
 

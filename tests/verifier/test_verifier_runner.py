@@ -86,14 +86,21 @@ def test_gates_keep_config_order_and_identity(
     assert report.gates[1].exit_code == 3
 
 
-def test_empty_gate_list_gives_no_gates_and_overall_pass(tmp_git_repo: Path) -> None:
-    """[REQ-002]/[REQ-008]: analyze-режим — пустой список валиден, `overall == pass`."""
+def test_empty_gate_list_gives_no_gates_and_overall_indeterminate(
+    tmp_git_repo: Path,
+) -> None:
+    """[REQ-002]/[REQ-008]: пустой список валиден, но `overall == indeterminate`.
+
+    Список гейтов пуст — прогон состоялся, доказательств не собрано (§4.3).
+    Право сойтись на пустом наборе осталось у `analyze` и живёт в §5.1 п.2,
+    то есть в `core.deciding`: сам отчёт зелёным больше не бывает.
+    """
     runner_class = _runner_class()
 
     report = runner_class([], tmp_git_repo).verify(1)
 
     assert report.gates == []
-    assert report.overall == OverallStatus.PASS
+    assert report.overall == OverallStatus.INDETERMINATE
 
 
 def test_report_carries_round_and_schema(
