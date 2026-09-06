@@ -46,15 +46,15 @@ from disputatio.runtime.errors import ControlPlaneTampered
 from disputatio.runtime.layout import SESSION_DIR_NAME, rounds_dir
 from disputatio.runtime.pipeline_config import validate_anchor_path
 
+#: Имя манифеста. Публичная константа, потому что о нём знают двое: снапшот
+#: P9 (ниже) и терминальная отметка анкера (`pipeline_runner._mark_terminal`)
+#: — второй литерал разошёлся бы с первым молча.
+MANIFEST_NAME: Final = "pipeline.json"
+
 #: Файлы каталога пайплайна, неизменяемые в пределах хода автора (§4.1).
 #: `pipeline.json` — тот самый манифест, ради недостижимости которого анкер и
 #: вынесен из дерева; снапшоты task/config/checklists неизменны на весь
 #: пайплайн, и их хеши записаны в манифесте.
-#: Имя манифеста. Публичная константа, потому что о нём знают двое: снапшот
-#: P9 (здесь) и терминальная отметка анкера (`pipeline_runner._mark_terminal`)
-#: — второй литерал разошёлся бы с первым молча.
-MANIFEST_NAME: Final = "pipeline.json"
-
 _PIPELINE_IMMUTABLE: Final = (
     MANIFEST_NAME,
     "task.md",
