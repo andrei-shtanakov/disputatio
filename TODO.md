@@ -457,7 +457,7 @@
   `docs/document-pipeline.md` и в докстрингах `_operator_checklist` /
   `_checklists_snapshot`).
 
-- [ ] Остаточные находки ревью PR #51 не заведены issue @id:pr51-residual-findings
+- [ ] Остаточные находки ревью PR #51 не заведены issue @id:pr51-residual-findings @epic:eco.disputatio
   — описание PR #51 обещало отдать восемь мест «отслеживаемыми issue»; на
   2026-08-31 таких issue в репо нет (`gh issue list --state all` — открыты только
   inbox #44 и #52, остальное закрыто ещё в августе). Список из описания PR:
