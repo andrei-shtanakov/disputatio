@@ -1219,8 +1219,10 @@ def _task_reference_findings(
                 detail=f"задачи №{cover.task} нет в плане (§5.3)",
             )
         ]
-    missing_site = cover.site not in section
-    missing_member = cover.member is not None and cover.member not in section
+    missing_site = not _mentions_site(section, cover.site)
+    missing_member = cover.member is not None and not _mentions_member(
+        section, cover.member
+    )
     if not missing_site and not missing_member:
         return []
     if missing_site and missing_member:
@@ -1238,6 +1240,28 @@ def _task_reference_findings(
             detail=f"раздел задачи №{cover.task} не ссылается на {what} (§5.3)",
         )
     ]
+
+
+def _mentions_site(section: str, site: str) -> bool:
+    """`site` встречается в разделе целым токеном (§5.3), а не подстрокой.
+
+    Слева — не продолжение пути (`[\\w./-]`), справа — не цифра: иначе
+    `b.py:8` засчитывался бы упоминанием `b.py:80`, а `pkg/b.py:8` —
+    упоминанием `old/pkg/b.py:8`. Пунктуация вокруг (кавычки, скобки,
+    точка или запятая после, `:колонка`) ссылку не портит.
+    """
+    pattern = rf"(?<![\w./-]){re.escape(site)}(?!\d)"
+    return re.search(pattern, section) is not None
+
+
+def _mentions_member(section: str, member: str) -> bool:
+    """`member` встречается в разделе целым словом (§5.3).
+
+    Соседние символы — не `\\w`: `sessions` внутри `doc_sessions` или
+    `sessions2` ссылкой на член не считается.
+    """
+    pattern = rf"(?<!\w){re.escape(member)}(?!\w)"
+    return re.search(pattern, section) is not None
 
 
 def _finding_sort_key(finding: Finding) -> tuple[str, str, str, str]:

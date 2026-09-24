@@ -812,3 +812,118 @@ def test_site_in_prose_next_to_cover_block_is_a_link() -> None:
     )
 
     assert _site_not_in_task_with_plan(plan_text) == []
+
+
+# --- ссылка на место и член — целым токеном, а не подстрокой (§5.3) --------------
+
+
+def _runner_with_constructor_on_line(line: int) -> str:
+    """Раннер, где единственный конструктор стоит ровно на строке `line`."""
+    padding = "\n" * (line - 2)
+    return (
+        f"from pkg.policy import ArchitecturalDefectPolicy\n{padding}"
+        "BAD = ArchitecturalDefectPolicy()\n"
+    )
+
+
+def _site_findings_for_mention(line: int, mention: str) -> list[Finding]:
+    """`site-not-in-task` покрытия строки `line`, когда задача пишет `mention`."""
+    site = f"{RUNNER_MODULE}:{line}"
+    cover_body = _cover_body(
+        TREE, f'[[cover]]\nrule = "p10-policy"\nsite = "{site}"\ntask = 1\n'
+    )
+    report = _check(
+        cover_body=cover_body,
+        task_sections_text=f"### Задача 1: t\nправка {mention} здесь\n",
+        files=_files(
+            **{
+                POLICY_MODULE: POLICY_SOURCE,
+                COMPOSITION_MODULE: COMPOSITION_SOURCE,
+                RUNNER_MODULE: _runner_with_constructor_on_line(line),
+            }
+        ),
+    )
+    assert [f.code for f in report.findings if f.code == "uncovered"] == []
+    return [f for f in report.findings if f.code == "site-not-in-task"]
+
+
+@pytest.mark.parametrize(
+    ("line", "mention"),
+    [
+        (8, f"{RUNNER_MODULE}:80"),
+        (58, f"{RUNNER_MODULE}:581"),
+        (8, f"x{RUNNER_MODULE}:8"),
+        (8, f"other/{RUNNER_MODULE}:8"),
+        (8, f"old-{RUNNER_MODULE}:8"),
+        (8, f"{SRC}/pkg/runnerXpy:8"),
+    ],
+)
+def test_site_prefix_of_longer_token_is_not_a_link(line: int, mention: str) -> None:
+    """`b.py:8` внутри `b.py:80` или `x/b.py:8` — не ссылка на место (§5.3)."""
+    assert len(_site_findings_for_mention(line, mention)) == 1
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "`{site}`",
+        "({site})",
+        "{site}.",
+        "{site},",
+        "{site}:12",
+        "[{site}]",
+    ],
+)
+def test_site_with_punctuation_around_is_a_link(template: str) -> None:
+    """Место в кавычках, скобках, перед точкой/запятой — ссылка есть (§5.3)."""
+    mention = template.format(site=f"{RUNNER_MODULE}:8")
+
+    assert _site_findings_for_mention(8, mention) == []
+
+
+MEMBER_SPEC_BODY = f"""\
+[[rule]]
+id = "append-only-guard"
+kind = "enumerates-all"
+module = "{ENUM_MODULE}"
+function = "_guard_history"
+checkers = ["_check"]
+members = ["doc_sessions", "sessions"]
+"""
+MEMBER_SOURCE = (
+    "def _guard_history(previous, current) -> None:\n"
+    '    _check(previous.doc_sessions, current.doc_sessions, "d")\n'
+)
+
+
+def _member_findings_for_mention(mention: str) -> list[Finding]:
+    """`site-not-in-task` покрытия члена `sessions`, когда задача пишет `mention`."""
+    cover_body = _cover_body(
+        TREE,
+        f'[[cover]]\nrule = "append-only-guard"\nsite = "{ENUM_MODULE}:1"\n'
+        'member = "sessions"\ntask = 1\n',
+    )
+    report = _check(
+        spec_body=MEMBER_SPEC_BODY,
+        cover_body=cover_body,
+        task_sections_text=f"### Задача 1: t\n{ENUM_MODULE}:1 — {mention}\n",
+        files=_files(**{ENUM_MODULE: MEMBER_SOURCE}),
+    )
+    assert [f.code for f in report.findings if f.code == "uncovered"] == []
+    return [f for f in report.findings if f.code == "site-not-in-task"]
+
+
+@pytest.mark.parametrize("mention", ["doc_sessions", "sessions2", "sessionsы"])
+def test_member_inside_longer_word_is_not_a_link(mention: str) -> None:
+    """`sessions` внутри `doc_sessions` — не ссылка на член (§5.3)."""
+    findings = _member_findings_for_mention(mention)
+
+    assert [f.member for f in findings] == ["sessions"]
+
+
+@pytest.mark.parametrize(
+    "mention", ["`sessions`", "(sessions)", "sessions.", "sessions,", "x.sessions"]
+)
+def test_member_with_punctuation_around_is_a_link(mention: str) -> None:
+    """Член в кавычках, скобках, как атрибут — ссылка есть (§5.3)."""
+    assert _member_findings_for_mention(mention) == []
