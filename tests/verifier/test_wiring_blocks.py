@@ -475,3 +475,137 @@ class TestTaskSections:
 
         with pytest.raises(WiringInputError):
             task_sections(text)
+
+
+class TestTaskSectionsFences:
+    """Fenced-содержимое не входит в текст раздела и не даёт заголовков (§5.3).
+
+    Один сканер фенсов на извлечение блоков и на разделы задач: иначе блок
+    покрытия внутри раздела «ссылался» бы сам на все свои места.
+    """
+
+    def test_fenced_content_excluded_from_section_text(self) -> None:
+        text = (
+            "### Задача 1: разбор\n"
+            "прозаический текст\n"
+            "```python\n"
+            "код внутри фенса\n"
+            "```\n"
+            "проза после фенса\n"
+        )
+
+        sections = task_sections(text)
+
+        assert "прозаический текст" in sections[1]
+        assert "проза после фенса" in sections[1]
+        assert "код внутри фенса" not in sections[1]
+
+    def test_cover_block_content_excluded_from_section_text(self) -> None:
+        text = (
+            "### Task 1: unrelated work\n"
+            "```disputatio-wiring-cover\n"
+            'site = "src/pkg/b.py:8"\n'
+            "```\n"
+        )
+
+        sections = task_sections(text)
+
+        assert "src/pkg/b.py:8" not in sections[1]
+
+    def test_task_heading_inside_fence_is_not_heading(self) -> None:
+        text = (
+            "### Задача 1: разбор\n"
+            "```markdown\n"
+            "### Task 2: пример заголовка в коде\n"
+            "```\n"
+            "проза задачи 1 после фенса\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "проза задачи 1 после фенса" in sections[1]
+
+    def test_shorter_fence_line_does_not_close_longer_fence(self) -> None:
+        """```` открыт — строка ``` внутри его не закрывает (CommonMark)."""
+        text = (
+            "### Задача 1: разбор\n"
+            "````markdown\n"
+            "```\n"
+            "### Task 2: всё ещё внутри фенса\n"
+            "внутри фенса\n"
+            "```\n"
+            "````\n"
+            "проза после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "внутри фенса" not in sections[1]
+        assert "проза после" in sections[1]
+
+    def test_fence_line_with_info_does_not_close_fence(self) -> None:
+        """Закрывающая строка — только из кавычек: ```` ```x ```` не закрывает."""
+        text = (
+            "### Задача 1: разбор\n"
+            "```\n"
+            "```python\n"
+            "### Task 2: всё ещё внутри фенса\n"
+            "```\n"
+            "проза после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "проза после" in sections[1]
+
+    def test_tilde_fence_hides_heading_and_content(self) -> None:
+        text = (
+            "### Задача 1: разбор\n"
+            "~~~\n"
+            "### Task 2: внутри тильдового фенса\n"
+            "```\n"
+            "тильдовое содержимое\n"
+            "~~~\n"
+            "проза после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "тильдовое содержимое" not in sections[1]
+        assert "проза после" in sections[1]
+
+    def test_inline_code_at_line_start_is_not_fence(self) -> None:
+        """```` ```x``` ```` в начале строки — инлайн-код, фенс не открывается."""
+        text = (
+            "### Задача 1: разбор\n"
+            "```inline``` проза задачи 1\n"
+            "### Task 2: настоящий заголовок\n"
+            "проза задачи 2\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1, 2}
+        assert "проза задачи 1" in sections[1]
+
+
+class TestFenceScannerForBlocks:
+    def test_block_closed_only_by_fence_of_same_length_or_longer(self) -> None:
+        """Блок в ````-фенсе: строка ``` внутри — литерал, а не конец блока."""
+        body = 'src_tree = """\n```\n"""\n'
+        text = f"````disputatio-wiring-cover\n{body}````\n"
+
+        block = parse_cover(text)
+
+        assert block.src_tree == "```\n"
+
+    def test_block_inside_tilde_fence_not_read(self) -> None:
+        """Блок внутри `~~~`-фенса — литеральный текст примера, не блок."""
+        text = "~~~\n```disputatio-wiring\n" + EXAMPLE_RULES_BODY + "```\n~~~\n"
+
+        with pytest.raises(WiringInputError):
+            parse_rules(text)

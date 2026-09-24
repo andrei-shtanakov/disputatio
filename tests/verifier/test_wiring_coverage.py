@@ -746,3 +746,69 @@ def test_render_report_summary_line_is_last() -> None:
     lines = render_report(report)
 
     assert lines == ["wiring: 0 нарушений, 0 покрыто, 0 находок"]
+
+
+# --- ссылка на место: fenced-текст не засчитывается (§5.3) -----------------------
+
+
+def _site_not_in_task_with_plan(plan_text: str) -> list[Finding]:
+    """Находки `site-not-in-task` для покрытия строки 4 раннера задачей 1."""
+    report = check_wiring(
+        spec_text=_spec(CONSTRUCT_SPEC_BODY),
+        plan_text=plan_text,
+        snapshot=_snapshot(
+            **{
+                POLICY_MODULE: POLICY_SOURCE,
+                COMPOSITION_MODULE: COMPOSITION_SOURCE,
+                RUNNER_MODULE: RUNNER_SOURCE.replace("SECOND = ", "# "),
+            }
+        ),
+        src=SRC,
+        dirty=(),
+    )
+    assert [f.code for f in report.findings if f.code == "uncovered"] == []
+    return [f for f in report.findings if f.code == "site-not-in-task"]
+
+
+_COVER_LINE_4 = f"""\
+```disputatio-wiring-cover
+src_tree = "{TREE}"
+
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:4"
+task = 1
+```
+"""
+
+
+def test_cover_block_inside_task_section_is_not_a_link() -> None:
+    """Блок покрытия внутри раздела задачи сам по себе ссылкой не считается."""
+    plan_text = f"# План\n\n### Task 1: unrelated work\n\n{_COVER_LINE_4}\n"
+
+    findings = _site_not_in_task_with_plan(plan_text)
+
+    assert [f.site for f in findings] == [f"{RUNNER_MODULE}:4"]
+
+
+def test_site_only_in_fenced_example_is_not_a_link() -> None:
+    """Место упомянуто только в fenced-примере раздела — ссылки нет."""
+    plan_text = (
+        f"# План\n\n{_COVER_LINE_4}\n"
+        "### Задача 1: пример\n"
+        f"```text\n{RUNNER_MODULE}:4\n```\n"
+    )
+
+    findings = _site_not_in_task_with_plan(plan_text)
+
+    assert [f.site for f in findings] == [f"{RUNNER_MODULE}:4"]
+
+
+def test_site_in_prose_next_to_cover_block_is_a_link() -> None:
+    """Место в прозе раздела — ссылка есть, даже если блок покрытия рядом."""
+    plan_text = (
+        "# План\n\n### Задача 1: убрать конструктор\n"
+        f"Правка `{RUNNER_MODULE}:4`.\n\n{_COVER_LINE_4}\n"
+    )
+
+    assert _site_not_in_task_with_plan(plan_text) == []

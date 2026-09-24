@@ -160,10 +160,6 @@ _HEADING_RE = re.compile(r"^#{1,3} \S")
 # задачи — только `###`, поэтому `## Task 3:`/`# Задача 3:` задачей не
 # считается (хотя и обрывает предыдущий раздел как обычный заголовок 1–3).
 _TASK_HEADING_RE = re.compile(r"^### (?:Задача|Task) (\d+)\s*:")
-# Строка фенса — 3 и более обратных кавычки в начале строки; используется
-# только чтобы не принять TOML-комментарий (`# ...`) внутри блока покрытия
-# за заголовок markdown.
-_FENCE_LINE_RE = re.compile(r"^`{3,}")
 
 
 def task_sections(plan_text: str) -> Mapping[int, str]:
@@ -171,19 +167,19 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
 
     Заголовок задачи — `### Задача N:` или `### Task N:`; раздел — текст от
     заголовка до следующего заголовка уровня 1–3 (не обрывается `####`).
-    Строки внутри fenced-блоков заголовками не считаются: иначе TOML-комментарий
-    (`# ...`) блока покрытия читался бы как markdown-заголовок.
+    Fenced-блоки (`_scan_fences`) из разделов вырезаются целиком, вместе со
+    строками фенса: их строки не заголовки (иначе TOML-комментарий `# ...`
+    читался бы как markdown-заголовок) и не текст раздела — иначе блок
+    покрытия внутри раздела «ссылался» бы на все свои места сам, а место из
+    примера кода засчитывалось бы как ссылка задачи.
     """
     lines = plan_text.splitlines()
+    fenced = _fenced_line_indices(lines)
+    prose = [index for index in range(len(lines)) if index not in fenced]
     heading_lines: list[int] = []
     task_headings: dict[int, int] = {}
-    in_fence = False
-    for index, line in enumerate(lines):
-        if _FENCE_LINE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
+    for index in prose:
+        line = lines[index]
         if not _HEADING_RE.match(line):
             continue
         heading_lines.append(index)
@@ -198,45 +194,101 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
                 f"план: несколько заголовков задачи №{task_number} (§5.3)"
             )
         end = next((h for h in heading_lines if h > heading_index), len(lines))
-        sections[task_number] = "\n".join(lines[heading_index:end])
+        sections[task_number] = "\n".join(
+            lines[i] for i in prose if heading_index <= i < end
+        )
     return sections
 
 
 # --- fenced-блоки ------------------------------------------------------------
 
-_FENCE_OPEN_RE = re.compile(r"^(`{3,})(.*)$")
+# Строка фенса: отступ, затем 3+ одинаковых символа `` ` `` или `~`, затем
+# info-строка. У фенса из обратных кавычек info-строка кавычек не содержит
+# (CommonMark): строка вида ```` ```x``` ```` — инлайн-код, а не фенс.
+_FENCE_RE = re.compile(r"^ *(`{3,}|~{3,})(.*)$")
+
+
+@dataclass(frozen=True, slots=True)
+class _Fence:
+    """Fenced-блок: info-строка и строки `[start, end]` включительно.
+
+    `start` — открывающая строка; `end` — закрывающая, а у незакрытого
+    блока — последняя строка документа (`closed = False`).
+    """
+
+    info: str
+    start: int
+    end: int
+    closed: bool
+
+
+def _scan_fences(lines: list[str]) -> list[_Fence]:
+    """Все fenced-блоки документа — единственный сканер фенсов модуля.
+
+    Фенсы не вкладываются: внутри открытого блока любая строка — литерал,
+    кроме закрывающей. Закрывает блок только строка из символов того же
+    вида (`` ` `` или `~`), не короче открывающей и без info-строки
+    (CommonMark): ```` ``` ```` внутри ```` ```` ```` блок не закрывает.
+    Незакрытый блок тянется до конца документа.
+    """
+    fences: list[_Fence] = []
+    index = 0
+    while index < len(lines):
+        opening = _FENCE_RE.match(lines[index])
+        if opening is None or _is_inline_code(opening):
+            index += 1
+            continue
+        marker = opening.group(1)
+        end = next(
+            (j for j in range(index + 1, len(lines)) if _closes(lines[j], marker)),
+            None,
+        )
+        closed = end is not None
+        last = end if end is not None else len(lines) - 1
+        info = opening.group(2).strip()
+        fences.append(_Fence(info=info, start=index, end=last, closed=closed))
+        index = last + 1
+    return fences
+
+
+def _is_inline_code(opening: re.Match[str]) -> bool:
+    """Строка из кавычек с кавычкой в info-строке — не фенс (CommonMark)."""
+    return opening.group(1).startswith("`") and "`" in opening.group(2)
+
+
+def _closes(line: str, marker: str) -> bool:
+    """`line` закрывает фенс `marker`: тот же символ, не короче, без info."""
+    closing = _FENCE_RE.match(line)
+    return (
+        closing is not None
+        and closing.group(1)[0] == marker[0]
+        and len(closing.group(1)) >= len(marker)
+        and closing.group(2).strip() == ""
+    )
+
+
+def _fenced_line_indices(lines: list[str]) -> set[int]:
+    """Номера строк внутри fenced-блоков, включая сами строки фенса."""
+    return {
+        index
+        for fence in _scan_fences(lines)
+        for index in range(fence.start, fence.end + 1)
+    }
 
 
 def _find_fenced_blocks(text: str, info: str) -> list[str]:
-    """Содержимое fenced-блоков с info-строкой ровно `info` (§3.1/§5.1).
+    """Содержимое закрытых fenced-блоков с info-строкой ровно `info` (§3.1/§5.1).
 
-    Ищется построчно: открывающая строка — 3+ обратных кавычки с info-строкой
-    после них, закрывающая — строка из одних обратных кавычек (без info).
-    Markdown-фенсы не вкладываются: открывающая строка, встреченная внутри уже
-    открытого блока, — литеральный текст, а не новое открытие, и текущий блок
-    закрывается только «голой» строкой из кавычек.
+    Блоки находит `_scan_fences` — тот же сканер, что вырезает fenced-текст
+    из разделов задач. Блок внутри другого фенса — литеральный текст, а не
+    блок. Незакрытый блок не засчитывается: его граница не определена.
     """
-    blocks: list[str] = []
-    in_fence = False
-    capturing = False
-    current: list[str] = []
-    for line in text.splitlines():
-        match = _FENCE_OPEN_RE.match(line)
-        if not in_fence:
-            if match:
-                in_fence = True
-                capturing = match.group(2).strip() == info
-                current = []
-            continue
-        if match and match.group(2).strip() == "":
-            if capturing:
-                blocks.append("\n".join(current))
-            in_fence = False
-            capturing = False
-            continue
-        if capturing:
-            current.append(line)
-    return blocks
+    lines = text.splitlines()
+    return [
+        "\n".join(lines[fence.start + 1 : fence.end])
+        for fence in _scan_fences(lines)
+        if fence.closed and fence.info == info
+    ]
 
 
 def _load_block(text: str, info: str, document_name: str) -> dict[str, object]:
