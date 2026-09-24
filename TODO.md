@@ -472,7 +472,7 @@
   Пункт заведён при закрытии inbox #44: помечать автоматизацию сделанной, пока
   её собственные follow-up'ы не существуют ни как issue, ни как пункт плана, —
   бухгалтерия, которой нельзя верить.
-- [ ] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio
+- [x] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio — закрыт 2026-09-24: `spec-runner.config.yaml` и `pyrefly.toml` внесены в `harness_files` `project.yaml` (сверено по коду spec-runner: guard хеширует файлы на диске, неотслеживаемый сгенерированный конфиг покрыт; maestro пишет его до запуска); расхождение doc §2 ↔ SSOT запинено `tests/test_project_harness.py`
   — `docs/workstream-setup.md` §2 и операторский эталон подают
   `spec-runner.config.yaml` и `pyrefly.toml` как harness-пути (обоснование —
   spec-runner#137: агент работает в worktree и технически может изменить саму
