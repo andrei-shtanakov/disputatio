@@ -425,6 +425,51 @@ class TestTaskSections:
 
         assert "всё ещё тело задачи 1" in sections[1]
 
+    def test_level_2_heading_is_not_task_heading_but_ends_section(self) -> None:
+        """`## Task N:` не заголовок задачи (§5.3: только `###`), но обрывает раздел."""
+        text = (
+            "### Задача 1: разбор\n"
+            "тело задачи 1\n"
+            "## Task 3: не заголовок задачи\n"
+            "текст после заголовка второго уровня\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "тело задачи 1" in sections[1]
+        assert "текст после заголовка второго уровня" not in sections[1]
+
+    def test_level_1_heading_is_not_task_heading_but_ends_section(self) -> None:
+        """`# Задача N:` — не заголовок задачи (только `###`), но обрывает раздел."""
+        text = (
+            "### Задача 1: разбор\n"
+            "тело задачи 1\n"
+            "# Задача 3: не заголовок задачи\n"
+            "текст после заголовка первого уровня\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "тело задачи 1" in sections[1]
+        assert "текст после заголовка первого уровня" not in sections[1]
+
+    def test_non_level_3_task_like_heading_does_not_trigger_duplicate(self) -> None:
+        """`## Task 3:` рядом с настоящей `### Задача 3:` — не дубль номера."""
+        text = (
+            "### Задача 3: настоящая\n"
+            "текст настоящей задачи 3\n"
+            "## Task 3: похоже на задачу, но не она\n"
+            "текст после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {3}
+        assert "текст настоящей задачи 3" in sections[3]
+        assert "текст после" not in sections[3]
+
     def test_duplicate_task_number_raises(self) -> None:
         text = "### Задача 1: разбор\nтекст\n### Задача 1: снова\nтекст\n"
 
