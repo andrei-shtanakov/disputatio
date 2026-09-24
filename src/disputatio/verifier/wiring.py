@@ -948,8 +948,8 @@ def _scope_bindings(body: list[ast.stmt], name: str) -> list[ast.AST]:
     Обходится вся область: операторы `body` и вложенные составные операторы
     (`if`, `try`, `with`, циклы, `match`) на любой глубине. Тела вложенных
     `def`/`async def`/`class`/`lambda` — другая область и не обходятся;
-    их декораторы, значения по умолчанию, базы и имя самой вложенной
-    функции/класса вычисляются и привязываются в этой области и
+    их декораторы, значения по умолчанию, аннотации, базы и имя самой
+    вложенной функции/класса вычисляются и привязываются в этой области и
     обходятся. Порядок узлов — порядок исходника.
     """
     found = [node for node in _scope_nodes(body) if _binds(node, name)]
@@ -973,7 +973,19 @@ def _same_scope_children(node: ast.AST) -> list[ast.AST]:
         defaults: list[ast.AST] = [*args.defaults, *kw_defaults]
         if isinstance(node, ast.Lambda):
             return defaults
-        return [*node.decorator_list, *defaults]
+        # Аннотации параметров и возврата вычисляются в объемлющей области.
+        # Отложенные (`from __future__ import annotations`) тоже обходятся:
+        # гейт консервативен и не различает режим аннотаций.
+        params = [
+            *args.posonlyargs,
+            *args.args,
+            *([args.vararg] if args.vararg else []),
+            *args.kwonlyargs,
+            *([args.kwarg] if args.kwarg else []),
+        ]
+        annotations = [param.annotation for param in params if param.annotation]
+        returns = [node.returns] if node.returns else []
+        return [*node.decorator_list, *defaults, *annotations, *returns]
     if isinstance(node, ast.ClassDef):
         keywords = [keyword.value for keyword in node.keywords]
         return [*node.decorator_list, *node.bases, *keywords]

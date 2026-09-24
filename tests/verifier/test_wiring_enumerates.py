@@ -443,12 +443,39 @@ REBINDINGS = {
     "conditional-assign": "if True:\n    guard = print\n",
     "comprehension-walrus": "[(guard := x) for x in ()]\n",
     "decorator-walrus": "@(guard := staticmethod)\ndef other(): pass\n",
+    # Аннотации, базы, ключевые аргументы и декораторы класса вычисляются в
+    # объемлющей области: `:=` в них перепривязывает имя там же. Отложенные
+    # аннотации (`from __future__ import annotations`) не делают исключения —
+    # гейт консервативен и считает их такими же.
+    "arg-annotation-walrus": "def other(p: (guard := print)): pass\n",
+    "return-annotation-walrus": "def other() -> (guard := print): pass\n",
+    "kwonly-annotation-walrus": "def other(*, p: (guard := print)): pass\n",
+    "vararg-annotation-walrus": "def other(*a: (guard := print)): pass\n",
+    "lambda-in-annotation-walrus": ("def g(p: (guard := lambda p: None)): pass\n"),
+    "async-annotation-walrus": "async def other(p: (guard := print)): pass\n",
+    "class-base-walrus": "class Other((guard := object)):\n    pass\n",
+    "class-keyword-walrus": ("class Other(metaclass=(guard := type)):\n    pass\n"),
+    "class-decorator-walrus": ("@(guard := staticmethod)\nclass Other:\n    pass\n"),
 }
 
 
 @pytest.mark.parametrize("tail", REBINDINGS.values(), ids=REBINDINGS)
 def test_rebinding_in_same_scope_is_input_error(tail: str) -> None:
     index = _index({MODULE_PATH: PLAIN_GUARD + tail})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard", members=GUARD_ONLY))
+
+
+FUTURE_ANNOTATIONS_WALRUS = (
+    "from __future__ import annotations\n\n"
+    + PLAIN_GUARD
+    + "def other(p: (guard := print)): pass\n"
+)
+
+
+def test_annotation_walrus_under_future_annotations_is_input_error() -> None:
+    """Отложенные аннотации не освобождают от проверки: гейт консервативен."""
+    index = _index({MODULE_PATH: FUTURE_ANNOTATIONS_WALRUS})
     with pytest.raises(WiringInputError, match="guard"):
         enumerate_violations(index, _rule(function="guard", members=GUARD_ONLY))
 
