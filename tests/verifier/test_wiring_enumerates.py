@@ -520,3 +520,44 @@ def test_plain_class_method_still_analysed() -> None:
     index = _index({MODULE_PATH: PLAIN_METHOD})
     rule = _rule(function="Guard.check", members=GUARD_ONLY)
     assert _missing(index, rule) == []
+
+
+# --- декоратор подменяет функцию — Unverifiable -------------------------------
+
+# Python связывает с именем результат декоратора, а не разобранное тело:
+# `@replace` может вернуть функцию, которая ничего не проверяет. Гейт не
+# выносит суждения о декорированной функции (§3.5).
+
+DECORATED_FUNCTION = """\
+def replace(f):
+    return lambda previous, current: None
+
+
+@replace
+def guard(previous, current) -> None:
+    _guard_sessions(previous.spec_sessions, current.spec_sessions)
+"""
+
+DECORATED_METHOD = """\
+class Guard:
+    @staticmethod
+    def check(previous, current) -> None:
+        _guard_sessions(previous.spec_sessions, current.spec_sessions)
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "function", "line"),
+    [
+        pytest.param(DECORATED_FUNCTION, "guard", 6, id="function"),
+        pytest.param(DECORATED_METHOD, "Guard.check", 3, id="method"),
+    ],
+)
+def test_decorated_target_is_unverifiable(
+    source: str, function: str, line: int
+) -> None:
+    index = _index({MODULE_PATH: source})
+    result = enumerate_violations(index, _rule(function=function, members=GUARD_ONLY))
+    assert isinstance(result, Unverifiable)
+    assert result.site == f"{MODULE_PATH}:{line}"
+    assert "декоратор" in result.reason

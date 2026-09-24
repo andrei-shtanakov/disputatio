@@ -1011,8 +1011,14 @@ def _checked_members(function: _FunctionNode, rule: EnumerateRule) -> set[str]:
 
     Необязательный докстринг первым оператором пропускается; остаток тела
     обязан состоять только из проверяющих вызовов. Первое отклонение от этой
-    формы поднимает `_UnsupportedBody`.
+    формы поднимает `_UnsupportedBody`. Декорированная функция — тоже: имя
+    связано с результатом декоратора, а не с разобранным телом.
     """
+    if function.decorator_list:
+        raise _UnsupportedBody(
+            "функция под декоратором: с именем связан результат декоратора, "
+            "а не разобранное тело (§3.5)"
+        )
     body = function.body
     if body and _is_docstring(body[0]):
         body = body[1:]
