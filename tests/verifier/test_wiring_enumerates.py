@@ -749,3 +749,96 @@ def test_cli_decorated_enclosing_class_exits_failed(
     out = capsys.readouterr().out
     assert "unverifiable" in out
     assert "src/m.py:8" in out
+
+
+# --- цель comprehension/generator — тоже перепривязка атрибута --------------
+
+# Переменная comprehension обычно comprehension-локальна и не видна снаружи,
+# но цель-АТРИБУТ (`Guard.check`) мутирует объект внешней области: реальная
+# семантика Python, а не граница анализа (§3.5). Плоское имя (`y` в
+# `(Guard.check, y)`) остаётся comprehension-локальным и не перепривязкой.
+
+COMPREHENSION_REBINDINGS = {
+    "listcomp": "[None for Guard.check in [lambda p: None]]\n",
+    "setcomp": "{None for Guard.check in [lambda p: None]}\n",
+    "dictcomp": "{None: None for Guard.check in [lambda p: None]}\n",
+    "genexp": "(None for Guard.check in [lambda p: None])\n",
+    "tuple-target": "[None for Guard.check, other in [(lambda p: None, None)]]\n",
+    "two-for-clauses": "[None for x in [1] for Guard.check in [lambda p: None]]\n",
+}
+
+
+@pytest.mark.parametrize(
+    "tail", COMPREHENSION_REBINDINGS.values(), ids=COMPREHENSION_REBINDINGS
+)
+def test_comprehension_attribute_target_is_rebinding(tail: str) -> None:
+    index = _index({MODULE_PATH: UNDECORATED_CLASS + tail})
+    with pytest.raises(WiringInputError, match=r"Guard\.check"):
+        enumerate_violations(index, _class_rule())
+
+
+def test_comprehension_plain_name_target_is_not_rebinding() -> None:
+    """Позитивный контроль: имя comprehension-локально, обычное нарушение цело."""
+    source = UNDECORATED_CLASS + "[None for other in [1]]\n"
+    index = _index({MODULE_PATH: source})
+    assert _missing(index, _class_rule(members=("a", "b"))) == [
+        Violation(
+            rule="r",
+            kind="enumerates-all",
+            site=f"{MODULE_PATH}:2",
+            member="b",
+            count=1,
+        )
+    ]
+
+
+# --- `global`/`nonlocal` цели в теле класса — метод там не связывается ------
+
+# `global check` (или `nonlocal check`) в теле класса перенаправляет
+# следующий `def check` в объемлющую область: `Class.method` не существует
+# как атрибут класса, хотя `_single_definition` находит единственный
+# безусловный `def check` и без этой проверки прошла бы молча (§3.5).
+
+CLASS_GLOBAL = """\
+class Guard:
+    global check
+    def check(self, p):
+        _check(p.a)
+"""
+
+CLASS_GLOBAL_UNDER_IF = """\
+class Guard:
+    if False:
+        global check
+    def check(self, p):
+        _check(p.a)
+"""
+
+CLASS_GLOBAL_ASYNC_DEF = """\
+class Guard:
+    global check
+    async def check(self, p):
+        _check(p.a)
+"""
+
+
+@pytest.mark.parametrize(
+    "source",
+    [CLASS_GLOBAL, CLASS_GLOBAL_UNDER_IF, CLASS_GLOBAL_ASYNC_DEF],
+    ids=["global", "global-under-if", "global-async-def"],
+)
+def test_global_in_class_body_is_input_error(source: str) -> None:
+    index = _index({MODULE_PATH: source})
+    with pytest.raises(WiringInputError, match="check"):
+        enumerate_violations(index, _class_rule())
+
+
+@pytest.mark.skip(
+    reason=(
+        "`nonlocal` требует объемлющую функцию, а `Class.method` разрешает "
+        "только класс верхнего уровня модуля (§3.5) — класс, вложенный в "
+        "функцию, этим правилом не адресуется, воспроизвести случай без "
+        "нарушения самой адресации нельзя"
+    )
+)
+def test_nonlocal_in_class_body_is_input_error() -> None: ...

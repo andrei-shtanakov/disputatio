@@ -584,8 +584,10 @@ def _find_function(
     формы описаны). Искомое имя обязано быть привязано в своей области
     видимости ровно одним безусловным определением (`_single_definition`);
     для `Class.method` атрибут `Class.method` к тому же не перепривязан в
-    области модуля (`_check_attribute_rebinding`); иначе — `WiringInputError`
-    (§3.5).
+    области модуля (`_check_attribute_rebinding`), а `check` не объявлен
+    `global`/`nonlocal` в теле класса (`_check_class_scope_declaration`) —
+    такое объявление перенаправляет `def check` в объемлющую область, и
+    метод в классе не связывается; иначе — `WiringInputError` (§3.5).
     """
     parts = rule.function.split(".")
     kinds = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -597,9 +599,36 @@ def _find_function(
             "поддерживается — только `f` или `Class.method` (§3.5)"
         )
     class_node = _single_definition(tree.body, parts[0], ast.ClassDef, rule)
+    _check_class_scope_declaration(class_node.body, parts[1], rule)
     function = _single_definition(class_node.body, parts[1], kinds, rule)
     _check_attribute_rebinding(tree.body, parts[0], parts[1], rule)
     return function, class_node
+
+
+def _check_class_scope_declaration(
+    body: list[ast.stmt], method: str, rule: EnumerateRule
+) -> None:
+    """Отказ, если `global`/`nonlocal method` перенаправляет `def method`.
+
+    `global check` (или `nonlocal check`) в теле класса — это не находка и
+    не привязка сама по себе, но следующий `def check` в той же области
+    вяжет имя не в пространство имён класса, а в объемлющую область: атрибут
+    `Class.method` тогда не существует, хотя `_single_definition` находит
+    единственный безусловный `def` и без этой проверки прошла бы молча
+    (§3.5). Обходится вся область тела класса, включая вложенные составные
+    операторы (`_scope_nodes`), но не тела вложенных `def`/`class`/`lambda`.
+    Правило не применяется к телу модуля: `global f` там — не операция
+    (модульная область и так глобальная).
+    """
+    for node in _scope_nodes(body):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and method in node.names:
+            keyword = "global" if isinstance(node, ast.Global) else "nonlocal"
+            raise WiringInputError(
+                f"правило {rule.id!r}: `{keyword} {method}` в теле класса "
+                f"(строка {node.lineno}) — `{method}` не привязывается в "
+                "пространстве имён класса, `def` уходит в объемлющую "
+                "область (§3.5)"
+            )
 
 
 def _check_attribute_rebinding(
@@ -610,8 +639,12 @@ def _check_attribute_rebinding(
     Цель присваивания (в том числе аннотированного и составного), `del`,
     цель `for`/`with` вида `Class.method` в области модуля (обход — тот же,
     что у `_scope_bindings`) подменяет разобранный метод — код 2 (§3.5).
-    Мутация из тел функций, `setattr` и чужих модулей — объявленная
-    граница, не отслеживается.
+    Цель comprehension'а/generator-выражения — тоже: простое имя цели
+    comprehension-локально и не обходится (см. `_same_scope_children`), но
+    её элемент-атрибут — в том числе внутри распаковки `Tuple`/`List`/
+    `Starred` и при нескольких `for` — обходится как обычная цель. Мутация
+    из тел функций, `setattr` и чужих модулей — объявленная граница, не
+    отслеживается.
     """
     for node in _scope_nodes(body):
         if (
@@ -736,9 +769,33 @@ def _same_scope_children(node: ast.AST) -> list[ast.AST]:
         return [*node.decorator_list, *node.bases, *keywords]
     if isinstance(node, ast.comprehension):
         # Переменная comprehension живёт в его собственной области; `:=` в
-        # условиях и элементе привязывает во внешней и обходится.
-        return [node.iter, *node.ifs]
+        # условиях и элементе привязывает во внешней и обходится. Плоское
+        # имя цели (в том числе внутри `Tuple`/`List`/`Starred`) — тоже
+        # comprehension-локально и не обходится; но цель-атрибут/подписка
+        # (`Guard.check`) мутирует объект внешней области — реальная
+        # семантика Python, не comprehension-локальная переменная — и
+        # обходится как обычная цель присваивания (§3.5).
+        return [node.iter, *node.ifs, *_non_name_target_parts(node.target)]
     return list(ast.iter_child_nodes(node))
+
+
+def _non_name_target_parts(target: ast.expr) -> list[ast.expr]:
+    """Части цели `target`, не являющиеся простым именем, рекурсивно.
+
+    `Attribute`/`Subscript` возвращаются целиком — перепривязка атрибута
+    класса ищется в них обычным обходом их дочерних узлов. `Starred`
+    разворачивается в значение. `Tuple`/`List` — в элементы. Простое `Name`
+    исключается: оно comprehension-локально.
+    """
+    if isinstance(target, (ast.Attribute, ast.Subscript)):
+        return [target]
+    if isinstance(target, ast.Starred):
+        return _non_name_target_parts(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [
+            part for element in target.elts for part in _non_name_target_parts(element)
+        ]
+    return []
 
 
 def _binds(node: ast.AST, name: str) -> bool:
