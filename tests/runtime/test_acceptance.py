@@ -137,9 +137,20 @@ PIPELINE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("SPEC-002 §4.2", "runtime/test_pipeline_semantics.py"),
 )
 
+#: `disp gate wiring` (2026-09-24-wiring-gate design §2, §6): своя пара, а не
+#: строка в `REQUIREMENT_COVERAGE`/`PIPELINE_COVERAGE` — это не требование
+#: SPEC-001 и не расширение цикла SPEC-002, а отдельный CLI-гейт verifier'а
+#: поверх `docs/specs/2026-09-24-wiring-gate-design.md`.
+WIRING_GATE_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
+    ("wiring-gate design §6", "cli/test_cli_gate_wiring.py"),
+)
+
 #: Полная матрица.
 COVERAGE: Final[tuple[tuple[str, str], ...]] = (
-    REQUIREMENT_COVERAGE + ACCEPTANCE_COVERAGE + PIPELINE_COVERAGE
+    REQUIREMENT_COVERAGE
+    + ACCEPTANCE_COVERAGE
+    + PIPELINE_COVERAGE
+    + WIRING_GATE_COVERAGE
 )
 
 #: Требования workstream'а по спецификации: REQ-001…REQ-025.

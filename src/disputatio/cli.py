@@ -114,6 +114,13 @@ from disputatio.runtime.pipeline_integrity import (
 from disputatio.runtime.pipeline_resume import missing_manifest_message
 from disputatio.runtime.pipeline_runner import pipeline_dir_of
 from disputatio.runtime.steps import StepContext
+from disputatio.verifier import (
+    WiringInputError,
+    check_wiring,
+    dirty_src_paths,
+    read_snapshot,
+    render_report,
+)
 
 EXIT_OK: Final = 0
 """Сессия дошла до `DONE` — в том числе эскалацией: она не сбой ([REQ-018])."""
@@ -130,6 +137,9 @@ SESSION_ID_SUFFIX_BYTES: Final = 2
 
 DEFAULT_CONFIG_NAME: Final = "disputatio.toml"
 """Профиль запуска по умолчанию — рядом с рабочим репозиторием."""
+
+DEFAULT_WIRING_SRC: Final = "src"
+"""Каталог корня импорта гейта `wiring` по умолчанию (design §2)."""
 
 SESSION_MODES: Final[tuple[Mode, ...]] = (Mode.DEVELOP, Mode.ANALYZE)
 """Режимы, которые заводит `disp run`, — не весь `Mode` (SPEC-002 §5.1).
@@ -537,6 +547,65 @@ def cmd_pipeline_export(
     return _pipeline_exit_code(state)
 
 
+def cmd_gate_wiring(
+    args: argparse.Namespace, *, now: Callable[[], datetime], journal: "_ErrorJournal"
+) -> int:
+    """`disp gate wiring` — покрытие правил кода планом (design §2, §2.1, §6).
+
+    `now` и `journal` не используются: гейт read-only и не пишет в
+    `events.jsonl` чужой сессии (`journal=False` у подпарсера, как у
+    `pipeline`) — оба параметра приняты ради протокола `main`
+    (см. `handler(args, now=clock, journal=journal)` выше).
+
+    Порядок обязателен и повторяет design §2/§6: чтение `--spec`/`--plan`
+    как UTF-8 → `read_snapshot` → `dirty_src_paths` → `check_wiring` →
+    `render_report`. `WiringInputError` — не `DisputatioError` (`verifier`
+    не импортирует `runtime`, INV-10), и потому ловится ЗДЕСЬ, а не в
+    `main`: причина уходит одной строкой и в stdout (хвост вывода идёт в
+    отчёт gate — design §6), и в stderr (NFR-003), без traceback. Прочие
+    исключения не перехватываются: это дефект гейта, а не отказ во вводе.
+    """
+    del now, journal
+    root = Path(args.root)
+    try:
+        spec_text = _read_gate_document(root / args.spec, "--spec")
+        plan_text = _read_gate_document(root / args.plan, "--plan")
+        snapshot = read_snapshot(root, args.src)
+        dirty = dirty_src_paths(root, args.src)
+        report = check_wiring(
+            spec_text=spec_text,
+            plan_text=plan_text,
+            snapshot=snapshot,
+            src=args.src,
+            dirty=dirty,
+        )
+    except WiringInputError as exc:
+        message = str(exc)
+        print(message)
+        print(message, file=sys.stderr)
+        return EXIT_ERROR
+    for line in render_report(report):
+        print(line)
+    return EXIT_OK if not report.findings else EXIT_FAILED
+
+
+def _read_gate_document(path: Path, label: str) -> str:
+    """Текст документа гейта `wiring` как UTF-8 (design §2): иначе код `2`.
+
+    Отсутствие файла и отказ чтения (`OSError`) — один вид отказа с байтами,
+    не декодируемыми как UTF-8 (`UnicodeDecodeError`, подкласс `ValueError`):
+    оба непригодны как вход гейта, а не как дефект оркестратора.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise WiringInputError(f"{label}: не удалось прочитать {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise WiringInputError(
+            f"{label}: файл {path} не декодируется как UTF-8: {exc}"
+        ) from exc
+
+
 def render_status(state: PipelineState, anchor_path: Path) -> str:
     """Снимок пайплайна одним текстовым блоком (§3.1).
 
@@ -724,6 +793,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_root(resume)
 
     _add_pipeline_commands(commands)
+    _add_gate_commands(commands)
     return parser
 
 
@@ -803,6 +873,44 @@ def _add_pipeline_commands(commands: _SubParsers) -> None:
         help="объявить результат частичным (converged: false)",
     )
     _add_pipeline_common(export)
+
+
+def _add_gate_commands(commands: _SubParsers) -> None:
+    """Группа `disp gate`: пока одна подкоманда `wiring` (design §2).
+
+    Своя группа, а не имя верхнего уровня, — по той же причине, что и у
+    `pipeline`: предмет `gate` другой (сам gate verifier'а, вызванный
+    напрямую в обход `VerifierRunner`), и плоский список команд заставлял
+    бы `--help` угадывать это по имени.
+
+    `journal=False`, как у команд `pipeline`: гейт пишет отчёт в stdout
+    оператору `run_gate`, а не в `events.jsonl` сессии рабочего корня —
+    сессии у прямого вызова гейта нет.
+    """
+    gate = commands.add_parser(
+        "gate", help="gates verifier'а, вызываемые напрямую (design §2)"
+    )
+    actions = gate.add_subparsers(dest="gate_command", required=True)
+
+    wiring = actions.add_parser(
+        "wiring", help="покрытие правил кода планом (design §2, §6)"
+    )
+    wiring.set_defaults(handler=cmd_gate_wiring, journal=False)
+    wiring.add_argument(
+        "--spec", required=True, help="документ с блоком правил (design §3.1)"
+    )
+    wiring.add_argument(
+        "--plan", required=True, help="документ с блоком покрытия (design §5.1)"
+    )
+    wiring.add_argument(
+        "--src",
+        default=DEFAULT_WIRING_SRC,
+        help=(
+            "каталог корня импорта относительно `--root` "
+            f"(по умолчанию {DEFAULT_WIRING_SRC!r})"
+        ),
+    )
+    _add_root(wiring)
 
 
 #: Обе взаимоисключающие формы секции `[pipeline]` целиком (C2 §3.1).
