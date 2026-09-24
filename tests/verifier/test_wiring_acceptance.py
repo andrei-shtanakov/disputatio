@@ -231,6 +231,29 @@ task = 1
 
         report = _report(historical_repo, plan_text)
 
+        # Позитивная проверка: правило действительно нашло оба нарушения —
+        # без неё тест проходил бы и на гейте, который вообще ничего не
+        # находит (пустой отчёт тоже не содержит `rule == "p10-policy"`).
+        assert (
+            Violation(
+                rule="p10-policy",
+                kind="construct-only-in",
+                site=SITE_CONSTRUCT_FIRST,
+                member=None,
+                count=1,
+            )
+            in report.violations
+        )
+        assert (
+            Violation(
+                rule="p10-policy",
+                kind="construct-only-in",
+                site=SITE_CONSTRUCT_SECOND,
+                member=None,
+                count=1,
+            )
+            in report.violations
+        )
         assert not any(f.rule == "p10-policy" for f in report.findings)
 
     def test_incomplete_enumeration_no_cover_gives_uncovered(
@@ -275,6 +298,19 @@ task = 1
 
         report = _report(historical_repo, plan_text)
 
+        # Позитивная проверка: правило действительно нашло нарушение —
+        # без неё тест проходил бы и на гейте, который вообще ничего не
+        # находит (пустой отчёт тоже не содержит `rule == "append-only-guard"`).
+        assert (
+            Violation(
+                rule="append-only-guard",
+                kind="enumerates-all",
+                site=SITE_ENUMERATE,
+                member=MEMBER_ENUMERATE,
+                count=1,
+            )
+            in report.violations
+        )
         assert not any(f.rule == "append-only-guard" for f in report.findings)
 
     def test_both_rules_fully_covered_gives_no_findings(
