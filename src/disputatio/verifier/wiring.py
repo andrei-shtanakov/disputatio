@@ -150,40 +150,47 @@ def parse_cover(plan_text: str) -> CoverBlock:
     return CoverBlock(src_tree=src_tree, covers=covers)
 
 
-# Заголовок 1–3 уровня: `#`/`##`/`###`, пробел, непустой текст. Ровно столько
-# `#`, сколько в группе: следующий символ обязан быть пробелом, поэтому
-# `####...` группу 1–3 не матчит (после трёх `#` идёт четвёртый `#`, а не
-# пробел) — уровень 4+ разделы не обрывает (§5.3).
-_HEADING_RE = re.compile(r"^#{1,3} \S")
-# Заголовок задачи — ровно уровня 3: `### Задача N:` или `### Task N:`
-# (§5.3). Уровни 1–3 лишь ограничивают раздел заголовком-границей; заголовок
-# задачи — только `###`, поэтому `## Task 3:`/`# Задача 3:` задачей не
-# считается (хотя и обрывает предыдущий раздел как обычный заголовок 1–3).
-_TASK_HEADING_RE = re.compile(r"^### (?:Задача|Task) (\d+)\s*:")
+# Заголовки распознаются по CommonMark (§5.3): рендерится как заголовок —
+# значит, обрывает раздел. Сомнительный случай засчитывается границей: это
+# направление fail-closed — граница может лишь сузить раздел, а пропущенная
+# граница засчитала бы место под ней предыдущей задаче (тихий код 0).
+#
+# ATX 1–3 уровня: отступ до трёх пробелов, 1–3 `#`, затем пробел/таб или
+# конец строки (`##` и `## ` — пустые заголовки). `####` группу не матчит —
+# после трёх `#` идёт четвёртый, а не пробел; `#5` без пробела — не
+# заголовок; отступ 4+ — блок кода.
+_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,3}(?:[ \t]|$)")
+# Подчёркивание setext: `=`+ (уровень 1) или `-`+ (уровень 2), отступ до
+# трёх пробелов, хвостовые пробелы допустимы. Заголовком оно делает
+# предшествующий абзац; после пустой строки `---` — тематический разрыв.
+_SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+# Заголовок задачи — строго ATX уровня 3: `### Задача N:` или
+# `### Task N:` (§5.3), с тем же отступом и любыми пробелами/табами между
+# словами. Уровни 1–3 и setext лишь ограничивают раздел; заголовок задачи —
+# только `###`, поэтому `## Task 3:`/`# Задача 3:` и setext `Task 3:`
+# задачей не считаются (хотя и обрывают предыдущий раздел).
+_TASK_HEADING_RE = re.compile(r"^ {0,3}###[ \t]+(?:Задача|Task)[ \t]+(\d+)[ \t]*:")
 
 
 def task_sections(plan_text: str) -> Mapping[int, str]:
     """Разделы задач плана по номеру заголовка (§5.3).
 
     Заголовок задачи — `### Задача N:` или `### Task N:`; раздел — текст от
-    заголовка до следующего заголовка уровня 1–3 (не обрывается `####`).
-    Fenced-блоки (`_scan_fences`) из разделов вырезаются целиком, вместе со
-    строками фенса: их строки не заголовки (иначе TOML-комментарий `# ...`
-    читался бы как markdown-заголовок) и не текст раздела — иначе блок
-    покрытия внутри раздела «ссылался» бы на все свои места сам, а место из
-    примера кода засчитывалось бы как ссылка задачи.
+    заголовка до следующего заголовка уровня 1–3 по CommonMark (ATX или
+    setext; `####` раздел не обрывает). Fenced-блоки (`_scan_fences`) из
+    разделов вырезаются целиком, вместе со строками фенса: их строки не
+    заголовки (иначе TOML-комментарий `# ...` читался бы как
+    markdown-заголовок) и не текст раздела — иначе блок покрытия внутри
+    раздела «ссылался» бы на все свои места сам, а место из примера кода
+    засчитывалось бы как ссылка задачи.
     """
     lines = plan_text.splitlines()
     fenced = _fenced_line_indices(lines)
     prose = [index for index in range(len(lines)) if index not in fenced]
-    heading_lines: list[int] = []
+    heading_lines = _heading_boundaries(lines, fenced)
     task_headings: dict[int, int] = {}
-    for index in prose:
-        line = lines[index]
-        if not _HEADING_RE.match(line):
-            continue
-        heading_lines.append(index)
-        task_match = _TASK_HEADING_RE.match(line)
+    for index in heading_lines:
+        task_match = _TASK_HEADING_RE.match(lines[index])
         if task_match:
             task_headings[index] = int(task_match.group(1))
 
@@ -198,6 +205,39 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
             lines[i] for i in prose if heading_index <= i < end
         )
     return sections
+
+
+def _heading_boundaries(lines: list[str], fenced: set[int]) -> list[int]:
+    """Номера строк-границ разделов по возрастанию: ATX 1–3 и setext 1–2.
+
+    Границей setext-заголовка служит первая строка его абзаца — весь абзац
+    над подчёркиванием и есть текст заголовка (CommonMark). Подчёркивание
+    после пустой строки, заголовка или фенса заголовком ничего не делает.
+    """
+    atx = {
+        index
+        for index, line in enumerate(lines)
+        if index not in fenced and _ATX_HEADING_RE.match(line)
+    }
+    setext = {
+        start
+        for index, line in enumerate(lines)
+        if index not in fenced and _SETEXT_UNDERLINE_RE.match(line)
+        for start in _paragraph_start(lines, index, fenced | atx)
+    }
+    return sorted(atx | setext)
+
+
+def _paragraph_start(lines: list[str], underline: int, stops: set[int]) -> list[int]:
+    """Начало абзаца прямо над строкой `underline`; пусто — абзаца нет.
+
+    Абзац — подряд идущие непустые строки, не заголовки и не строки фенса
+    (`stops`); пустая строка или `stops` над подчёркиванием — абзаца нет.
+    """
+    start = underline
+    while start > 0 and lines[start - 1].strip() and start - 1 not in stops:
+        start -= 1
+    return [start] if start < underline else []
 
 
 # --- fenced-блоки ------------------------------------------------------------

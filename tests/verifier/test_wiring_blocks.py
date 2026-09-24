@@ -622,6 +622,91 @@ class TestTaskSectionsFences:
         assert "проза задачи 1" in sections[1]
 
 
+class TestCommonMarkHeadingBoundaries:
+    """Граница раздела — любой заголовок 1–3 уровня по CommonMark (§5.3).
+
+    Заголовок, который рендерится как заголовок, но не обрывает раздел,
+    засчитал бы место под ним предыдущей задаче — тихий пропуск (код 0).
+    """
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            pytest.param("##  Примечания", id="two-spaces"),
+            pytest.param("   ## Примечания", id="indent-3"),
+            pytest.param(" # Примечания", id="indent-1-level-1"),
+            pytest.param("##\tПримечания", id="tab"),
+            pytest.param("##", id="bare-hashes"),
+            pytest.param("## ", id="hashes-and-space"),
+            pytest.param("Примечания\n===", id="setext-level-1"),
+            pytest.param("Примечания\n---", id="setext-level-2"),
+            pytest.param("Примечания\n  ----  ", id="setext-indented-trailing"),
+        ],
+    )
+    def test_heading_form_ends_task_section(self, heading: str) -> None:
+        text = (
+            f"### Задача 1: разбор\nтело задачи 1\n\n{heading}\nхвост после заголовка\n"
+        )
+
+        sections = task_sections(text)
+
+        assert "тело задачи 1" in sections[1]
+        assert "хвост после заголовка" not in sections[1]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("####  Подраздел", id="level-4"),
+            pytest.param("#5 без пробела", id="no-space"),
+            pytest.param("    ## отступ 4 — код", id="indent-4"),
+        ],
+    )
+    def test_non_heading_does_not_end_section(self, line: str) -> None:
+        text = f"### Задача 1: разбор\nтело задачи 1\n{line}\nвсё ещё тело\n"
+
+        sections = task_sections(text)
+
+        assert "всё ещё тело" in sections[1]
+
+    def test_thematic_break_after_blank_line_is_not_boundary(self) -> None:
+        text = "### Задача 1: разбор\nтело задачи 1\n\n---\nвсё ещё тело задачи 1\n"
+
+        sections = task_sections(text)
+
+        assert "всё ещё тело задачи 1" in sections[1]
+
+    def test_setext_underline_inside_fence_is_not_boundary(self) -> None:
+        text = "### Задача 1: разбор\n```\nПример\n===\n```\nпроза задачи 1\n"
+
+        sections = task_sections(text)
+
+        assert "проза задачи 1" in sections[1]
+
+    def test_setext_task_like_heading_is_boundary_not_task(self) -> None:
+        text = "### Задача 1: разбор\nтело задачи 1\nTask 2: текст\n---\nхвост\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "хвост" not in sections[1]
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            pytest.param("###  Задача 3:  разбор", id="two-spaces"),
+            pytest.param("  ### Задача 3: разбор", id="indent-2"),
+            pytest.param("###\tTask\t3\t: разбор", id="tabs"),
+        ],
+    )
+    def test_task_heading_whitespace_variants_still_task(self, heading: str) -> None:
+        text = f"{heading}\nтело задачи 3\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {3}
+        assert "тело задачи 3" in sections[3]
+
+
 class TestFenceScannerForBlocks:
     def test_block_closed_only_by_fence_of_same_length_or_longer(self) -> None:
         """Блок в ````-фенсе: строка ``` внутри — литерал, а не конец блока."""
