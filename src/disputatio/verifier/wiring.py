@@ -485,6 +485,7 @@ def build_index(snapshot: Snapshot, src: str) -> ModuleIndex:
     paths = sorted(path for path in snapshot.files if path.startswith(prefix))
     trees = {path: _parse_source(path, snapshot.files[path]) for path in paths}
     names = {path: _module_name(path[len(prefix) :]) for path in paths}
+    _check_name_collisions(names)
     packages = {path for path in paths if path.endswith("/__init__.py")}
     known = set(names.values()) | _namespace_names(names.values())
     modules: dict[str, ModuleEntry] = {}
@@ -566,6 +567,24 @@ def _parse_source(path: str, data: bytes) -> ast.Module:
         return ast.parse(data, filename=path)
     except (SyntaxError, ValueError) as exc:
         raise WiringInputError(f"файл снимка не разбирается: {path}: {exc}") from exc
+
+
+def _check_name_collisions(names: Mapping[str, str]) -> None:
+    """Два файла с одним модульным именем — `WiringInputError` (§4).
+
+    Индекс хранит одну запись на имя: без этой проверки второй файл молча
+    выпал бы из анализа, а пропущенный файл мог бы скрыть конструктор.
+    Namespace-пакет с тем же именем, что у файла-модуля, коллизией не
+    считается: запись получает файл, как и в Python.
+    """
+    by_name: dict[str, list[str]] = {}
+    for path, name in names.items():
+        by_name.setdefault(name, []).append(path)
+    for name, paths in sorted(by_name.items()):
+        if len(paths) > 1:
+            raise WiringInputError(
+                f"коллизия модульного имени `{name}`: {', '.join(sorted(paths))}"
+            )
 
 
 def _module_name(relpath: str) -> str:

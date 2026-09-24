@@ -354,3 +354,37 @@ def test_pep263_cookie_is_honored() -> None:
         "src/b.py": text.encode("latin-1"),
     }
     assert _sites(files) == [("src/b.py:4", 1)]
+
+
+# --- коллизия модульных имён ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ("src/pkg.py", "src/pkg/__init__.py"),
+        ("src/x.y.py", "src/x/y.py"),
+    ],
+)
+def test_module_name_collision_is_input_error(paths: tuple[str, str]) -> None:
+    """Два файла с одним модульным именем — код 2, а не молча один из них."""
+    files: dict[str, str | bytes] = {"src/a.py": CLASS_A}
+    files.update({path: "from a import C\nC()\n" for path in paths})
+    with pytest.raises(WiringInputError) as excinfo:
+        build_index(_snapshot(files), "src")
+    for path in paths:
+        assert path in str(excinfo.value)
+
+
+def test_module_shadowing_namespace_package_is_still_scanned() -> None:
+    """`src/pkg.py` рядом с каталогом `src/pkg/` без `__init__.py`.
+
+    В Python обычный модуль побеждает namespace-пакет, коллизии файлов нет:
+    оба файла — разные модули снимка, и оба сканируются.
+    """
+    files = {
+        "src/a.py": CLASS_A,
+        "src/pkg.py": "from a import C\nC()\n",
+        "src/pkg/impl.py": "from a import C\nC()\n",
+    }
+    assert _sites(files) == [("src/pkg.py:2", 1), ("src/pkg/impl.py:2", 1)]
