@@ -41,8 +41,10 @@ pyrefly, ruff.
   месте, включая докстринги и сообщения, и импорты `disputatio.*` вне
   `disputatio.contracts`/`disputatio.verifier`. Новые модули обязаны
   пройти его без правки сканера: ни в коде, ни в прозе этих слов нет.
-- Гейт read-only: ни один модуль не пишет в рабочее дерево, индекс или
-  `.git`. Вызовы git — только `rev-parse`, `status`, `ls-tree`, `cat-file`.
+- Гейт read-only (§4): ни один модуль не пишет в рабочее дерево, индекс
+  или `.git`. Вызовы git — только `rev-parse`, `status`, `ls-tree`,
+  `cat-file`, и все с окружением `GIT_OPTIONAL_LOCKS=0`: иначе `git
+  status` вправе переписать индекс, освежив stat-данные.
 - Ошибки ввода гейта — собственное исключение `WiringInputError` пакета
   `verifier` (не `DisputatioError`: `verifier` не импортирует `runtime`).
   CLI ловит его и отдаёт код `2`.
@@ -100,7 +102,14 @@ def read_snapshot(repo_root: Path, src: str) -> Snapshot: ...
   `git ls-tree -r -z <tree>` → блобы `.py` → один
   `git cat-file --batch` с разбором заголовков `<sha> blob <size>`.
   Любой ненулевой код git → `WiringInputError` с текстом stderr.
-  `subprocess.run(..., check=False, capture_output=True)`, без shell.
+  `subprocess.run(..., check=False, capture_output=True, env={**os.environ,
+  "GIT_OPTIONAL_LOCKS": "0"})`, без shell; окружение собирает один хелпер,
+  через который идут все вызовы. Тест: у отслеживаемого файла в `src/`
+  устаревает stat без смены содержимого (`os.utime` на секунду вперёд),
+  после чего байты `.git/index` до и после `dirty_src_paths` совпадают.
+  Мутация «хелпер не выставляет переменную» тест краснит: замер
+  2026-09-24 — без `GIT_OPTIONAL_LOCKS=0` `git status` на таком дереве
+  индекс переписывает, с ней не трогает.
 - [ ] **Шаг 3:** мутация — `dirty_src_paths` возвращает `()` всегда →
   тесты чистоты краснеют; результат записать в отчёт.
 - [ ] **Шаг 4:** ruff, pyrefly, полный suite; коммит
@@ -163,6 +172,8 @@ def task_sections(plan_text: str) -> Mapping[int, str]: ...
     с точкой в qualname; `member` не строка; `task` < 1 или не целое; нет
     `src_tree`. Согласованность `member` с видом правила — междокументная
     проверка (вид правила живёт в спеке), она в задаче 5;
+  - `rule = []` и блок без ключа `rule` → `WiringInputError` (пустой
+    набор правил дал бы зелёный результат без проверок);
   - блок с info-строкой `toml` не читается (блок правил не найден →
     ошибка), fenced-блок внутри другого fenced-блока не читается;
   - `task_sections`: заголовки `### Задача 3:` и `### Task 3:` оба
@@ -217,6 +228,10 @@ def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violat
     `pkg.self.self.alias.C()` даёт нарушение (звенья повторно проходят
     `resolve(pkg, self)`, но не вложенно, то есть не циклом);
   - импорт внутри функции даёт привязку;
+  - namespace-пакет: `src/pkg/impl.py` без `pkg/__init__.py`, вызов
+    `import pkg.impl; pkg.impl.C()` и `from pkg import impl; impl.C()` дают
+    нарушение; промежуточные каталоги любой глубины (`src/a/b/impl.py` без
+    `__init__.py` в `a` и `b`) — тоже;
   - одноимённый класс `C` в другом модуле и внешний `C` нарушения не дают;
   - вызов в файле из `allowed` не нарушение;
   - `tests/` вне `--src` не анализируется;
