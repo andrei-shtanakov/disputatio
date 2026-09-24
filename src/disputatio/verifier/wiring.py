@@ -938,3 +938,312 @@ class _Resolver:
         if submodule in self._index.modules:
             result.add(_ModuleRef(submodule))
         return frozenset(result or {_EXTERNAL})
+
+
+# --- Отчёт гейта: покрытие и находки (§5.2, §5.3, §6) -------------------------
+
+_UNCOVERED = "uncovered"
+_DUPLICATE_COVER = "duplicate-cover"
+_DANGLING_COVER = "dangling-cover"
+_MISSING_TASK = "missing-task"
+_SITE_NOT_IN_TASK = "site-not-in-task"
+_UNVERIFIABLE = "unverifiable"
+_STALE_SNAPSHOT = "stale-snapshot"
+_DIRTY_SRC = "dirty-src"
+
+# Ключ сопоставления нарушения и записи покрытия (§5.2): `(rule, site)` для
+# `construct-only-in` и `(rule, site, member)` для `enumerates-all`; здесь
+# всегда полная тройка, `member` — `None` для `construct-only-in`.
+_CoverKey = tuple[str, str, str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """Находка гейта (§5.3, §6): проблема покрытия или непригодность снимка.
+
+    `code` — один из восьми кодов §5.3/§6: `uncovered`, `duplicate-cover`,
+    `dangling-cover`, `missing-task`, `site-not-in-task`, `unverifiable`
+    (находки покрытия/пригодности), `stale-snapshot`, `dirty-src` (находки
+    снимка). `rule`/`site`/`member` — координаты находки: те же, что у
+    ключа покрытия (§5.2), пустая строка `rule`/`site` и `member is None`
+    у `stale-snapshot`/`dirty-src`, у которых нет одной координаты.
+    `detail` — свободное описание причины, печатаемое `render_report`.
+    """
+
+    code: str
+    rule: str
+    site: str
+    member: str | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class WiringReport:
+    """Итог гейта wiring: все нарушения обоих правил и все находки (§5.3, §6)."""
+
+    violations: tuple[Violation, ...]
+    findings: tuple[Finding, ...]
+
+
+def check_wiring(
+    *,
+    spec_text: str,
+    plan_text: str,
+    snapshot: Snapshot,
+    src: str,
+    dirty: tuple[str, ...],
+) -> WiringReport:
+    """Собирает отчёт гейта wiring в порядке «код `2` старше кода `1`» (§6).
+
+    Порядок шагов обязателен:
+
+    1. Разбор блока правил спеки, блока покрытия и разделов задач плана
+       (`parse_rules`, `parse_cover`, `task_sections`) — их собственные
+       предусловия (§3.1, §5.1, §5.3) уже поднимают `WiringInputError`.
+       Здесь же — междокументная сверка: `member` записи покрытия для
+       объявленного `construct-only-in`, либо его отсутствие для
+       объявленного `enumerates-all`, — тоже `WiringInputError`. Запись с
+       необъявленным `rule` здесь не ошибка — это будущая находка
+       `dangling-cover`.
+    2. Индекс снимка (`build_index`) — тоже даёт `WiringInputError` на
+       неразбираемом исходнике или непригодном импорте (§4, §3.4).
+    3. Пригодность и нарушения **каждого** правила
+       (`construct_violations`/`enumerate_violations`), даже если снимок
+       ниже окажется грязным или устаревшим: код `2` предусловий правила
+       (§3.2, §3.5) обязан подняться раньше находок `dirty-src`/
+       `stale-snapshot`, а не быть ими заслонён.
+    4. `dirty` непуст → единственная находка `dirty-src`; нарушения шага 3
+       отбрасываются, покрытие не вычисляется.
+    5. Отпечаток `cover_block.src_tree` не совпал со `snapshot.tree` →
+       единственная находка `stale-snapshot`, тем же отбрасыванием.
+    6. Иначе — находки покрытия (§5.2, §5.3) над нарушениями шага 3.
+    """
+    rules = parse_rules(spec_text)
+    cover_block = parse_cover(plan_text)
+    sections = task_sections(plan_text)
+    rules_by_id = {rule.id: rule for rule in rules}
+    _check_cover_member_consistency(cover_block.covers, rules_by_id)
+
+    index = build_index(snapshot, src)
+
+    violations: list[Violation] = []
+    unverifiables: list[Unverifiable] = []
+    for rule in rules:
+        if isinstance(rule, ConstructRule):
+            violations.extend(construct_violations(index, rule))
+        else:
+            enumerate_result = enumerate_violations(index, rule)
+            if isinstance(enumerate_result, Unverifiable):
+                unverifiables.append(enumerate_result)
+            else:
+                violations.extend(enumerate_result)
+
+    if dirty:
+        detail = "src грязный: " + ", ".join(sorted(dirty))
+        finding = Finding(code=_DIRTY_SRC, rule="", site="", member=None, detail=detail)
+        return WiringReport(violations=(), findings=(finding,))
+
+    if cover_block.src_tree != snapshot.tree:
+        detail = (
+            f"план собран для отпечатка {cover_block.src_tree}, "
+            f"снимок несёт {snapshot.tree} (§4)"
+        )
+        finding = Finding(
+            code=_STALE_SNAPSHOT, rule="", site="", member=None, detail=detail
+        )
+        return WiringReport(violations=(), findings=(finding,))
+
+    findings = _coverage_findings(
+        violations, unverifiables, cover_block.covers, rules_by_id, sections
+    )
+    return WiringReport(violations=tuple(violations), findings=tuple(findings))
+
+
+def _check_cover_member_consistency(
+    covers: tuple[Cover, ...], rules_by_id: Mapping[str, Rule]
+) -> None:
+    """`member` записи покрытия обязан соответствовать виду её правила (§5.1).
+
+    Необъявленный `rule` здесь не проверяется — это будущая находка
+    `dangling-cover` (§5.3.3), а не ошибка ввода.
+    """
+    for cover in covers:
+        rule = rules_by_id.get(cover.rule)
+        if rule is None:
+            continue
+        if isinstance(rule, ConstructRule) and cover.member is not None:
+            raise WiringInputError(
+                f"покрытие {cover.rule!r} на {cover.site!r}: `member` запрещён "
+                "для construct-only-in (§5.1)"
+            )
+        if isinstance(rule, EnumerateRule) and cover.member is None:
+            raise WiringInputError(
+                f"покрытие {cover.rule!r} на {cover.site!r}: `member` обязателен "
+                "для enumerates-all (§5.1)"
+            )
+
+
+def _coverage_findings(
+    violations: Iterable[Violation],
+    unverifiables: Iterable[Unverifiable],
+    covers: tuple[Cover, ...],
+    rules_by_id: Mapping[str, Rule],
+    sections: Mapping[int, str],
+) -> list[Finding]:
+    """Находки покрытия (§5.3) над уже посчитанными нарушениями и `Unverifiable`."""
+    violations_by_key: dict[_CoverKey, Violation] = {
+        (v.rule, v.site, v.member): v for v in violations
+    }
+    covers_by_key: dict[_CoverKey, list[Cover]] = {}
+    for cover in covers:
+        key = (cover.rule, cover.site, cover.member)
+        covers_by_key.setdefault(key, []).append(cover)
+
+    findings: list[Finding] = [
+        Finding(
+            code=_UNCOVERED,
+            rule=violation.rule,
+            site=violation.site,
+            member=violation.member,
+            detail="",
+        )
+        for key, violation in violations_by_key.items()
+        if key not in covers_by_key
+    ]
+
+    for key, entries in covers_by_key.items():
+        rule_id, site, member = key
+        if len(entries) > 1:
+            findings.append(
+                Finding(
+                    code=_DUPLICATE_COVER,
+                    rule=rule_id,
+                    site=site,
+                    member=member,
+                    detail=f"{len(entries)} записей покрытия на один ключ (§5.2)",
+                )
+            )
+        if key not in violations_by_key:
+            reason = (
+                "правило не объявлено (§5.3)"
+                if rule_id not in rules_by_id
+                else "нарушения по этому месту нет (§5.3)"
+            )
+            findings.append(
+                Finding(
+                    code=_DANGLING_COVER,
+                    rule=rule_id,
+                    site=site,
+                    member=member,
+                    detail=reason,
+                )
+            )
+
+    for cover in covers:
+        findings.extend(_task_reference_findings(cover, sections))
+
+    findings.extend(
+        Finding(
+            code=_UNVERIFIABLE, rule=u.rule, site=u.site, member=None, detail=u.reason
+        )
+        for u in unverifiables
+    )
+
+    return sorted(findings, key=_finding_sort_key)
+
+
+def _task_reference_findings(
+    cover: Cover, sections: Mapping[int, str]
+) -> list[Finding]:
+    """`missing-task`/`site-not-in-task` для одной записи покрытия (§5.3.4-5)."""
+    section = sections.get(cover.task)
+    if section is None:
+        return [
+            Finding(
+                code=_MISSING_TASK,
+                rule=cover.rule,
+                site=cover.site,
+                member=cover.member,
+                detail=f"задачи №{cover.task} нет в плане (§5.3)",
+            )
+        ]
+    missing_site = cover.site not in section
+    missing_member = cover.member is not None and cover.member not in section
+    if not missing_site and not missing_member:
+        return []
+    if missing_site and missing_member:
+        what = "`site` и `member`"
+    elif missing_site:
+        what = "`site`"
+    else:
+        what = "`member`"
+    return [
+        Finding(
+            code=_SITE_NOT_IN_TASK,
+            rule=cover.rule,
+            site=cover.site,
+            member=cover.member,
+            detail=f"раздел задачи №{cover.task} не ссылается на {what} (§5.3)",
+        )
+    ]
+
+
+def _finding_sort_key(finding: Finding) -> tuple[str, str, str, str]:
+    """Ключ сортировки находок — `(код, rule, site, member)` (§6); `None` — `""`."""
+    return (finding.code, finding.rule, finding.site, finding.member or "")
+
+
+def render_report(report: WiringReport) -> list[str]:
+    """Строки вывода гейта (§6): по находке, последняя — сводка.
+
+    Формат строки: `{code} [{kind}] [{rule}] [{site}] [member={member}]
+    [count={count}] [{detail}]`. `{kind}`/`{count}` подставляются, только
+    когда находка совпадает по ключу `(rule, site, member)` с элементом
+    `report.violations`: тогда `kind` берётся из найденного `Violation`, а
+    `count=` печатается лишь при `kind == "construct-only-in"` — ровно
+    поведение, которого требует design §5.3 («count печатается у
+    construct-only-in»). У находок `uncovered`/`duplicate-cover` ключ
+    совпадает с нарушением почти всегда; у `dangling-cover` и
+    `unverifiable` — по построению никогда, поэтому `kind`/`count` для них
+    не печатаются. `rule`/`site` опускаются, если пусты (у
+    `stale-snapshot`/`dirty-src` одной координаты нет); `member=` печатается,
+    если он не `None`; `detail` — свободный текст находки, печатается
+    последним, если не пуст.
+
+    Находки отсортированы по `(code, rule, site, member)` (`_finding_sort_key`,
+    `None`-`member` как пустая строка). Последняя строка — сводка
+    `wiring: N нарушений, M покрыто, K находок`, где `M` — число нарушений
+    без находки `uncovered`.
+    """
+    violations_by_key = {(v.rule, v.site, v.member): v for v in report.violations}
+    findings = sorted(report.findings, key=_finding_sort_key)
+    lines = [_render_finding(finding, violations_by_key) for finding in findings]
+    uncovered = sum(1 for f in report.findings if f.code == _UNCOVERED)
+    covered = len(report.violations) - uncovered
+    lines.append(
+        f"wiring: {len(report.violations)} нарушений, {covered} покрыто, "
+        f"{len(report.findings)} находок"
+    )
+    return lines
+
+
+def _render_finding(
+    finding: Finding,
+    violations_by_key: Mapping[_CoverKey, Violation],
+) -> str:
+    """Одна строка отчёта для `finding` (формат — докстринг `render_report`)."""
+    parts = [finding.code]
+    violation = violations_by_key.get((finding.rule, finding.site, finding.member))
+    if violation is not None:
+        parts.append(violation.kind)
+    if finding.rule:
+        parts.append(finding.rule)
+    if finding.site:
+        parts.append(finding.site)
+    if finding.member is not None:
+        parts.append(f"member={finding.member}")
+    if violation is not None and violation.kind == _CONSTRUCT_ONLY_IN:
+        parts.append(f"count={violation.count}")
+    if finding.detail:
+        parts.append(finding.detail)
+    return " ".join(parts)
