@@ -136,6 +136,15 @@ spec_runner:
         # Штатный гейт — код установленного пакета: агенту его править нечем,
         # и защищать осталось только наше. Экспортёр evidence, плагины и сами
         # артефакты — новый harness-периметр.
+        # Control plane: сама политика и послабления typecheck. Дефолтный
+        # HARNESS_CANDIDATES spec-runner'а не включает ни то, ни другое, а
+        # агент в worktree технически может править оба (spec-runner#137).
+        # Guard хеширует файлы на диске, а не через git, поэтому покрывает и
+        # неотслеживаемый `spec-runner.config.yaml`: maestro пишет его в
+        # worktree один раз до запуска (`workspace.py`), и во время задачи
+        # законных записей в него нет.
+        - spec-runner.config.yaml
+        - pyrefly.toml
         - scripts/tdd_evidence_export.py
         - spec/plugins
         - spec/evidence
