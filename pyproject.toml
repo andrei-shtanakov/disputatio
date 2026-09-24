@@ -5,6 +5,7 @@ description = "Headless author↔reviewer debate-loop orchestrator"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "markdown-it-py>=4.2.0",
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
 ]
