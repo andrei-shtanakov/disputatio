@@ -309,6 +309,35 @@ class TestRuleSchema:
             parse_rules(_spec(body='unrelated = "x"\n'))
 
 
+class TestRuleListDuplicates:
+    """Повтор элемента в `members`/`checkers`/`allowed` — код `2` (§3.1)."""
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ('"transitions", "operator_decisions"]', '"transitions", "transitions"]'),
+            (
+                '["_guard_sessions", "_guard_immutable"]',
+                '["_guard_sessions", "_guard_sessions"]',
+            ),
+            (
+                'allowed = ["src/disputatio/runtime/composition.py"]',
+                (
+                    'allowed = ["src/disputatio/runtime/composition.py", '
+                    '"src/disputatio/runtime/composition.py"]'
+                ),
+            ),
+        ],
+        ids=["members", "checkers", "allowed"],
+    )
+    def test_duplicate_list_item_raises(self, old: str, new: str) -> None:
+        assert old in EXAMPLE_RULES_BODY
+        body = EXAMPLE_RULES_BODY.replace(old, new)
+
+        with pytest.raises(WiringInputError, match="повтор"):
+            parse_rules(_spec(body=body))
+
+
 class TestCoverSchema:
     def test_missing_src_tree_raises(self) -> None:
         body = '[[cover]]\nrule = "p10-policy"\nsite = "src/pkg/mod.py:1"\ntask = 1\n'

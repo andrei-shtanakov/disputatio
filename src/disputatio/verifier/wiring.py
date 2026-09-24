@@ -359,6 +359,11 @@ def _require_nonempty_str_list(
         )
     if not all(isinstance(item, str) for item in value):
         raise WiringInputError(f"{context}: `{field}` обязан содержать только строки")
+    repeated = sorted({item for item in value if value.count(item) > 1})
+    if repeated:
+        raise WiringInputError(
+            f"{context}: повтор элемента в `{field}`: {repeated} (§3.1)"
+        )
     return tuple(value)
 
 
@@ -628,8 +633,6 @@ def _check_construct_rule(index: ModuleIndex, rule: ConstructRule) -> None:
 
 
 # --- `enumerates-all` (§3.5) ---------------------------------------------------
-
-_ENUMERATES_ALL = "enumerates-all"
 
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
