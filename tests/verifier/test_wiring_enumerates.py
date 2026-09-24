@@ -361,3 +361,162 @@ def test_def_and_async_def_same_name_is_input_error() -> None:
     index = _index({MODULE_PATH: DUPLICATE_FUNCTION_ASYNC})
     with pytest.raises(WiringInputError, match="guard"):
         enumerate_violations(index, _rule(function="guard"))
+
+
+# --- условное определение и перепривязка имени — тоже код 2 -----------------
+
+# Python связывает то определение, которое выполнилось последним; условное
+# определение (под `if`/`try`/`with`/циклом/`match`) гейт статически не
+# разрешает, поэтому любое определение или перепривязка искомого имени вне
+# простой формы `def` верхнего уровня области — код 2, а не молчаливый
+# разбор первого `def`.
+
+PLAIN_GUARD = """\
+def guard(previous, current) -> None:
+    _guard_sessions(previous.spec_sessions, current.spec_sessions)
+"""
+
+GUARD_ONLY = ("spec_sessions",)
+
+CONDITIONAL_REDEFINITIONS = {
+    "if": "if True:\n    def guard(p): pass\n",
+    "elif": "if False:\n    pass\nelif True:\n    def guard(p): pass\n",
+    "else": "if False:\n    pass\nelse:\n    def guard(p): pass\n",
+    "try": "try:\n    def guard(p): pass\nexcept Exception:\n    pass\n",
+    "except": "try:\n    pass\nexcept Exception:\n    def guard(p): pass\n",
+    "try-else": (
+        "try:\n    pass\nexcept Exception:\n    pass\nelse:\n    def guard(p): pass\n"
+    ),
+    "finally": "try:\n    pass\nfinally:\n    def guard(p): pass\n",
+    "try-star": "try:\n    pass\nexcept* Exception:\n    def guard(p): pass\n",
+    "with": "with open('x') as f:\n    def guard(p): pass\n",
+    # `async with`/`async for` вне корутины не компилируются — область
+    # модуля и класса их не несёт; условный `async def` — несёт.
+    "async-def": "if True:\n    async def guard(p): pass\n",
+    "for": "for i in []:\n    def guard(p): pass\n",
+    "for-else": "for i in []:\n    pass\nelse:\n    def guard(p): pass\n",
+    "while": "while False:\n    def guard(p): pass\n",
+    "while-else": "while False:\n    pass\nelse:\n    def guard(p): pass\n",
+    "match": "match 1:\n    case 1:\n        def guard(p): pass\n",
+    "nested-if": "if True:\n    if True:\n        def guard(p): pass\n",
+}
+
+
+@pytest.mark.parametrize(
+    "tail", CONDITIONAL_REDEFINITIONS.values(), ids=CONDITIONAL_REDEFINITIONS
+)
+def test_conditional_redefinition_is_input_error(tail: str) -> None:
+    index = _index({MODULE_PATH: PLAIN_GUARD + tail})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard", members=GUARD_ONLY))
+
+
+ONLY_CONDITIONAL = """\
+if True:
+    def guard(previous, current) -> None:
+        _guard_sessions(previous.spec_sessions, current.spec_sessions)
+"""
+
+
+def test_single_conditional_definition_is_input_error() -> None:
+    index = _index({MODULE_PATH: ONLY_CONDITIONAL})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard", members=GUARD_ONLY))
+
+
+REBINDINGS = {
+    "assign": "guard = print\n",
+    "tuple-assign": "guard, other = print, print\n",
+    "annassign": "guard: object = print\n",
+    "augassign": "guard += 1\n",
+    "from-import": "from os import guard\n",
+    "from-import-as": "from os import path as guard\n",
+    "import-as": "import os as guard\n",
+    "import": "import guard\n",
+    "del": "del guard\n",
+    "for-target": "for guard in []:\n    pass\n",
+    "with-target": "with open('x') as guard:\n    pass\n",
+    "walrus": "(guard := print)\n",
+    "except-name": "try:\n    pass\nexcept Exception as guard:\n    pass\n",
+    "match-capture": "match 1:\n    case guard:\n        pass\n",
+    "class": "class guard:\n    pass\n",
+    "conditional-assign": "if True:\n    guard = print\n",
+    "comprehension-walrus": "[(guard := x) for x in ()]\n",
+    "decorator-walrus": "@(guard := staticmethod)\ndef other(): pass\n",
+}
+
+
+@pytest.mark.parametrize("tail", REBINDINGS.values(), ids=REBINDINGS)
+def test_rebinding_in_same_scope_is_input_error(tail: str) -> None:
+    index = _index({MODULE_PATH: PLAIN_GUARD + tail})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard", members=GUARD_ONLY))
+
+
+NESTED_SCOPES_ONLY = """\
+def guard(previous, current) -> None:
+    _guard_sessions(previous.spec_sessions, current.spec_sessions)
+
+
+def other():
+    def guard(p):
+        pass
+
+    guard = print
+
+
+class Holder:
+    def guard(self, p):
+        pass
+
+    guard = print
+
+
+handler = lambda guard: guard
+names = [guard for guard in ()]
+"""
+
+
+def test_same_name_in_nested_scopes_is_not_ambiguous() -> None:
+    index = _index({MODULE_PATH: NESTED_SCOPES_ONLY})
+    rule = _rule(function="guard", members=GUARD_ONLY)
+    assert _missing(index, rule) == []
+
+
+PLAIN_METHOD = """\
+class Guard:
+    def check(self, previous, current) -> None:
+        _guard_sessions(previous.spec_sessions, current.spec_sessions)
+"""
+
+METHOD_CASES = {
+    "conditional-method": PLAIN_METHOD
+    + "    if True:\n        def check(self, p): pass\n",
+    "method-assign": PLAIN_METHOD + "    check = print\n",
+    "method-import": PLAIN_METHOD + "    from os import path as check\n",
+    "only-conditional-method": (
+        "class Guard:\n    if True:\n"
+        "        def check(self, previous, current) -> None:\n"
+        "            _guard_sessions(previous.spec_sessions, "
+        "current.spec_sessions)\n"
+    ),
+    "conditional-class": PLAIN_METHOD
+    + "if True:\n    class Guard:\n        def check(self, p): pass\n",
+    "only-conditional-class": "if True:\n"
+    + "".join(f"    {line}\n" for line in PLAIN_METHOD.splitlines()),
+    "class-assign": PLAIN_METHOD + "Guard = object\n",
+    "class-import": PLAIN_METHOD + "from os import path as Guard\n",
+}
+
+
+@pytest.mark.parametrize("source", METHOD_CASES.values(), ids=METHOD_CASES)
+def test_class_method_conditional_or_rebound_is_input_error(source: str) -> None:
+    index = _index({MODULE_PATH: source})
+    with pytest.raises(WiringInputError, match="Guard"):
+        enumerate_violations(index, _rule(function="Guard.check", members=GUARD_ONLY))
+
+
+def test_plain_class_method_still_analysed() -> None:
+    index = _index({MODULE_PATH: PLAIN_METHOD})
+    rule = _rule(function="Guard.check", members=GUARD_ONLY)
+    assert _missing(index, rule) == []

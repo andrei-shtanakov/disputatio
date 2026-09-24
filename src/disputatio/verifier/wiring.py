@@ -738,69 +738,127 @@ def _find_function(tree: ast.Module, rule: EnumerateRule) -> _FunctionNode:
 
     Другая глубина qualname (несколько точек) правилом не поддерживается и
     даёт тот же отказ, что и отсутствующая функция (§3.5: только эти две
-    формы описаны). Несколько определений искомого имени в его области
-    видимости (та же неоднозначность, что и у класса `Class.method`) —
-    тоже `WiringInputError`: Python связывает последнее определение, и
-    молчаливый выбор первого (как у `next`) читает не ту функцию (§3.5).
+    формы описаны). Искомое имя обязано быть привязано в своей области
+    видимости ровно одним безусловным определением (`_single_definition`);
+    иначе — тоже `WiringInputError` (§3.5).
     """
     parts = rule.function.split(".")
     if len(parts) == 1:
-        scope: Iterable[ast.stmt] = tree.body
+        scope = tree.body
     elif len(parts) == 2:
-        class_name, _ = parts
-        scope = _find_scope_class(tree.body, class_name, rule)
+        class_node = _single_definition(tree.body, parts[0], ast.ClassDef, rule)
+        scope = class_node.body
     else:
         raise WiringInputError(
             f"правило {rule.id!r}: `function` {rule.function!r} не "
             "поддерживается — только `f` или `Class.method` (§3.5)"
         )
-    func_name = parts[-1]
-    matches = [
-        node
-        for node in scope
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == func_name
-    ]
-    if not matches:
-        raise WiringInputError(
-            f"правило {rule.id!r}: функции `{rule.function}` нет в "
-            f"`{rule.module}` (§3.5)"
-        )
-    if len(matches) > 1:
-        raise WiringInputError(
-            f"правило {rule.id!r}: `{rule.function}` в `{rule.module}` "
-            f"определена неоднозначно — {len(matches)} определений в её "
-            "области видимости (§3.5)"
-        )
-    return matches[0]
+    return _single_definition(
+        scope, parts[-1], (ast.FunctionDef, ast.AsyncFunctionDef), rule
+    )
 
 
-def _find_scope_class(
-    body: list[ast.stmt], class_name: str, rule: EnumerateRule
-) -> list[ast.stmt]:
-    """Тело класса `class_name` верхнего уровня для `Class.method` (§3.5).
+def _single_definition[T: ast.stmt](
+    body: list[ast.stmt],
+    name: str,
+    kind: type[T] | tuple[type[T], ...],
+    rule: EnumerateRule,
+) -> T:
+    """Единственное безусловное определение `name` вида `kind` в области `body`.
 
-    Класса нет, либо он определён несколько раз, — `WiringInputError`:
-    Python связывает последнее определение, а неоднозначный выбор молча
-    читал бы не тот класс.
+    Привязки имени собираются со всей области (`_scope_bindings`): прямо из
+    `body` и из вложенных составных операторов, но не из тел вложенных
+    `def`/`class`/`lambda`. Нет ни одной — отказ «не найдено». Больше
+    одной (второе определение, присваивание, импорт, `del`, …) либо
+    единственная, но вида не `kind` или под составным оператором, —
+    отказ «неоднозначно»: Python связывает то, что выполнилось последним,
+    а условное определение гейт статически не разрешает; молчаливый разбор
+    одного из узлов читал бы не тот объект (§3.5).
     """
-    matches = [
-        node
-        for node in body
-        if isinstance(node, ast.ClassDef) and node.name == class_name
-    ]
-    if not matches:
+    bindings = _scope_bindings(body, name)
+    what = "класса" if kind is ast.ClassDef else "функции"
+    if not bindings:
         raise WiringInputError(
-            f"правило {rule.id!r}: в `{rule.module}` нет класса верхнего "
-            f"уровня `{class_name}` (§3.5)"
+            f"правило {rule.id!r}: {what} `{name}` нет в области видимости "
+            f"`{rule.function}` в `{rule.module}` (§3.5)"
         )
-    if len(matches) > 1:
+    node = bindings[0]
+    if (
+        len(bindings) > 1
+        or not isinstance(node, kind)
+        or not any(node is statement for statement in body)
+    ):
         raise WiringInputError(
-            f"правило {rule.id!r}: класс `{class_name}` в `{rule.module}` "
-            f"определён неоднозначно — {len(matches)} определений верхнего "
-            "уровня (§3.5)"
+            f"правило {rule.id!r}: имя `{name}` (`{rule.function}`) в "
+            f"`{rule.module}` определено неоднозначно — {len(bindings)} "
+            "привязок в области видимости, условное определение или "
+            "перепривязка (§3.5)"
         )
-    return matches[0].body
+    return node
+
+
+def _scope_bindings(body: list[ast.stmt], name: str) -> list[ast.AST]:
+    """Узлы, привязывающие или удаляющие `name` в области `body` (§3.5).
+
+    Обходится вся область: операторы `body` и вложенные составные операторы
+    (`if`, `try`, `with`, циклы, `match`) на любой глубине. Тела вложенных
+    `def`/`async def`/`class`/`lambda` — другая область и не обходятся;
+    их декораторы, значения по умолчанию, базы и имя самой вложенной
+    функции/класса вычисляются и привязываются в этой области и
+    обходятся. Порядок узлов — порядок исходника.
+    """
+    found = [node for node in _scope_nodes(body) if _binds(node, name)]
+    return sorted(found, key=lambda node: (node.lineno, node.col_offset))
+
+
+def _scope_nodes(body: list[ast.stmt]) -> Iterable[ast.AST]:
+    """Все узлы области видимости `body` без тел вложенных областей."""
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(_same_scope_children(node))
+
+
+def _same_scope_children(node: ast.AST) -> list[ast.AST]:
+    """Дочерние узлы `node`, вычисляемые в той же области видимости."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = node.args
+        kw_defaults = [value for value in args.kw_defaults if value is not None]
+        defaults: list[ast.AST] = [*args.defaults, *kw_defaults]
+        if isinstance(node, ast.Lambda):
+            return defaults
+        return [*node.decorator_list, *defaults]
+    if isinstance(node, ast.ClassDef):
+        keywords = [keyword.value for keyword in node.keywords]
+        return [*node.decorator_list, *node.bases, *keywords]
+    if isinstance(node, ast.comprehension):
+        # Переменная comprehension живёт в его собственной области; `:=` в
+        # условиях и элементе привязывает во внешней и обходится.
+        return [node.iter, *node.ifs]
+    return list(ast.iter_child_nodes(node))
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """`node` привязывает или удаляет `name` в своей области видимости."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, ast.Name):
+        return node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+    if isinstance(node, ast.Import):
+        return any(
+            (alias.asname or alias.name.partition(".")[0]) == name
+            for alias in node.names
+        )
+    if isinstance(node, ast.ImportFrom):
+        return any((alias.asname or alias.name) == name for alias in node.names)
+    if isinstance(node, ast.ExceptHandler):
+        return node.name == name
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+        return node.name == name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == name
+    return False
 
 
 def _checked_members(function: _FunctionNode, rule: EnumerateRule) -> set[str]:
