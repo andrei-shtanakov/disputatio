@@ -9,6 +9,7 @@
 """
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -257,6 +258,62 @@ class TestUnfitRepositoryInputs:
 
         with pytest.raises(WiringInputError, match="src/sub"):
             read_snapshot(wiring_repo, "src")
+
+    def test_raises_for_undecodable_path_under_src(
+        self, wiring_repo: Path, git_run
+    ) -> None:
+        """Путь не в UTF-8 — код 2, а не тихая склейка ключей снимка.
+
+        С заменой невалидных байт `x\\xfe.py` и `x\\xff.py` дали бы один
+        ключ, и один файл молча выпал бы из снимка. Дерево собирается
+        plumbing-командами: файловая система (APFS) такое имя может не
+        принять, а индекс git — примет.
+        """
+        blob = subprocess.run(
+            ("git", "hash-object", "-w", "--stdin"),
+            cwd=wiring_repo,
+            input=b"VALUE = 2\n",
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        records = b"".join(
+            b"100644 blob " + blob + b"\tsrc/pkg/x" + tail + b".py\0"
+            for tail in (b"\xfe", b"\xff")
+        )
+        subprocess.run(
+            ("git", "update-index", "-z", "--index-info"),
+            cwd=wiring_repo,
+            input=records,
+            check=True,
+        )
+        git_run(
+            wiring_repo,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "add undecodable paths",
+        )
+
+        with pytest.raises(WiringInputError, match=r"x\\xf[ef]\.py"):
+            read_snapshot(wiring_repo, "src")
+
+    def test_dirty_undecodable_path_raises(self, wiring_repo: Path, git_run) -> None:
+        """Сырые байты пути в `status` (`core.quotePath=false`) — код 2."""
+        git_run(wiring_repo, "config", "core.quotePath", "false")
+        blob = git_run(wiring_repo, "rev-parse", "HEAD:src/pkg/mod.py").strip()
+        subprocess.run(
+            ("git", "update-index", "-z", "--index-info"),
+            cwd=wiring_repo,
+            input=f"100644 blob {blob}\t".encode() + b"src/pkg/x\xfe.py\0",
+            check=True,
+        )
+
+        with pytest.raises(WiringInputError, match=r"x\\xfe\.py"):
+            dirty_src_paths(wiring_repo, "src")
 
     def test_missing_git_binary_raises_input_error(
         self, wiring_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

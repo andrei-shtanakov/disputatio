@@ -71,7 +71,7 @@ def dirty_src_paths(repo_root: Path, src: str) -> tuple[str, ...]:
         raise WiringInputError(
             f"не удалось получить статус `{src}` в {repo_root}: {_diagnostic(result)}"
         )
-    return tuple(_parse_porcelain_paths(_decode(result.stdout)))
+    return tuple(_parse_porcelain_paths(_decode_path(result.stdout, src)))
 
 
 def read_snapshot(repo_root: Path, src: str) -> Snapshot:
@@ -165,7 +165,7 @@ def _list_python_blobs(repo_root: Path, tree: str, src: str) -> list[tuple[str, 
             continue
         meta, _, path_bytes = record.partition(b"\t")
         mode, obj_type, sha = meta.split()
-        path = path_bytes.decode("utf-8", errors="replace")
+        path = _decode_path(path_bytes, src)
         if obj_type == b"commit":
             raise WiringInputError(
                 f"подмодуль (gitlink) в дереве не анализируется: {src}/{path}"
@@ -259,6 +259,22 @@ def _run_git(
     except OSError as exc:
         raise WiringInputError(
             f"не удалось запустить git в {repo_root}: {exc}"
+        ) from exc
+
+
+def _decode_path(data: bytes, src: str) -> str:
+    """Строгий UTF-8 для путей: недекодируемый путь — `WiringInputError` (код 2).
+
+    Замена невалидных байт склеила бы разные пути (`x\\xfe.py` и
+    `x\\xff.py` — оба `x\\ufffd.py`) в один ключ снимка, и один файл молча
+    выпал бы из анализа. В сообщении — `repr` сырых байт: их нечем честно
+    напечатать иначе.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WiringInputError(
+            f"путь под {src} не декодируется как UTF-8: {data!r}"
         ) from exc
 
 
