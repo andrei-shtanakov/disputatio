@@ -169,7 +169,20 @@ _SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 # словами. Уровни 1–3 и setext лишь ограничивают раздел; заголовок задачи —
 # только `###`, поэтому `## Task 3:`/`# Задача 3:` и setext `Task 3:`
 # задачей не считаются (хотя и обрывают предыдущий раздел).
-_TASK_HEADING_RE = re.compile(r"^ {0,3}###[ \t]+(?:Задача|Task)[ \t]+(\d+)[ \t]*:")
+# Номер — только ASCII-цифры: `\d` матчит и `١`, а `int("١") == 1`.
+_TASK_HEADING_RE = re.compile(r"^ {0,3}###[ \t]+(?:Задача|Task)[ \t]+([0-9]+)[ \t]*:")
+# Заголовок внутри цитаты или пункта списка (`> ### …`, `- ## …`, `1. # …`,
+# с любой вложенностью и отступом): рендерится как заголовок, поэтому
+# обрывает раздел, но задачей не бывает — заголовок задачи только верхнего
+# уровня. Отступ перед маркером не ограничен: лишняя граница лишь сужает
+# раздел (fail-closed).
+_CONTAINER_PREFIX = r"[ \t]*(?:(?:>|[-+*]|[0-9]{1,9}[.)])[ \t]*)+"
+_CONTAINER_ATX_RE = re.compile(rf"^{_CONTAINER_PREFIX}#{{1,3}}(?:[ \t]|$)")
+_CONTAINER_SETEXT_RE = re.compile(rf"^{_CONTAINER_PREFIX}(?:=+|-+)[ \t]*$")
+# Определение ссылки или сноски `[метка]: …` (отступ до трёх пробелов) не
+# рендерится на месте: его строка и продолжения до пустой строки или
+# заголовка — не текст раздела. Исключение текста — fail-closed.
+_LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[(?:\\.|[^\\\]])+\]:")
 
 
 def task_sections(plan_text: str) -> Mapping[int, str]:
@@ -184,15 +197,20 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
     раздела «ссылался» бы на все свои места сам, а место из примера кода
     засчитывалось бы как ссылка задачи. HTML-комментарии вне фенсов
     вырезаются так же: они не рендерятся, поэтому их текст — не заголовок,
-    не граница и не текст раздела.
+    не граница и не текст раздела. То же для HTML-блоков `<script>`/`<pre>`
+    и подобных; определения ссылок — не текст раздела; заголовок в прочем
+    HTML-блоке, цитате или пункте списка — граница, но не задача.
     """
     lines = plan_text.splitlines()
     markup = _scan_markup(lines)
     visible = markup.visible
-    atx = _atx_headings(markup)
-    heading_lines = sorted(atx | _setext_headings(markup, atx))
+    atx = _atx_headings(markup, _ATX_HEADING_RE)
+    nested = _atx_headings(markup, _CONTAINER_ATX_RE) - atx
+    stops = atx | nested
+    heading_lines = sorted(stops | _setext_headings(markup, stops))
+    excluded = _link_definition_lines(markup, stops)
     task_headings: dict[int, int] = {}
-    for index in sorted(atx):
+    for index in sorted(atx - markup.html_block):
         task_match = _TASK_HEADING_RE.match(visible[index] or "")
         if task_match:
             task_headings[index] = int(task_match.group(1))
@@ -205,34 +223,56 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
             )
         end = next((h for h in heading_lines if h > heading_index), len(lines))
         sections[task_number] = "\n".join(
-            text for text in visible[heading_index:end] if text is not None
+            text
+            for index, text in enumerate(visible[heading_index:end], heading_index)
+            if text is not None and index not in excluded
         )
     return sections
 
 
-def _atx_headings(markup: _Markup) -> set[int]:
-    """Номера строк ATX-заголовков уровня 1–3 среди строк, где заголовок возможен."""
+def _atx_headings(markup: _Markup, pattern: re.Pattern[str]) -> set[int]:
+    """Номера строк, где заголовок возможен и `pattern` его находит."""
     return {
-        index
-        for index in markup.headable
-        if _ATX_HEADING_RE.match(markup.visible[index] or "")
+        index for index in markup.headable if pattern.match(markup.visible[index] or "")
     }
 
 
-def _setext_headings(markup: _Markup, atx: set[int]) -> set[int]:
+def _setext_headings(markup: _Markup, stops: set[int]) -> set[int]:
     """Начала setext-заголовков уровня 1–2: первые строки их абзацев.
 
     Границей setext-заголовка служит первая строка его абзаца — весь абзац
     над подчёркиванием и есть текст заголовка (CommonMark). Подчёркивание
     после пустой строки, заголовка, фенса или HTML-комментария заголовком
-    ничего не делает.
+    ничего не делает. Подчёркивание в цитате или пункте списка — тоже
+    граница (`_CONTAINER_SETEXT_RE`).
     """
     return {
         start
         for index in markup.headable
         if _SETEXT_UNDERLINE_RE.match(markup.visible[index] or "")
-        for start in _paragraph_start(markup.visible, index, atx)
+        or _CONTAINER_SETEXT_RE.match(markup.visible[index] or "")
+        for start in _paragraph_start(markup.visible, index, stops)
     }
+
+
+def _link_definition_lines(markup: _Markup, headings: set[int]) -> set[int]:
+    """Строки определений ссылок/сносок с продолжениями — не текст раздела.
+
+    Продолжение — следующие непустые строки до пустой строки, фенса или
+    заголовка: на них может стоять адрес или заголовок (`title`)
+    определения. Лишнее исключение только сужает текст раздела.
+    """
+    excluded: set[int] = set()
+    in_definition = False
+    for index, text in enumerate(markup.visible):
+        if text is None or not text.strip() or index in headings:
+            in_definition = False
+            continue
+        if index in markup.headable and _LINK_DEFINITION_RE.match(text):
+            in_definition = True
+        if in_definition:
+            excluded.add(index)
+    return excluded
 
 
 def _paragraph_start(
@@ -262,6 +302,17 @@ _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 # типа 2 до строки с `-->` включительно: текст после `-->` на ней же —
 # сырой HTML, а не заголовок (CommonMark).
 _COMMENT_LINE_RE = re.compile(r"^ {0,3}<!--")
+# HTML-блок типа 1 (`<script>`, `<pre>`, `<style>`, `<textarea>`): сырой
+# текст до строки с любым из закрывающих тегов включительно (CommonMark).
+_RAW_HTML_OPEN_RE = re.compile(
+    r"^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.IGNORECASE
+)
+_RAW_HTML_CLOSE_RE = re.compile(r"</(?:script|pre|style|textarea)>", re.IGNORECASE)
+# Прочие HTML-блоки (типы 6–7) — строка с открывающим или закрывающим тегом
+# в начале — тянутся до пустой строки, и markdown в них не разбирается.
+# Шаблон шире CommonMark (тип 7 не прерывает абзац): лишняя строка блока
+# лишь лишает `### Task N:` статуса задачи — fail-closed.
+_HTML_BLOCK_OPEN_RE = re.compile(r"^ {0,3}</?[A-Za-z]")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 
@@ -284,14 +335,18 @@ class _Fence:
 class _Markup:
     """Разметка документа, которую видит гейт: фенсы и видимый текст строк.
 
-    `visible[i]` — строка `i` без HTML-комментариев, либо `None` для строк
-    fenced-блоков (включая строки фенса). `headable` — строки, которые
-    могут быть заголовком: не начаты внутри комментария и не начаты им.
+    `visible[i]` — строка `i` без HTML-комментариев (строка HTML-блока
+    типа 1 — пустая), либо `None` для строк fenced-блоков (включая строки
+    фенса). `headable` — строки, которые могут быть заголовком: не начаты
+    внутри комментария и не начаты им, не лежат в HTML-блоке типа 1.
+    `html_block` — строки HTML-блоков типов 6–7: граница раздела в них
+    возможна, заголовок задачи — нет.
     """
 
     fences: tuple[_Fence, ...]
     visible: tuple[str | None, ...]
     headable: frozenset[int]
+    html_block: frozenset[int]
 
 
 def _scan_markup(lines: list[str]) -> _Markup:
@@ -309,24 +364,44 @@ def _scan_markup(lines: list[str]) -> _Markup:
     fences: list[_Fence] = []
     visible: list[str | None] = []
     headable: set[int] = set()
-    in_comment = False
+    html_block: set[int] = set()
+    in_comment = in_raw = in_html = False
     index = 0
     while index < len(lines):
         line = lines[index]
-        opening = None if in_comment else _FENCE_RE.match(line)
-        if opening is not None and not _is_inline_code(opening):
-            fence = _fence_at(lines, index, opening)
-            fences.append(fence)
-            visible.extend([None] * (fence.end - fence.start + 1))
-            index = fence.end + 1
+        if in_raw:
+            visible.append("")
+            in_raw = _RAW_HTML_CLOSE_RE.search(line) is None
+            index += 1
             continue
-        if not in_comment and not _COMMENT_LINE_RE.match(line):
-            headable.add(index)
+        if not in_comment:
+            in_html = in_html and bool(line.strip())
+            opening = _FENCE_RE.match(line)
+            if opening is not None and not _is_inline_code(opening):
+                fence = _fence_at(lines, index, opening)
+                fences.append(fence)
+                visible.extend([None] * (fence.end - fence.start + 1))
+                index = fence.end + 1
+                continue
+            raw = _RAW_HTML_OPEN_RE.match(line)
+            if raw is not None:
+                visible.append("")
+                in_raw = _RAW_HTML_CLOSE_RE.search(line, raw.end()) is None
+                index += 1
+                continue
+            in_html = in_html or _HTML_BLOCK_OPEN_RE.match(line) is not None
+            if not _COMMENT_LINE_RE.match(line):
+                headable.add(index)
+        if in_html:
+            html_block.add(index)
         text, in_comment = _strip_comments(line, in_comment)
         visible.append(text)
         index += 1
     return _Markup(
-        fences=tuple(fences), visible=tuple(visible), headable=frozenset(headable)
+        fences=tuple(fences),
+        visible=tuple(visible),
+        headable=frozenset(headable),
+        html_block=frozenset(html_block),
     )
 
 

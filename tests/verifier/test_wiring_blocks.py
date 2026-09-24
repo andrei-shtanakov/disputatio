@@ -870,3 +870,142 @@ class TestTaskSectionsHtmlComments:
         text = "### Задача 1: разбор\n<!--\n```\n-->\nsrc/pkg/a.py:3\n"
 
         assert "src/pkg/a.py:3" in task_sections(text)[1]
+
+
+class TestTaskSectionsRawHtml:
+    """Сырые HTML-блоки плана: гейт не видит в них больше, чем рендер (§5.3).
+
+    `<script>`/`<style>`/`<pre>`/`<textarea>` (HTML-блок типа 1) —
+    сырой текст до закрывающего тега: не заголовки и не текст раздела.
+    Прочие HTML-блоки (типы 6–7) тянутся до пустой строки: markdown в них не
+    разбирается, поэтому строка `### Task N:` в них задачей не становится
+    (но раздел обрывает — сомнение в сторону сужения).
+    """
+
+    @pytest.mark.parametrize("tag", ["script", "style", "pre", "textarea", "PRE"])
+    def test_type1_block_hides_heading_and_text(self, tag: str) -> None:
+        text = (
+            "### Задача 1: разбор\nвидимо\n"
+            f"<{tag}>\n### Task 2: скрытая\nsrc/pkg/a.py:3\n</{tag}> хвост\n"
+            "после блока\n"
+        )
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "src/pkg/a.py:3" not in sections[1]
+        assert "хвост" not in sections[1]
+        assert "после блока" in sections[1]
+
+    def test_unclosed_type1_block_hides_rest(self) -> None:
+        text = "<script>\n### Task 1: скрытая\nsrc/pkg/a.py:3\n"
+
+        assert task_sections(text) == {}
+
+    def test_type1_block_closes_on_same_line(self) -> None:
+        text = "### Задача 1: разбор\n<pre>x</pre>\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" in task_sections(text)[1]
+
+    @pytest.mark.parametrize("tag", ["div", "details", "span", "/div", "table"])
+    def test_task_heading_inside_html_block_is_not_task(self, tag: str) -> None:
+        text = f"<{tag}>\n### Task 1: не заголовок\nsrc/pkg/a.py:3\n"
+
+        assert task_sections(text) == {}
+
+    def test_html_block_line_still_ends_previous_section(self) -> None:
+        text = "### Задача 1: разбор\n\n<div>\n### Task 2: x\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" not in task_sections(text)[1]
+
+    def test_html_block_ends_at_blank_line(self) -> None:
+        text = "<details>\n<summary>x</summary>\n\n### Task 1: видимая\nтело\n"
+
+        assert set(task_sections(text)) == {1}
+
+    def test_comment_line_does_not_end_html_block(self) -> None:
+        """Строка-комментарий внутри HTML-блока — не пустая строка блока."""
+        text = "<div>\n<!-- c -->\n### Task 1: не заголовок\n"
+
+        assert task_sections(text) == {}
+
+
+class TestTaskSectionsLinkReferenceDefinitions:
+    """Определение ссылки `[x]: …` не рендерится — не текст раздела (§5.3)."""
+
+    @pytest.mark.parametrize(
+        "definition",
+        [
+            pytest.param("[n]: src/pkg/a.py:3", id="plain"),
+            pytest.param("   [n]: src/pkg/a.py:3", id="indent-3"),
+            pytest.param("[^1]: src/pkg/a.py:3", id="footnote"),
+            pytest.param("[n]:\n  src/pkg/a.py:3", id="destination-next-line"),
+            pytest.param('[n]: /u\n  "src/pkg/a.py:3"', id="title-next-line"),
+        ],
+    )
+    def test_definition_text_excluded(self, definition: str) -> None:
+        text = f"### Задача 1: разбор\nвидимо\n\n{definition}\n\nпосле\n"
+
+        section = task_sections(text)[1]
+
+        assert "src/pkg/a.py:3" not in section
+        assert "видимо" in section
+        assert "после" in section
+
+    def test_heading_after_definition_still_heading(self) -> None:
+        text = "### Задача 1: разбор\n[n]: /u\n### Task 2: вторая\nтело 2\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1, 2}
+        assert "тело 2" in sections[2]
+
+
+class TestTaskSectionsContainerHeadings:
+    """Заголовок в цитате или пункте списка обрывает раздел, но не задача (§5.3)."""
+
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            pytest.param("> ### Task 2: в цитате", id="quote"),
+            pytest.param(">## Примечания", id="quote-no-space"),
+            pytest.param("> > # Глубже", id="nested-quote"),
+            pytest.param("- ### Пункт", id="bullet"),
+            pytest.param("* ## Пункт", id="star"),
+            pytest.param("1. # Пункт", id="ordered"),
+            pytest.param("      - ### Вложенный", id="nested-list"),
+            pytest.param("> Примечания\n> ---", id="setext-in-quote"),
+        ],
+    )
+    def test_container_heading_ends_section(self, heading: str) -> None:
+        # Пустая строка перед заголовком: абзац setext без неё поднимается
+        # по всем непустым строкам выше — сужение раздела (fail-closed).
+        text = f"### Задача 1: разбор\nтело\n\n{heading}\nsrc/pkg/a.py:3\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "тело" in sections[1]
+        assert "src/pkg/a.py:3" not in sections[1]
+
+    @pytest.mark.parametrize(
+        "line", ["- #123 задача", "> #5 без пробела", "- пункт ### не в начале"]
+    )
+    def test_container_non_heading_does_not_end_section(self, line: str) -> None:
+        text = f"### Задача 1: разбор\n{line}\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" in task_sections(text)[1]
+
+
+class TestTaskHeadingNumber:
+    def test_non_ascii_digits_are_not_task_number(self) -> None:
+        """`\\d` Python матчит `١`; номер задачи — только ASCII-цифры."""
+        text = "### Task ١: разбор\nsrc/pkg/a.py:3\n"
+
+        assert task_sections(text) == {}
+
+    def test_escaped_heading_is_not_task(self) -> None:
+        assert task_sections("\\### Task 1: разбор\nтело\n") == {}
+
+    def test_closing_hashes_keep_task_heading(self) -> None:
+        assert set(task_sections("### Task 1: разбор ###\nтело\n")) == {1}
