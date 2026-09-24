@@ -83,9 +83,9 @@ def read_snapshot(repo_root: Path, src: str) -> Snapshot:
     `src_fingerprint`.
     """
     tree = src_fingerprint(repo_root, src)
-    entries = _list_python_blobs(repo_root, tree)
-    contents = _read_blobs(repo_root, {sha for _, sha in entries})
     normalized_src = src.rstrip("/")
+    entries = _list_python_blobs(repo_root, tree, normalized_src)
+    contents = _read_blobs(repo_root, {sha for _, sha in entries})
     files = {f"{normalized_src}/{relpath}": contents[sha] for relpath, sha in entries}
     return Snapshot(tree=tree, files=files)
 
@@ -107,13 +107,26 @@ def _parse_porcelain_paths(output: str) -> list[str]:
     return paths
 
 
-def _list_python_blobs(repo_root: Path, tree: str) -> list[tuple[str, str]]:
+_SYMLINK_MODE = b"120000"
+
+
+def _list_python_blobs(repo_root: Path, tree: str, src: str) -> list[tuple[str, str]]:
     """Список (путь-от-`src`, sha) `.py`-блобов дерева `tree` через `ls-tree -r -z`.
 
     `-z`: записи разделены `NUL`, а не переводом строки, поэтому путь с
     экзотическими символами не режется на части. Разбор — по сырым
     байтам: `\\t` отделяет метаданные от пути и в имени файла появиться не
     может (это зарезервированный разделитель git).
+
+    Символическая ссылка — тоже объект типа `blob` (режим `120000`), но
+    её содержимое — строка пути цели, а не код. `.py`-символлинк отдать
+    как модуль значило бы подсунуть анализатору путь вместо байт файла,
+    поэтому такая запись — непригодный вход (`WiringInputError`), а не
+    тихо пропущенный файл: пропуск мог бы скрыть конструктор за
+    подменённым путём. `src` нужен только для полного пути в сообщении
+    об ошибке — сам список остаётся путями относительно `tree`.
+    Не-`.py` символлинк такому правилу не подчиняется и игнорируется, как
+    любой другой не-`.py` файл дерева.
     """
     result = _run_git(repo_root, ("ls-tree", "-r", "-z", tree))
     if result.returncode != 0:
@@ -125,12 +138,17 @@ def _list_python_blobs(repo_root: Path, tree: str) -> list[tuple[str, str]]:
         if not record:
             continue
         meta, _, path_bytes = record.partition(b"\t")
-        _mode, obj_type, sha = meta.split()
+        mode, obj_type, sha = meta.split()
         if obj_type != b"blob":
             continue
         path = path_bytes.decode("utf-8", errors="replace")
-        if path.endswith(".py"):
-            entries.append((path, sha.decode("ascii")))
+        if not path.endswith(".py"):
+            continue
+        if mode == _SYMLINK_MODE:
+            raise WiringInputError(
+                f"символическая ссылка вместо файла `.py` в дереве: {src}/{path}"
+            )
+        entries.append((path, sha.decode("ascii")))
     return entries
 
 

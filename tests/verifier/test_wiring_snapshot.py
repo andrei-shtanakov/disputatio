@@ -146,6 +146,47 @@ class TestReadSnapshot:
         with pytest.raises(WiringInputError):
             read_snapshot(tmp_git_repo, "src")
 
+    def test_raises_for_symlink_py_in_src(self, wiring_repo: Path, git_run) -> None:
+        """Символическая ссылка `.py` — не файл: путь вместо байт кода."""
+        link = wiring_repo / "src" / "link.py"
+        link.symlink_to(Path("../outside.py"))
+        git_run(wiring_repo, "add", "src/link.py")
+        git_run(
+            wiring_repo,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "add py symlink",
+        )
+
+        with pytest.raises(WiringInputError, match="src/link.py"):
+            read_snapshot(wiring_repo, "src")
+
+    def test_ignores_symlink_non_py_in_src(self, wiring_repo: Path, git_run) -> None:
+        """Не-`.py` символическая ссылка — игнорируется, как любой не-`.py` файл."""
+        link = wiring_repo / "src" / "link.txt"
+        link.symlink_to(Path("../outside.txt"))
+        git_run(wiring_repo, "add", "src/link.txt")
+        git_run(
+            wiring_repo,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "add non-py symlink",
+        )
+
+        snapshot = read_snapshot(wiring_repo, "src")
+
+        assert set(snapshot.files) == {"src/pkg/mod.py"}
+
 
 class TestGitOptionalLocks:
     def test_dirty_src_paths_does_not_touch_index(
