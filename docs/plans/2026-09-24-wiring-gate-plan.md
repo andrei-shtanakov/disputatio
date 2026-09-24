@@ -34,9 +34,13 @@ pyrefly, ruff.
   `src/disputatio/verifier/runner.py`, `src/disputatio/verifier/capture.py`.
   Правка в них = выход за границу спеки («без изменения ядра и runner»).
 - Пакет `verifier` не импортирует `runtime` и не вызывает агентские CLI
-  (INV-10). Существующие сторожа — `tests/verifier/test_no_agent_cli.py` и
-  `test_no_agent_cli_allowlist.py` — обязаны остаться зелёными; `git` в их
-  allowlist уже входит (использует `diffstats.py`), новый бинарь не нужен.
+  (INV-10). Сторож `tests/verifier/test_no_agent_cli.py` сканирует
+  **текст** каждого модуля пакета (сканер —
+  `tests/verifier/agent_cli_scanner.py`): запрещены токены
+  `FORBIDDEN_CLI_TOKENS` (`claude`, `codex`, `anthropic` и др.) в любом
+  месте, включая докстринги и сообщения, и импорты `disputatio.*` вне
+  `disputatio.contracts`/`disputatio.verifier`. Новые модули обязаны
+  пройти его без правки сканера: ни в коде, ни в прозе этих слов нет.
 - Гейт read-only: ни один модуль не пишет в рабочее дерево, индекс или
   `.git`. Вызовы git — только `rev-parse`, `status`, `ls-tree`, `cat-file`.
 - Ошибки ввода гейта — собственное исключение `WiringInputError` пакета
@@ -355,12 +359,13 @@ def render_report(report: WiringReport) -> list[str]: ...
   - код `2` старше `1`: битый блок правил при грязном `src` → `2`;
   - гейт ничего не пишет: `git status --porcelain --ignored` до и после
     совпадает, каталог `.disputatio/` не создаётся;
-  - **подключение**: `run_gate(GateSpec("wiring", "<python> -m
-    disputatio.cli gate wiring …"), repo)` даёт `pass` на покрытом дереве и
-    `fail` на непокрытом, `exit_code` не `None`, то есть не `skip`. Модуль
-    запускается через `sys.executable -m`, чтобы тест не зависел от `PATH`.
-    Для этого `cli.py` получает `if __name__ == "__main__":
-    sys.exit(main())`, если его ещё нет.
+  - **подключение**: `run_gate(GateSpec("wiring", f"{disp} gate wiring
+    …"), repo)`, где `disp = Path(sys.executable).parent / "disp"` —
+    entry point той же установки, что гоняет тесты, даёт `pass` на
+    покрытом дереве и `fail` на непокрытом, `exit_code` не `None`, то
+    есть не `skip`. Абсолютный путь делает тест независимым от `PATH` и
+    сам служит примером обязательства §2.1. Отсутствие файла `disp` рядом
+    с интерпретатором — провал теста, а не `skip`.
 - [ ] **Шаг 2: реализация.** Подпарсер `gate` с обязательной
   подкомандой `wiring`; аргументы `--spec`, `--plan`, `--src` (по умолчанию
   `src`), `--root` (по умолчанию `.`), `set_defaults(journal=False)` —
@@ -438,15 +443,16 @@ def render_report(report: WiringReport) -> list[str]: ...
 
 **Решений сверх спеки план не вводит**, кроме трёх технических, которые
 спека оставляет реализации: имя исключения `WiringInputError`, `--root` у
-подкоманды (как у прочих подкоманд `disp`) и `sys.executable -m
-disputatio.cli` в тесте подключения, чтобы тест не зависел от `PATH`.
+подкоманды (как у прочих подкоманд `disp`) и абсолютный путь к `disp`
+рядом с `sys.executable` в тесте подключения, чтобы тест не зависел от
+`PATH`.
 
 **Промежуточные состояния.** Задачи 1–5 аддитивны: новые модули без
 потребителей, suite зелёный после каждой. Подкоманда появляется в задаче 6
 целиком. Документация — последней, когда гейт существует.
 
 **Инвентарь меняемых интерфейсов.** Существующие интерфейсы не меняются.
-Единственная правка существующего кода — `cli.py`: новый подпарсер и,
-возможно, блок `__main__`. Потребители `_build_parser` — только `main`;
-`grep -rn "_build_parser" src tests` перед задачей 6 обязан это
-подтвердить.
+Единственная правка существующего кода — `cli.py`: новый подпарсер и
+обработчик. Потребитель `_build_parser` один — `main` (`cli.py:173`,
+сверено `grep -rn "_build_parser" src tests`); перед задачей 6 сверить
+повторно.
