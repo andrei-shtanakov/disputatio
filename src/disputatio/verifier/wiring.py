@@ -24,6 +24,11 @@
 `construct-only-in` (`construct_violations`, §3.2): статическое разрешение
 имён по снимку (§3.4) через множества объектов, с отсечением циклов по
 активному стеку обхода.
+
+Третья часть — правило `enumerates-all` (`enumerate_violations`, §3.5):
+проверка фактического перебора состава в узкой форме тела функции.
+Неподдерживаемая форма — не нарушение и не код `2`, а находка
+`Unverifiable`: гейт отказывается судить, а не молча засчитывает успех.
 """
 
 from __future__ import annotations
@@ -420,6 +425,15 @@ class Violation:
 
 
 @dataclass(frozen=True, slots=True)
+class Unverifiable:
+    """Отказ судить правило `enumerates-all`: форма тела не поддержана (§3.5)."""
+
+    rule: str
+    site: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class _ClassRef:
     """Объект разрешения «класс снимка» `module:name`."""
 
@@ -559,6 +573,188 @@ def _check_construct_rule(index: ModuleIndex, rule: ConstructRule) -> None:
                 f"правило {rule.id!r}: путь `allowed` {path!r} "
                 "отсутствует в снимке (§3.2)"
             )
+
+
+# --- `enumerates-all` (§3.5) ---------------------------------------------------
+
+_ENUMERATES_ALL = "enumerates-all"
+
+_FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+class _UnsupportedBody(Exception):
+    """Внутренний сигнал неподдерживаемой формы тела функции (§3.5).
+
+    Не покидает модуль: `enumerate_violations` ловит его и превращает в
+    `Unverifiable` вместе с координатой места.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def enumerate_violations(
+    index: ModuleIndex, rule: EnumerateRule
+) -> list[Violation] | Unverifiable:
+    """Нарушения `enumerates-all`: члены `members`, не перебранные функцией (§3.5).
+
+    Сначала проверяется пригодность правила снимку: модуль есть в снимке как
+    разобранный файл, функция с qualname `rule.function` (`f` либо
+    `Class.method`) в нём существует — иначе `WiringInputError` (код 2).
+    Дальше тело функции разбирается по узкой форме §3.5; любое отклонение от
+    неё — не код 2 и не нарушение, а `Unverifiable`: перебор не подтверждён
+    и не опровергнут, гейт не выносит суждения.
+    """
+    path, tree = _find_enumerate_module(index, rule)
+    function = _find_function(tree, rule)
+    site = f"{path}:{function.lineno}"
+    try:
+        checked = _checked_members(function, rule)
+    except _UnsupportedBody as exc:
+        return Unverifiable(rule=rule.id, site=site, reason=exc.reason)
+    missing = [member for member in rule.members if member not in checked]
+    return [
+        Violation(rule=rule.id, kind=_ENUMERATES_ALL, site=site, member=member, count=1)
+        for member in missing
+    ]
+
+
+def _find_enumerate_module(
+    index: ModuleIndex, rule: EnumerateRule
+) -> tuple[str, ast.Module]:
+    """Путь и AST модуля правила по `rule.module` (путь от корня репозитория).
+
+    Не найден, либо найден как namespace-пакет (без собственного AST), —
+    `WiringInputError` (§3.5): в обоих случаях функции в нём быть не может.
+    """
+    for entry in index.modules.values():
+        if entry.path == rule.module and entry.tree is not None:
+            return entry.path, entry.tree
+    raise WiringInputError(
+        f"правило {rule.id!r}: модуля `{rule.module}` нет в снимке (§3.5)"
+    )
+
+
+def _find_function(tree: ast.Module, rule: EnumerateRule) -> _FunctionNode:
+    """Функция по qualname `rule.function`: `f` — верхнего уровня, `Class.method`.
+
+    Другая глубина qualname (несколько точек) правилом не поддерживается и
+    даёт тот же отказ, что и отсутствующая функция (§3.5: только эти две
+    формы описаны).
+    """
+    parts = rule.function.split(".")
+    if len(parts) == 1:
+        scope: Iterable[ast.stmt] = tree.body
+    elif len(parts) == 2:
+        class_name, _ = parts
+        class_node = next(
+            (
+                node
+                for node in tree.body
+                if isinstance(node, ast.ClassDef) and node.name == class_name
+            ),
+            None,
+        )
+        if class_node is None:
+            raise WiringInputError(
+                f"правило {rule.id!r}: в `{rule.module}` нет класса верхнего "
+                f"уровня `{class_name}` (§3.5)"
+            )
+        scope = class_node.body
+    else:
+        raise WiringInputError(
+            f"правило {rule.id!r}: `function` {rule.function!r} не "
+            "поддерживается — только `f` или `Class.method` (§3.5)"
+        )
+    func_name = parts[-1]
+    func_node = next(
+        (
+            node
+            for node in scope
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == func_name
+        ),
+        None,
+    )
+    if func_node is None:
+        raise WiringInputError(
+            f"правило {rule.id!r}: функции `{rule.function}` нет в "
+            f"`{rule.module}` (§3.5)"
+        )
+    return func_node
+
+
+def _checked_members(function: _FunctionNode, rule: EnumerateRule) -> set[str]:
+    """Множество членов, фактически перебранных телом функции (§3.5).
+
+    Необязательный докстринг первым оператором пропускается; остаток тела
+    обязан состоять только из проверяющих вызовов. Первое отклонение от этой
+    формы поднимает `_UnsupportedBody`.
+    """
+    body = function.body
+    if body and _is_docstring(body[0]):
+        body = body[1:]
+    params = _param_names(function)
+    return {_checker_call_attr(statement, rule.checkers, params) for statement in body}
+
+
+def _is_docstring(statement: ast.stmt) -> bool:
+    """Докстринг — `ast.Expr` со строковой константой (§3.5, только 1-й оператор)."""
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _param_names(function: _FunctionNode) -> frozenset[str]:
+    """Имена параметров: `args`, `posonlyargs`, `kwonlyargs`, `vararg`, `kwarg`."""
+    args = function.args
+    names = {arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg is not None:
+        names.add(args.vararg.arg)
+    if args.kwarg is not None:
+        names.add(args.kwarg.arg)
+    return frozenset(names)
+
+
+def _checker_call_attr(
+    statement: ast.stmt, checkers: tuple[str, ...], params: AbstractSet[str]
+) -> str:
+    """`attr`, общий для всех атрибутных аргументов проверяющего вызова (§3.5).
+
+    Не `ast.Expr(ast.Call)` с `func` из `checkers` — оператор неподдержан.
+    Аргумент вида `параметр.attr` (параметр функции) засчитывается; прочие
+    аргументы (строки, константы) игнорируются. Ни одного засчитанного
+    аргумента, либо несовпадение `attr` между ними, — тоже неподдержанная
+    форма: обе ветви поднимают `_UnsupportedBody`, а не молча выбирают одно
+    значение.
+    """
+    if not isinstance(statement, ast.Expr):
+        raise _UnsupportedBody("оператор тела не является проверяющим вызовом (§3.5)")
+    call = statement.value
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        raise _UnsupportedBody("оператор тела не является проверяющим вызовом (§3.5)")
+    name = call.func.id
+    if name not in checkers:
+        raise _UnsupportedBody(f"вызов `{name}` не входит в `checkers` (§3.5)")
+    attrs = {
+        node.attr
+        for node in (*call.args, *(kw.value for kw in call.keywords))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in params
+    }
+    if len(attrs) == 0:
+        raise _UnsupportedBody(
+            f"вызов `{name}` без атрибутного аргумента параметра (§3.5)"
+        )
+    if len(attrs) > 1:
+        raise _UnsupportedBody(
+            f"вызов `{name}` несёт разные `attr` в аргументах: {sorted(attrs)} (§3.5)"
+        )
+    return next(iter(attrs))
 
 
 def _parse_source(path: str, data: bytes) -> ast.Module:
