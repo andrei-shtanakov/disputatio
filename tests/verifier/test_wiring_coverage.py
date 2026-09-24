@@ -389,6 +389,148 @@ task = 1
     assert site_not_in_task[0].member == "b"
 
 
+# --- сочетания находок: duplicate/dangling × missing-task/site-not-in-task -----
+#
+# `missing-task`/`site-not-in-task` считаются по каждой записи `cover`
+# независимо от того, дублирует она другую запись или висит без нарушения
+# (`_coverage_findings` не пропускает такие записи) — а `duplicate-cover` и
+# `dangling-cover` не гасят друг друга на одном ключе. Ни то, ни другое не
+# было зафиксировано тестами выше: там разделы задач уже содержали `site`.
+
+
+def test_dangling_cover_with_missing_task_gives_both_findings() -> None:
+    """Висячая запись на несуществующий номер задачи — обе находки сразу
+    (§5.3.3-4): `dangling-cover` и `missing-task` не гасят друг друга."""
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:99"
+task = 7
+""",
+    )
+
+    report = _check(cover_body=cover_body)
+
+    key = ("p10-policy", f"{RUNNER_MODULE}:99", None)
+    dangling = [
+        f
+        for f in report.findings
+        if f.code == "dangling-cover" and (f.rule, f.site, f.member) == key
+    ]
+    missing_task = [
+        f
+        for f in report.findings
+        if f.code == "missing-task" and (f.rule, f.site, f.member) == key
+    ]
+    assert len(dangling) == 1
+    assert len(missing_task) == 1
+    assert "7" in missing_task[0].detail
+
+
+def test_dangling_cover_with_site_not_in_task_gives_both_findings() -> None:
+    """Висячая запись, чей раздел задачи не ссылается на `site`, — обе
+    находки сразу (§5.3.3, §5.3.5)."""
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:99"
+task = 1
+""",
+    )
+    task_text = "### Задача 1: t\nничего по теме\n"
+
+    report = _check(cover_body=cover_body, task_sections_text=task_text)
+
+    key = ("p10-policy", f"{RUNNER_MODULE}:99", None)
+    dangling = [
+        f
+        for f in report.findings
+        if f.code == "dangling-cover" and (f.rule, f.site, f.member) == key
+    ]
+    site_not_in_task = [
+        f
+        for f in report.findings
+        if f.code == "site-not-in-task" and (f.rule, f.site, f.member) == key
+    ]
+    assert len(dangling) == 1
+    assert len(site_not_in_task) == 1
+
+
+def test_duplicate_cover_where_one_record_points_to_missing_task() -> None:
+    """Дубль ключа, у которого одна из записей ссылается на несуществующую
+    задачу, — `duplicate-cover` и `missing-task` вместе, каждый по своей
+    причине (§5.2, §5.3.4); нарушение остаётся покрытым, не `uncovered`."""
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:4"
+task = 1
+
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:4"
+task = 99
+""",
+    )
+    task_text = f"### Задача 1: t\n{RUNNER_MODULE}:4\n"
+
+    report = _check(cover_body=cover_body, task_sections_text=task_text)
+
+    key = ("p10-policy", f"{RUNNER_MODULE}:4", None)
+    duplicate = [
+        f
+        for f in report.findings
+        if f.code == "duplicate-cover" and (f.rule, f.site, f.member) == key
+    ]
+    missing_task = [
+        f
+        for f in report.findings
+        if f.code == "missing-task" and (f.rule, f.site, f.member) == key
+    ]
+    uncovered_for_key = [
+        f
+        for f in report.findings
+        if f.code == "uncovered" and (f.rule, f.site, f.member) == key
+    ]
+    assert len(duplicate) == 1
+    assert len(missing_task) == 1
+    assert "99" in missing_task[0].detail
+    assert uncovered_for_key == []
+
+
+def test_key_both_duplicated_and_dangling_gives_both_findings() -> None:
+    """Ключ с двумя записями и без единого нарушения на нём — `duplicate-cover`
+    и `dangling-cover` вместе, ни одна находка не подавляет другую (§5.2,
+    §5.3.2-3)."""
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:99"
+task = 1
+
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:99"
+task = 1
+""",
+    )
+    task_text = f"### Задача 1: t\n{RUNNER_MODULE}:99\n"
+
+    report = _check(cover_body=cover_body, task_sections_text=task_text)
+
+    key = ("p10-policy", f"{RUNNER_MODULE}:99", None)
+    codes = {f.code for f in report.findings if (f.rule, f.site, f.member) == key}
+    assert codes == {"duplicate-cover", "dangling-cover"}
+
+
 # --- `dirty`/`stale` коротят вычисление покрытия --------------------------------
 
 
