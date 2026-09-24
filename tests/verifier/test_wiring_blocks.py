@@ -276,6 +276,19 @@ class TestRuleSchema:
         with pytest.raises(WiringInputError):
             parse_rules(_spec(body=body))
 
+    def test_id_with_trailing_newline_raises(self) -> None:
+        """`$` в `re.match` принимает `"r\\n"`; грамматика `id` — целиком (§3.1)."""
+        body = (
+            "[[rule]]\n"
+            'id = "r\\n"\n'
+            'kind = "construct-only-in"\n'
+            'class = "pkg.mod:C"\n'
+            'allowed = ["src/pkg/mod.py"]\n'
+        )
+
+        with pytest.raises(WiringInputError):
+            parse_rules(_spec(body=body))
+
     def test_class_without_colon_raises(self) -> None:
         body = (
             "[[rule]]\n"

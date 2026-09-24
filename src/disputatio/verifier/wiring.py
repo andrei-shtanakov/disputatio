@@ -87,7 +87,8 @@ class CoverBlock:
 
 # `id` правила — `[a-z0-9][a-z0-9._-]{0,63}` (§3.1): строчные латинские буквы
 # и цифры, разделители `.`/`_`/`-`, первый символ не разделитель.
-_RULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# Проверяется `fullmatch`: `$` в `re.match` пропускает хвостовой `\n`.
+_RULE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 _CONSTRUCT_ONLY_IN = "construct-only-in"
 _ENUMERATES_ALL = "enumerates-all"
@@ -523,7 +524,7 @@ def _check_schema(
 
 
 def _require_id(value: object, context: str) -> str:
-    if not isinstance(value, str) or not _RULE_ID_RE.match(value):
+    if not isinstance(value, str) or not _RULE_ID_RE.fullmatch(value):
         raise WiringInputError(
             f"{context}: `id` обязан соответствовать `[a-z0-9][a-z0-9._-]{{0,63}}`: "
             f"{value!r} (§3.1)"
