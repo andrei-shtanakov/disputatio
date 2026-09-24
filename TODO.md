@@ -457,21 +457,37 @@
   `docs/document-pipeline.md` и в докстрингах `_operator_checklist` /
   `_checklists_snapshot`).
 
-- [ ] Остаточные находки ревью PR #51 не заведены issue @id:pr51-residual-findings @epic:eco.disputatio
-  — описание PR #51 обещало отдать восемь мест «отслеживаемыми issue»; на
-  2026-08-31 таких issue в репо нет (`gh issue list --state all` — открыты только
-  inbox #44 и #52, остальное закрыто ещё в августе). Список из описания PR:
-  P9 сторожит только текущую ревизию, тогда как runner читает соседние; манифест
-  удостоверяет конфиг, которым resume может не пользоваться; `except Exception`
-  в `session_driver` гейтится фазой, а не типом; `read_pipeline_events` без
-  потребителя; мёртвые построители путей и `validate_slug` в копиях runtime;
-  `BASELINE_GATE_NAMES` копией; зашитая семантика `S1` в V8; конкурентный
-  `advance` без блокировки. Рядом — девять расхождений реализации с текстом
-  SPEC-002 владельцу спеки, главное: §5.2 не говорит, что doc-ревью несёт и
-  контракт вывода §4.4 — из этого умолчания вырос Critical ревью ветки.
-  Пункт заведён при закрытии inbox #44: помечать автоматизацию сделанной, пока
-  её собственные follow-up'ы не существуют ни как issue, ни как пункт плана, —
-  бухгалтерия, которой нельзя верить.
+- [x] Остаточные находки ревью PR #51 не заведены issue @id:pr51-residual-findings @epic:eco.disputatio — закрыт 2026-09-25: полный список восстановлен из финального ревью ветки PR #51 (8 мест + 9 расхождений + 2 решения строже текста), каждый пункт сверен с master `487419d` — аудит `docs/plans/2026-09-25-pr51-residuals-audit.md`. Закрыты до заведения: R2 (#65), R7 (1e71c11), R8 и X2 (решение владельца P11, #58). Живые заведены по одной issue: #112, #113, #114, #115, #116, #117, #118, #119, #120, #121, #122, #123, #124, #125, #126; пункты ниже.
+- [ ] P9 сторожит только текущую ревизию, а runner читает соседние @id:pipeline-p9-neighbour-revisions @epic:eco.disputatio
+  — issue #112 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] `except Exception` в `session_driver` различает исходы по фазе, а не по типу @id:session-driver-exception-discriminator @epic:eco.disputatio
+  — issue #113 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
+  — issue #114 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio
+  — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio
+  — issue #116 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] SPEC-002 §5.2 не говорит, что doc-ревью несёт контракт вывода §4.4 SPEC-001 @id:spec002-doc-review-carries-4-4 @epic:eco.disputatio
+  — issue #117 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] В журнале пайплайна нет события для припаркованной сессии @id:pipeline-park-event @epic:eco.disputatio
+  — issue #118 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] `superseded_by` (§7.3) разнороден и пишется однократно — допущение не записано @id:spec002-superseded-by-semantics @epic:eco.disputatio
+  — issue #119 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] §7.2: считаются ли операторские возвраты в потолок `max_architectural_returns` @id:spec002-return-ceiling-by-edge @epic:eco.disputatio
+  — issue #120 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] §8.1 «HEAD совпадает с записанным» — поля нет, значение вычисляется @id:spec002-head-anchorage-computed @epic:eco.disputatio
+  — issue #121 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] §8.2: правило честности `export` не записано @id:spec002-export-honesty-rule @epic:eco.disputatio
+  — issue #122 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] Текст `S1` переопределяем, а V8 продолжает требовать от него «нет blocker/major» @id:checklist-findings-role-text-override @epic:eco.disputatio
+  — issue #123 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] SPEC-002 не называет авторитетный конфиг: снапшот или живой @id:spec002-authoritative-config @epic:eco.disputatio
+  — issue #124 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] §3.1/§6: `--root` обязан быть toplevel, база `doc-scope` не названа @id:spec002-root-toplevel @epic:eco.disputatio
+  — issue #125 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] Анкер P9: вне toplevel репозитория, а не вне `workspace_root` — нормы расходятся @id:spec002-anchor-containment-toplevel @epic:eco.disputatio
+  — issue #126 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio — закрыт 2026-09-24: `spec-runner.config.yaml` и `pyrefly.toml` внесены в `harness_files` `project.yaml` (сверено по коду spec-runner: guard хеширует файлы на диске, неотслеживаемый сгенерированный конфиг покрыт; maestro пишет его до запуска); расхождение doc §2 ↔ SSOT запинено `tests/test_project_harness.py`
   — `docs/workstream-setup.md` §2 и операторский эталон подают
   `spec-runner.config.yaml` и `pyrefly.toml` как harness-пути (обоснование —
