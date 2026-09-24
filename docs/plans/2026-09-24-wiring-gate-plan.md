@@ -107,7 +107,10 @@ def read_snapshot(repo_root: Path, src: str) -> Snapshot: ...
   через который идут все вызовы. Тест: у отслеживаемого файла в `src/`
   устаревает stat без смены содержимого (`os.utime` на секунду вперёд),
   после чего байты `.git/index` до и после `dirty_src_paths` совпадают.
-  Мутация «хелпер не выставляет переменную» тест краснит: замер
+  Тест выставляет родительское `GIT_OPTIONAL_LOCKS=1` (`monkeypatch.setenv`):
+  хелпер обязан переопределить его на `"0"`, а не унаследовать случайно
+  совпавшее значение. Мутация «хелпер не выставляет переменную» тест
+  краснит: замер
   2026-09-24 — без `GIT_OPTIONAL_LOCKS=0` `git status` на таком дереве
   индекс переписывает, с ней не трогает.
 - [ ] **Шаг 3:** мутация — `dirty_src_paths` возвращает `()` всегда →
@@ -213,7 +216,8 @@ def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violat
 ```
 
 `ModuleIndex` — модульное имя → (путь, AST, привязки). Строится один раз на
-весь снимок.
+весь снимок. Запись namespace-пакета: путь каталога, `AST = None`, пустые
+привязки; обход вызовов такие записи пропускает.
 
 - [ ] **Шаг 1: red-тесты** на синтетических деревьях (хелпер собирает
   `Snapshot` из словаря «путь → текст», git не нужен):
@@ -231,7 +235,9 @@ def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violat
   - namespace-пакет: `src/pkg/impl.py` без `pkg/__init__.py`, вызов
     `import pkg.impl; pkg.impl.C()` и `from pkg import impl; impl.C()` дают
     нарушение; промежуточные каталоги любой глубины (`src/a/b/impl.py` без
-    `__init__.py` в `a` и `b`) — тоже;
+    `__init__.py` в `a` и `b`) — тоже; относительные импорты внутри
+    namespace-пакета (`from .impl import C`, `from . import impl`,
+    `from ..b.impl import C`) разрешаются в класс снимка;
   - одноимённый класс `C` в другом модуле и внешний `C` нарушения не дают;
   - вызов в файле из `allowed` не нарушение;
   - `tests/` вне `--src` не анализируется;
