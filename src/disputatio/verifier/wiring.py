@@ -16,9 +16,9 @@
 `member` только типизируется (строка или отсутствие); саму сверку делает
 последующая задача гейта.
 
-Отдельно — `task_sections` (§5.3): заголовки задач плана (`### Задача N:` /
-`### Task N:`) и границы их разделов, нужные для проверки «раздел задачи
-ссылается на место нарушения».
+Markdown модуль сам не разбирает: fenced-блоки и видимый текст разделов
+задач (§5.3) он получает через протокол `PlanReader`, реализация которого —
+CommonMark-парсер вне `verifier` (`disputatio.plan_markdown`, INV-10).
 
 Вторая часть модуля — индекс модулей снимка (`build_index`) и правило
 `construct-only-in` (`construct_violations`, §3.2): статическое разрешение
@@ -39,6 +39,7 @@ import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from typing import Protocol
 
 from disputatio.verifier.wiring_snapshot import Snapshot, WiringInputError
 
@@ -99,14 +100,31 @@ _ENUMERATE_RULE_FIELDS = frozenset(
 )
 
 
-def parse_rules(spec_text: str) -> tuple[Rule, ...]:
+class PlanReader(Protocol):
+    """Markdown-сторона гейта (§5.3): всё, что гейт читает из спеки и плана.
+
+    `verifier` не импортирует сторонних пакетов (INV-10) и не разбирает
+    Markdown сам: реализация — `disputatio.plan_markdown.MarkdownPlanReader`
+    на CommonMark-парсере — передаётся явно, без значения по умолчанию.
+    """
+
+    def fenced_blocks(self, text: str, info: str) -> list[str]:
+        """Содержимое настоящих fenced-блоков с info-строкой ровно `info`."""
+        ...
+
+    def task_sections(self, text: str) -> Mapping[int, str]:
+        """Номер задачи → видимый текст её раздела; повтор номера — код 2."""
+        ...
+
+
+def parse_rules(spec_text: str, *, reader: PlanReader) -> tuple[Rule, ...]:
     """Правила из единственного блока `disputatio-wiring` спеки (§3.1).
 
     Блок обязан существовать в единственном числе и нести непустой массив
     `rule`: пустой или отсутствующий массив дал бы зелёный гейт без единой
     проверки, а обязательность блока тогда ничего бы не значила.
     """
-    document = _load_block(spec_text, "disputatio-wiring", "спека")
+    document = _load_block(spec_text, "disputatio-wiring", "спека", reader)
     _check_schema(document, required={"rule"}, context="блок `disputatio-wiring`")
     raw_rules = document["rule"]
     if not isinstance(raw_rules, list) or len(raw_rules) == 0:
@@ -124,9 +142,9 @@ def parse_rules(spec_text: str) -> tuple[Rule, ...]:
     return tuple(rules)
 
 
-def parse_cover(plan_text: str) -> CoverBlock:
+def parse_cover(plan_text: str, *, reader: PlanReader) -> CoverBlock:
     """Блок покрытия из единственного блока `disputatio-wiring-cover` плана (§5.1)."""
-    document = _load_block(plan_text, "disputatio-wiring-cover", "план")
+    document = _load_block(plan_text, "disputatio-wiring-cover", "план", reader)
     _check_schema(
         document,
         required={"src_tree"},
@@ -151,337 +169,11 @@ def parse_cover(plan_text: str) -> CoverBlock:
     return CoverBlock(src_tree=src_tree, covers=covers)
 
 
-# Заголовки распознаются по CommonMark (§5.3): рендерится как заголовок —
-# значит, обрывает раздел. Сомнительный случай засчитывается границей: это
-# направление fail-closed — граница может лишь сузить раздел, а пропущенная
-# граница засчитала бы место под ней предыдущей задаче (тихий код 0).
-#
-# ATX 1–3 уровня: отступ до трёх пробелов, 1–3 `#`, затем пробел/таб или
-# конец строки (`##` и `## ` — пустые заголовки). `####` группу не матчит —
-# после трёх `#` идёт четвёртый, а не пробел; `#5` без пробела — не
-# заголовок; отступ 4+ — блок кода.
-_ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,3}(?:[ \t]|$)")
-# Подчёркивание setext: `=`+ (уровень 1) или `-`+ (уровень 2), отступ до
-# трёх пробелов, хвостовые пробелы допустимы. Заголовком оно делает
-# предшествующий абзац; после пустой строки `---` — тематический разрыв.
-_SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
-# Заголовок задачи — строго ATX уровня 3: `### Задача N:` или
-# `### Task N:` (§5.3), с тем же отступом и любыми пробелами/табами между
-# словами. Уровни 1–3 и setext лишь ограничивают раздел; заголовок задачи —
-# только `###`, поэтому `## Task 3:`/`# Задача 3:` и setext `Task 3:`
-# задачей не считаются (хотя и обрывают предыдущий раздел).
-# Номер — только ASCII-цифры: `\d` матчит и `١`, а `int("١") == 1`.
-_TASK_HEADING_RE = re.compile(r"^ {0,3}###[ \t]+(?:Задача|Task)[ \t]+([0-9]+)[ \t]*:")
-# Заголовок внутри цитаты или пункта списка (`> ### …`, `- ## …`, `1. # …`,
-# с любой вложенностью и отступом): рендерится как заголовок, поэтому
-# обрывает раздел, но задачей не бывает — заголовок задачи только верхнего
-# уровня. Отступ перед маркером не ограничен: лишняя граница лишь сужает
-# раздел (fail-closed).
-_CONTAINER_PREFIX = r"[ \t]*(?:(?:>|[-+*]|[0-9]{1,9}[.)])[ \t]*)+"
-_CONTAINER_ATX_RE = re.compile(rf"^{_CONTAINER_PREFIX}#{{1,3}}(?:[ \t]|$)")
-_CONTAINER_SETEXT_RE = re.compile(rf"^{_CONTAINER_PREFIX}(?:=+|-+)[ \t]*$")
-# Определение ссылки или сноски `[метка]: …` (отступ до трёх пробелов) не
-# рендерится на месте: его строка и продолжения до пустой строки или
-# заголовка — не текст раздела. Исключение текста — fail-closed.
-_LINK_DEFINITION_RE = re.compile(r"^ {0,3}\[(?:\\.|[^\\\]])+\]:")
-
-
-def task_sections(plan_text: str) -> Mapping[int, str]:
-    """Разделы задач плана по номеру заголовка (§5.3).
-
-    Заголовок задачи — `### Задача N:` или `### Task N:`; раздел — текст от
-    заголовка до следующего заголовка уровня 1–3 по CommonMark (ATX или
-    setext; `####` раздел не обрывает). Fenced-блоки (`_scan_markup`) из
-    разделов вырезаются целиком, вместе со строками фенса: их строки не
-    заголовки (иначе TOML-комментарий `# ...` читался бы как
-    markdown-заголовок) и не текст раздела — иначе блок покрытия внутри
-    раздела «ссылался» бы на все свои места сам, а место из примера кода
-    засчитывалось бы как ссылка задачи. HTML-комментарии вне фенсов
-    вырезаются так же: они не рендерятся, поэтому их текст — не заголовок,
-    не граница и не текст раздела. То же для HTML-блоков `<script>`/`<pre>`
-    и подобных; определения ссылок — не текст раздела; заголовок в прочем
-    HTML-блоке, цитате или пункте списка — граница, но не задача.
-    """
-    lines = plan_text.splitlines()
-    markup = _scan_markup(lines)
-    visible = markup.visible
-    atx = _atx_headings(markup, _ATX_HEADING_RE)
-    nested = _atx_headings(markup, _CONTAINER_ATX_RE) - atx
-    stops = atx | nested
-    heading_lines = sorted(stops | _setext_headings(markup, stops))
-    excluded = _link_definition_lines(markup, stops)
-    task_headings: dict[int, int] = {}
-    for index in sorted(atx - markup.html_block):
-        task_match = _TASK_HEADING_RE.match(visible[index] or "")
-        if task_match:
-            task_headings[index] = int(task_match.group(1))
-
-    sections: dict[int, str] = {}
-    for heading_index, task_number in task_headings.items():
-        if task_number in sections:
-            raise WiringInputError(
-                f"план: несколько заголовков задачи №{task_number} (§5.3)"
-            )
-        end = next((h for h in heading_lines if h > heading_index), len(lines))
-        sections[task_number] = "\n".join(
-            text
-            for index, text in enumerate(visible[heading_index:end], heading_index)
-            if text is not None and index not in excluded
-        )
-    return sections
-
-
-def _atx_headings(markup: _Markup, pattern: re.Pattern[str]) -> set[int]:
-    """Номера строк, где заголовок возможен и `pattern` его находит."""
-    return {
-        index for index in markup.headable if pattern.match(markup.visible[index] or "")
-    }
-
-
-def _setext_headings(markup: _Markup, stops: set[int]) -> set[int]:
-    """Начала setext-заголовков уровня 1–2: первые строки их абзацев.
-
-    Границей setext-заголовка служит первая строка его абзаца — весь абзац
-    над подчёркиванием и есть текст заголовка (CommonMark). Подчёркивание
-    после пустой строки, заголовка, фенса или HTML-комментария заголовком
-    ничего не делает. Подчёркивание в цитате или пункте списка — тоже
-    граница (`_CONTAINER_SETEXT_RE`).
-    """
-    return {
-        start
-        for index in markup.headable
-        if _SETEXT_UNDERLINE_RE.match(markup.visible[index] or "")
-        or _CONTAINER_SETEXT_RE.match(markup.visible[index] or "")
-        for start in _paragraph_start(markup.visible, index, stops)
-    }
-
-
-def _link_definition_lines(markup: _Markup, headings: set[int]) -> set[int]:
-    """Строки определений ссылок/сносок с продолжениями — не текст раздела.
-
-    Продолжение — следующие непустые строки до пустой строки, фенса или
-    заголовка: на них может стоять адрес или заголовок (`title`)
-    определения. Лишнее исключение только сужает текст раздела.
-    """
-    excluded: set[int] = set()
-    in_definition = False
-    for index, text in enumerate(markup.visible):
-        if text is None or not text.strip() or index in headings:
-            in_definition = False
-            continue
-        if index in markup.headable and _LINK_DEFINITION_RE.match(text):
-            in_definition = True
-        if in_definition:
-            excluded.add(index)
-    return excluded
-
-
-def _paragraph_start(
-    visible: tuple[str | None, ...], underline: int, stops: set[int]
-) -> list[int]:
-    """Начало абзаца прямо над строкой `underline`; пусто — абзаца нет.
-
-    Абзац — подряд идущие непустые видимые строки, не заголовки (`stops`) и
-    не строки фенса (`None`); пустая строка (в том числе целиком занятая
-    комментарием) или остановка над подчёркиванием — абзаца нет.
-    """
-    start = underline
-    while start > 0 and (visible[start - 1] or "").strip() and start - 1 not in stops:
-        start -= 1
-    return [start] if start < underline else []
-
-
-# --- fenced-блоки и HTML-комментарии -----------------------------------------
-
-# Строка фенса: отступ не более 3 пробелов (CommonMark — большим отступом
-# начинается блок кода, а не фенс), затем 3+ одинаковых символа `` ` `` или
-# `~`, затем info-строка. У фенса из обратных кавычек info-строка кавычек не
-# содержит (CommonMark): строка вида ```` ```x``` ```` — инлайн-код, а не
-# фенс.
-_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-# Строка, начатая HTML-комментарием (отступ до трёх пробелов), — HTML-блок
-# типа 2 до строки с `-->` включительно: текст после `-->` на ней же —
-# сырой HTML, а не заголовок (CommonMark).
-_COMMENT_LINE_RE = re.compile(r"^ {0,3}<!--")
-# HTML-блок типа 1 (`<script>`, `<pre>`, `<style>`, `<textarea>`): сырой
-# текст до строки с любым из закрывающих тегов включительно (CommonMark).
-_RAW_HTML_OPEN_RE = re.compile(
-    r"^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.IGNORECASE
-)
-_RAW_HTML_CLOSE_RE = re.compile(r"</(?:script|pre|style|textarea)>", re.IGNORECASE)
-# Прочие HTML-блоки (типы 6–7) — строка с открывающим или закрывающим тегом
-# в начале — тянутся до пустой строки, и markdown в них не разбирается.
-# Шаблон шире CommonMark (тип 7 не прерывает абзац): лишняя строка блока
-# лишь лишает `### Task N:` статуса задачи — fail-closed.
-_HTML_BLOCK_OPEN_RE = re.compile(r"^ {0,3}</?[A-Za-z]")
-_COMMENT_OPEN = "<!--"
-_COMMENT_CLOSE = "-->"
-
-
-@dataclass(frozen=True, slots=True)
-class _Fence:
-    """Fenced-блок: info-строка и строки `[start, end]` включительно.
-
-    `start` — открывающая строка; `end` — закрывающая, а у незакрытого
-    блока — последняя строка документа (`closed = False`).
-    """
-
-    info: str
-    start: int
-    end: int
-    closed: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _Markup:
-    """Разметка документа, которую видит гейт: фенсы и видимый текст строк.
-
-    `visible[i]` — строка `i` без HTML-комментариев (строка HTML-блока
-    типа 1 — пустая), либо `None` для строк fenced-блоков (включая строки
-    фенса). `headable` — строки, которые могут быть заголовком: не начаты
-    внутри комментария и не начаты им, не лежат в HTML-блоке типа 1.
-    `html_block` — строки HTML-блоков типов 6–7: граница раздела в них
-    возможна, заголовок задачи — нет.
-    """
-
-    fences: tuple[_Fence, ...]
-    visible: tuple[str | None, ...]
-    headable: frozenset[int]
-    html_block: frozenset[int]
-
-
-def _scan_markup(lines: list[str]) -> _Markup:
-    """Единственный сканер фенсов и HTML-комментариев модуля.
-
-    Фенсы не вкладываются: внутри открытого блока любая строка — литерал,
-    кроме закрывающей, поэтому `<!--` внутри фенса комментария не
-    открывает. Закрывает блок только строка из символов того же вида
-    (`` ` `` или `~`), не короче открывающей и без info-строки
-    (CommonMark): ```` ``` ```` внутри ```` ```` ```` блок не закрывает.
-    Незакрытый блок тянется до конца документа. Внутри HTML-комментария,
-    наоборот, литерал — строка фенса: она блок не открывает. Незакрытый
-    `<!--` тянется до конца документа (CommonMark, HTML-блок типа 2).
-    """
-    fences: list[_Fence] = []
-    visible: list[str | None] = []
-    headable: set[int] = set()
-    html_block: set[int] = set()
-    in_comment = in_raw = in_html = False
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if in_raw:
-            visible.append("")
-            in_raw = _RAW_HTML_CLOSE_RE.search(line) is None
-            index += 1
-            continue
-        if not in_comment:
-            in_html = in_html and bool(line.strip())
-            opening = _FENCE_RE.match(line)
-            if opening is not None and not _is_inline_code(opening):
-                fence = _fence_at(lines, index, opening)
-                fences.append(fence)
-                visible.extend([None] * (fence.end - fence.start + 1))
-                index = fence.end + 1
-                continue
-            raw = _RAW_HTML_OPEN_RE.match(line)
-            if raw is not None:
-                visible.append("")
-                in_raw = _RAW_HTML_CLOSE_RE.search(line, raw.end()) is None
-                index += 1
-                continue
-            in_html = in_html or _HTML_BLOCK_OPEN_RE.match(line) is not None
-            if not _COMMENT_LINE_RE.match(line):
-                headable.add(index)
-        if in_html:
-            html_block.add(index)
-        text, in_comment = _strip_comments(line, in_comment)
-        visible.append(text)
-        index += 1
-    return _Markup(
-        fences=tuple(fences),
-        visible=tuple(visible),
-        headable=frozenset(headable),
-        html_block=frozenset(html_block),
-    )
-
-
-def _fence_at(lines: list[str], index: int, opening: re.Match[str]) -> _Fence:
-    """Fenced-блок, открытый строкой `index`: до закрывающей или до конца."""
-    marker = opening.group(1)
-    end = next(
-        (j for j in range(index + 1, len(lines)) if _closes(lines[j], marker)),
-        None,
-    )
-    last = end if end is not None else len(lines) - 1
-    info = opening.group(2).strip()
-    return _Fence(info=info, start=index, end=last, closed=end is not None)
-
-
-def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Строка без HTML-комментариев и признак «комментарий открыт после неё».
-
-    Конец комментария ищется с позиции сразу после `<!`, так что `<!-->` и
-    `<!--->` закрываются сразу (CommonMark).
-    """
-    kept: list[str] = []
-    position = 0
-    while True:
-        if in_comment:
-            close = line.find(_COMMENT_CLOSE, position)
-            if close < 0:
-                return "".join(kept), True
-            position = close + len(_COMMENT_CLOSE)
-            in_comment = False
-            continue
-        start = line.find(_COMMENT_OPEN, position)
-        if start < 0:
-            kept.append(line[position:])
-            return "".join(kept), False
-        kept.append(line[position:start])
-        position = start + 2
-        in_comment = True
-
-
-def _scan_fences(lines: list[str]) -> tuple[_Fence, ...]:
-    """Все fenced-блоки документа вне HTML-комментариев (`_scan_markup`)."""
-    return _scan_markup(lines).fences
-
-
-def _is_inline_code(opening: re.Match[str]) -> bool:
-    """Строка из кавычек с кавычкой в info-строке — не фенс (CommonMark)."""
-    return opening.group(1).startswith("`") and "`" in opening.group(2)
-
-
-def _closes(line: str, marker: str) -> bool:
-    """`line` закрывает фенс `marker`: тот же символ, не короче, без info."""
-    closing = _FENCE_RE.match(line)
-    return (
-        closing is not None
-        and closing.group(1)[0] == marker[0]
-        and len(closing.group(1)) >= len(marker)
-        and closing.group(2).strip() == ""
-    )
-
-
-def _find_fenced_blocks(text: str, info: str) -> list[str]:
-    """Содержимое закрытых fenced-блоков с info-строкой ровно `info` (§3.1/§5.1).
-
-    Блоки находит `_scan_fences` — тот же сканер, что вырезает fenced-текст
-    из разделов задач. Блок внутри другого фенса — литеральный текст, а не
-    блок. Незакрытый блок не засчитывается: его граница не определена.
-    """
-    lines = text.splitlines()
-    return [
-        "\n".join(lines[fence.start + 1 : fence.end])
-        for fence in _scan_fences(lines)
-        if fence.closed and fence.info == info
-    ]
-
-
-def _load_block(text: str, info: str, document_name: str) -> dict[str, object]:
+def _load_block(
+    text: str, info: str, document_name: str, reader: PlanReader
+) -> dict[str, object]:
     """Единственный блок `info` документа `text`, разобранный как TOML."""
-    blocks = _find_fenced_blocks(text, info)
+    blocks = reader.fenced_blocks(text, info)
     if len(blocks) == 0:
         raise WiringInputError(
             f"блок `{info}` не найден в {document_name} (ровно один обязателен)"
@@ -1332,13 +1024,14 @@ def check_wiring(
     snapshot: Snapshot,
     src: str,
     dirty: tuple[str, ...],
+    reader: PlanReader,
 ) -> WiringReport:
     """Собирает отчёт гейта wiring в порядке «код `2` старше кода `1`» (§6).
 
     Порядок шагов обязателен:
 
     1. Разбор блока правил спеки, блока покрытия и разделов задач плана
-       (`parse_rules`, `parse_cover`, `task_sections`) — их собственные
+       (`parse_rules`, `parse_cover`, `reader.task_sections`) — их собственные
        предусловия (§3.1, §5.1, §5.3) уже поднимают `WiringInputError`.
        Здесь же — междокументная сверка: `member` записи покрытия для
        объявленного `construct-only-in`, либо его отсутствие для
@@ -1358,9 +1051,9 @@ def check_wiring(
        единственная находка `stale-snapshot`, тем же отбрасыванием.
     6. Иначе — находки покрытия (§5.2, §5.3) над нарушениями шага 3.
     """
-    rules = parse_rules(spec_text)
-    cover_block = parse_cover(plan_text)
-    sections = task_sections(plan_text)
+    rules = parse_rules(spec_text, reader=reader)
+    cover_block = parse_cover(plan_text, reader=reader)
+    sections = reader.task_sections(plan_text)
     rules_by_id = {rule.id: rule for rule in rules}
     _check_cover_member_consistency(cover_block.covers, rules_by_id)
 

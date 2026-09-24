@@ -17,7 +17,7 @@ from disputatio.verifier.doc_gates import (
 )
 from disputatio.verifier.doc_verifier import BASELINE_GATE_NAMES, DocVerifier
 from disputatio.verifier.runner_impl import VerifierRunner
-from disputatio.verifier.wiring import check_wiring, render_report
+from disputatio.verifier.wiring import PlanReader, check_wiring, render_report
 from disputatio.verifier.wiring_snapshot import (
     Snapshot,
     WiringInputError,
@@ -29,6 +29,7 @@ __all__ = [
     "BASELINE_GATE_NAMES",
     "DocVerifier",
     "GateSpec",
+    "PlanReader",
     "Snapshot",
     "VerifierRunner",
     "WiringInputError",

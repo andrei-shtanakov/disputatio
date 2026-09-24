@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from disputatio.plan_markdown import MarkdownPlanReader
 from disputatio.verifier.wiring import (
     Finding,
     Violation,
@@ -36,6 +37,8 @@ from disputatio.verifier.wiring import (
     render_report,
 )
 from disputatio.verifier.wiring_snapshot import read_snapshot, src_fingerprint
+
+READER = MarkdownPlanReader()
 
 SRC = "src"
 
@@ -126,6 +129,7 @@ def _report(historical_repo: Path, plan_text: str) -> WiringReport:
         snapshot=snapshot,
         src=SRC,
         dirty=(),
+        reader=READER,
     )
 
 

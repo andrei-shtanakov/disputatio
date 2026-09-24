@@ -85,6 +85,7 @@ from disputatio.events import (
     bootstrap_session,
     write_config_snapshot,
 )
+from disputatio.plan_markdown import MarkdownPlanReader
 from disputatio.runtime import (
     ConfigError,
     ControlPlaneTampered,
@@ -578,6 +579,7 @@ def cmd_gate_wiring(
             snapshot=snapshot,
             src=args.src,
             dirty=dirty,
+            reader=MarkdownPlanReader(),
         )
     except WiringInputError as exc:
         message = str(exc)

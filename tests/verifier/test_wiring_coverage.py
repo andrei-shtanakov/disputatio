@@ -18,6 +18,7 @@ from collections.abc import Mapping
 
 import pytest
 
+from disputatio.plan_markdown import MarkdownPlanReader
 from disputatio.verifier.wiring import (
     Finding,
     Violation,
@@ -26,6 +27,8 @@ from disputatio.verifier.wiring import (
     render_report,
 )
 from disputatio.verifier.wiring_snapshot import Snapshot, WiringInputError
+
+READER = MarkdownPlanReader()
 
 SRC = "src"
 TREE = "70637371794b53ddc85dffb10624838e53ffb07c"
@@ -109,6 +112,7 @@ def _check(
         snapshot=snapshot,
         src=SRC,
         dirty=dirty,
+        reader=READER,
     )
 
 
@@ -793,6 +797,7 @@ def _site_not_in_task_with_plan(plan_text: str) -> list[Finding]:
         ),
         src=SRC,
         dirty=(),
+        reader=READER,
     )
     assert [f.code for f in report.findings if f.code == "uncovered"] == []
     return [f for f in report.findings if f.code == "site-not-in-task"]
@@ -978,3 +983,85 @@ task = 1
 
     missing = [f for f in report.findings if f.code == "missing-task"]
     assert missing != []
+
+
+# --- видимый текст плана по CommonMark-парсеру (§5.3) --------------------------
+
+# Регрессии локального QA: ручной разбор Markdown «видел» текст, которого
+# читатель в рендере не видит, и засчитывал по нему ссылку — тихий код 0.
+# План разбирает `MarkdownPlanReader` (markdown-it-py, `commonmark`).
+
+_SITE_4 = f"{RUNNER_MODULE}:4"
+
+
+def _plan_with_task(task_text: str) -> str:
+    return f"# План\n\n{_COVER_LINE_4}\n### Задача 1: правка\n\n{task_text}\n"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        pytest.param("- пункт\n  ### Task 1: в пункте\n  правка", id="tight"),
+        pytest.param("- пункт\n\n  ### Task 1: в пункте\n\n ", id="loose"),
+    ],
+)
+def test_task_heading_inside_list_item_is_missing_task(item: str) -> None:
+    """`### Task 1:` в пункте списка — не заголовок задачи: `missing-task`."""
+    plan_text = f"# План\n\n{_COVER_LINE_4}\n{item} {_SITE_4}\n"
+    report = check_wiring(
+        spec_text=_spec(CONSTRUCT_SPEC_BODY),
+        plan_text=plan_text,
+        snapshot=_snapshot(
+            **{
+                POLICY_MODULE: POLICY_SOURCE,
+                COMPOSITION_MODULE: COMPOSITION_SOURCE,
+                RUNNER_MODULE: RUNNER_SOURCE.replace("SECOND = ", "# "),
+            }
+        ),
+        src=SRC,
+        dirty=(),
+        reader=READER,
+    )
+
+    assert [f.code for f in report.findings] == ["missing-task"]
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    [
+        pytest.param(f"> ```\n> {_SITE_4}\n> ```", id="fence-in-quote"),
+        pytest.param(f"> <script>\n> {_SITE_4}\n> </script>", id="script-in-quote"),
+        pytest.param(f"> [n]: {_SITE_4}", id="link-definition-in-quote"),
+        pytest.param(f"> цитата {_SITE_4}", id="quote-paragraph"),
+        pytest.param(f"[hidden\nlabel]: {_SITE_4}", id="multiline-definition"),
+        pytest.param(f'<div data-site="{_SITE_4}"></div>', id="html-attribute"),
+        pytest.param(f'текст <span title="{_SITE_4}">x</span>', id="inline-html"),
+        pytest.param(f"см. [ссылку]({_SITE_4})", id="link-href-only"),
+        pytest.param(f'см. [ссылку](u "{_SITE_4}")', id="link-title-only"),
+        pytest.param(f"![{_SITE_4}](i.png)", id="image-alt"),
+        pytest.param(f"{RUNNER_MODULE}:\n4", id="split-by-softbreak"),
+        pytest.param(f"    {_SITE_4}", id="indented-code"),
+    ],
+)
+def test_invisible_site_is_not_in_task(task_text: str) -> None:
+    """Место, которого читатель не видит как текст раздела, — не ссылка."""
+    findings = _site_not_in_task_with_plan(_plan_with_task(task_text))
+
+    assert [f.site for f in findings] == [_SITE_4]
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    [
+        pytest.param(f"- правка {_SITE_4}", id="list-item"),
+        pytest.param(f"1. шаг\n\n   правка {_SITE_4}", id="list-item-paragraph"),
+        pytest.param(f"[{_SITE_4}](https://x)", id="link-label"),
+        pytest.param(f"[see\n{_SITE_4}](u)", id="multiline-link-label"),
+        pytest.param(f"правка `{_SITE_4}`", id="code-inline"),
+        pytest.param(f"правка {RUNNER_MODULE}:**4**", id="emphasis-glued"),
+        pytest.param(f"#### Подраздел {_SITE_4}", id="level-4-heading"),
+    ],
+)
+def test_visible_site_is_in_task(task_text: str) -> None:
+    """Место в видимом тексте раздела — ссылка есть."""
+    assert _site_not_in_task_with_plan(_plan_with_task(task_text)) == []
