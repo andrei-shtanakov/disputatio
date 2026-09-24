@@ -293,3 +293,71 @@ def test_class_not_found_is_input_error() -> None:
     index = _index({MODULE_PATH: CLASS_METHOD})
     with pytest.raises(WiringInputError, match="Missing"):
         enumerate_violations(index, _rule(function="Missing.check"))
+
+
+# --- неоднозначное определение — тоже код 2 -------------------------------
+
+DUPLICATE_FUNCTION = """\
+def guard(previous, current) -> None:
+    _guard_sessions(previous.spec_sessions, current.spec_sessions)
+
+
+def guard(previous, current) -> None:
+    _guard_sessions(previous.pair_sessions, current.pair_sessions)
+"""
+
+
+def test_duplicate_module_level_function_is_input_error() -> None:
+    index = _index({MODULE_PATH: DUPLICATE_FUNCTION})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard"))
+
+
+DUPLICATE_METHOD = """\
+class Guard:
+    def check(self, previous, current) -> None:
+        _guard_sessions(previous.spec_sessions, current.spec_sessions)
+
+    def check(self, previous, current) -> None:
+        _guard_sessions(previous.pair_sessions, current.pair_sessions)
+"""
+
+
+def test_duplicate_method_in_class_is_input_error() -> None:
+    index = _index({MODULE_PATH: DUPLICATE_METHOD})
+    with pytest.raises(WiringInputError, match="Guard.check"):
+        enumerate_violations(index, _rule(function="Guard.check"))
+
+
+DUPLICATE_CLASS = """\
+class Guard:
+    def check(self, previous, current) -> None:
+        _guard_sessions(previous.spec_sessions, current.spec_sessions)
+
+
+class Guard:
+    def check(self, previous, current) -> None:
+        _guard_sessions(previous.pair_sessions, current.pair_sessions)
+"""
+
+
+def test_duplicate_top_level_class_is_input_error() -> None:
+    index = _index({MODULE_PATH: DUPLICATE_CLASS})
+    with pytest.raises(WiringInputError, match="Guard"):
+        enumerate_violations(index, _rule(function="Guard.check"))
+
+
+DUPLICATE_FUNCTION_ASYNC = """\
+def guard(previous, current) -> None:
+    _guard_sessions(previous.spec_sessions, current.spec_sessions)
+
+
+async def guard(previous, current) -> None:
+    _guard_sessions(previous.pair_sessions, current.pair_sessions)
+"""
+
+
+def test_def_and_async_def_same_name_is_input_error() -> None:
+    index = _index({MODULE_PATH: DUPLICATE_FUNCTION_ASYNC})
+    with pytest.raises(WiringInputError, match="guard"):
+        enumerate_violations(index, _rule(function="guard"))

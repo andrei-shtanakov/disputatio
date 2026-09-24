@@ -696,48 +696,69 @@ def _find_function(tree: ast.Module, rule: EnumerateRule) -> _FunctionNode:
 
     Другая глубина qualname (несколько точек) правилом не поддерживается и
     даёт тот же отказ, что и отсутствующая функция (§3.5: только эти две
-    формы описаны).
+    формы описаны). Несколько определений искомого имени в его области
+    видимости (та же неоднозначность, что и у класса `Class.method`) —
+    тоже `WiringInputError`: Python связывает последнее определение, и
+    молчаливый выбор первого (как у `next`) читает не ту функцию (§3.5).
     """
     parts = rule.function.split(".")
     if len(parts) == 1:
         scope: Iterable[ast.stmt] = tree.body
     elif len(parts) == 2:
         class_name, _ = parts
-        class_node = next(
-            (
-                node
-                for node in tree.body
-                if isinstance(node, ast.ClassDef) and node.name == class_name
-            ),
-            None,
-        )
-        if class_node is None:
-            raise WiringInputError(
-                f"правило {rule.id!r}: в `{rule.module}` нет класса верхнего "
-                f"уровня `{class_name}` (§3.5)"
-            )
-        scope = class_node.body
+        scope = _find_scope_class(tree.body, class_name, rule)
     else:
         raise WiringInputError(
             f"правило {rule.id!r}: `function` {rule.function!r} не "
             "поддерживается — только `f` или `Class.method` (§3.5)"
         )
     func_name = parts[-1]
-    func_node = next(
-        (
-            node
-            for node in scope
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == func_name
-        ),
-        None,
-    )
-    if func_node is None:
+    matches = [
+        node
+        for node in scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == func_name
+    ]
+    if not matches:
         raise WiringInputError(
             f"правило {rule.id!r}: функции `{rule.function}` нет в "
             f"`{rule.module}` (§3.5)"
         )
-    return func_node
+    if len(matches) > 1:
+        raise WiringInputError(
+            f"правило {rule.id!r}: `{rule.function}` в `{rule.module}` "
+            f"определена неоднозначно — {len(matches)} определений в её "
+            "области видимости (§3.5)"
+        )
+    return matches[0]
+
+
+def _find_scope_class(
+    body: list[ast.stmt], class_name: str, rule: EnumerateRule
+) -> list[ast.stmt]:
+    """Тело класса `class_name` верхнего уровня для `Class.method` (§3.5).
+
+    Класса нет, либо он определён несколько раз, — `WiringInputError`:
+    Python связывает последнее определение, а неоднозначный выбор молча
+    читал бы не тот класс.
+    """
+    matches = [
+        node
+        for node in body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    ]
+    if not matches:
+        raise WiringInputError(
+            f"правило {rule.id!r}: в `{rule.module}` нет класса верхнего "
+            f"уровня `{class_name}` (§3.5)"
+        )
+    if len(matches) > 1:
+        raise WiringInputError(
+            f"правило {rule.id!r}: класс `{class_name}` в `{rule.module}` "
+            f"определён неоднозначно — {len(matches)} определений верхнего "
+            "уровня (§3.5)"
+        )
+    return matches[0].body
 
 
 def _checked_members(function: _FunctionNode, rule: EnumerateRule) -> set[str]:
