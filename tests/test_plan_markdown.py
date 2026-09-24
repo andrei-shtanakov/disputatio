@@ -116,6 +116,51 @@ class TestTaskSections:
             READER.task_sections(text)
 
 
+class TestTaskHeadingUnicodeWhitespace:
+    """Пробел в заголовке задачи — любой юникодный, не только `[ \\t]` (§5.3).
+
+    `\\d`-ловушка для номера уже закрыта (`[0-9]+`); здесь — вторая часть
+    грамматики: пробел между словами и вокруг номера. `### Task&nbsp;1:` —
+    заголовок задачи 1 не менее, чем `### Task 1:`, и второй такой заголовок
+    обязан упасть на дубле номера, а не молча пройти кодом `0`.
+    """
+
+    @pytest.mark.parametrize(
+        "space",
+        [
+            pytest.param("&nbsp;", id="nbsp-entity"),
+            pytest.param(" ", id="u+00a0-nbsp"),
+            pytest.param(" ", id="u+2003-em-space"),
+            pytest.param(" ", id="u+202f-narrow-nbsp"),
+        ],
+    )
+    def test_unicode_space_in_heading_triggers_duplicate(self, space: str) -> None:
+        text = (
+            f"### Задача{space}1: первая\nтекст первой\n"
+            f"### Задача{space}1: вторая\nтекст второй\n"
+        )
+
+        with pytest.raises(WiringInputError):
+            READER.task_sections(text)
+
+    @pytest.mark.parametrize(
+        "space",
+        [
+            pytest.param("&nbsp;", id="nbsp-entity"),
+            pytest.param(" ", id="u+00a0-nbsp"),
+            pytest.param(" ", id="u+2003-em-space"),
+            pytest.param(" ", id="u+202f-narrow-nbsp"),
+        ],
+    )
+    def test_single_unicode_space_heading_is_task_one(self, space: str) -> None:
+        text = f"### Задача{space}1: разбор\nтекст задачи\n"
+
+        sections = READER.task_sections(text)
+
+        assert set(sections) == {1}
+        assert "текст задачи" in sections[1]
+
+
 class TestTaskSectionsFences:
     """Fenced-содержимое не входит в текст раздела и не даёт заголовков (§5.3).
 

@@ -23,9 +23,11 @@ from markdown_it.token import Token
 from disputatio.verifier import WiringInputError
 
 # Заголовок задачи: видимый текст заголовка `h3` начинается с
-# `Задача N:`/`Task N:`. Номер — только ASCII-цифры: `\d` матчит и `١`,
+# `Задача N:`/`Task N:`. Пробел между словами и вокруг номера — любой
+# юникодный (str-паттерн `\s` берёт NBSP, em space, narrow NBSP и т. п., не
+# только `[ \t]`, — §5.3). Номер — только ASCII-цифры: `\d` матчит и `١`,
 # а `int("١") == 1`.
-_TASK_TEXT_RE = re.compile(r"[ \t]*(?:Задача|Task)[ \t]+([0-9]+)[ \t]*:")
+_TASK_TEXT_RE = re.compile(r"\s*(?:Задача|Task)\s+([0-9]+)\s*:")
 _TASK_TAG = "h3"
 _BOUNDARY_TAGS = frozenset({"h1", "h2", "h3"})
 # Переводы строки внутри абзаца — один пробел: фрагменты по разные стороны

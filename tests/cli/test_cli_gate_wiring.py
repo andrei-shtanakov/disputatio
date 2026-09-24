@@ -305,6 +305,23 @@ class TestExitCodeTwoCauses:
             capsys, wiring_repo, spec="spec.md", plan="plan.md"
         )
 
+    def test_duplicate_task_number_with_nbsp_in_heading(
+        self, wiring_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`### Task&nbsp;1:` — тоже заголовок задачи 1; дубль ловится (§5.3, §6)."""
+        tree = _tree(wiring_repo)
+        _write(wiring_repo, "spec.md", _spec())
+        plan_text = (
+            _plan(tree)
+            + "\n### Задача 1: первая\nтекст первой\n"
+            + "\n### Задача 1: вторая\nтекст второй\n"
+        )
+        _write(wiring_repo, "plan.md", plan_text)
+
+        _assert_exits_error_one_line(
+            capsys, wiring_repo, spec="spec.md", plan="plan.md"
+        )
+
     def test_unparsable_python_file_under_src(
         self, wiring_repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
