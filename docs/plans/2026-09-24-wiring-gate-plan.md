@@ -160,8 +160,9 @@ def task_sections(plan_text: str) -> Mapping[int, str]: ...
     TOML; неизвестный ключ правила; неизвестный `kind`; нет обязательного
     поля; пустые `allowed`/`checkers`/`members`; повтор `id`; `id` вне
     грамматики (в том числе `P10-policy` с заглавной); `class` без `:` или
-    с точкой в qualname; `member` у `construct-only-in`; нет `member` у
-    `enumerates-all`; `task` < 1 или не целое; нет `src_tree`;
+    с точкой в qualname; `member` не строка; `task` < 1 или не целое; нет
+    `src_tree`. Согласованность `member` с видом правила — междокументная
+    проверка (вид правила живёт в спеке), она в задаче 5;
   - блок с info-строкой `toml` не читается (блок правил не найден →
     ошибка), fenced-блок внутри другого fenced-блока не читается;
   - `task_sections`: заголовки `### Задача 3:` и `### Task 3:` оба
@@ -207,9 +208,14 @@ def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violat
   `Snapshot` из словаря «путь → текст», git не нужен):
   - прямой вызов в модуле определения; `from a import C`; `from a import C
     as D`; `import a; a.C()`; `import a.b as m; m.C()`; реэкспорт через
-    `pkg/__init__.py`; цепочка реэкспортов; модульный алиас в пакете
-    (`pkg/__init__.py`: `from pkg import impl as alias`, вызов
-    `pkg.alias.C()`) — каждое даёт нарушение;
+    `pkg/__init__.py`; цепочка реэкспортов; модульный алиас в пакете в
+    обеих формах — `from pkg import impl as alias` и `import pkg.impl as
+    alias` в `pkg/__init__.py`, вызов `pkg.alias.C()` — каждое даёт
+    нарушение;
+  - повторный ключ в одном запросе: `pkg/__init__.py` содержит `import pkg
+    as self` и `from pkg import impl as alias`, вызов
+    `pkg.self.self.alias.C()` даёт нарушение (звенья повторно проходят
+    `resolve(pkg, self)`, но не вложенно, то есть не циклом);
   - импорт внутри функции даёт привязку;
   - одноимённый класс `C` в другом модуле и внешний `C` нарушения не дают;
   - вызов в файле из `allowed` не нарушение;
@@ -230,8 +236,10 @@ def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violat
   стек на каждый `func`. `ast.parse(блоб_байты, filename=путь)` — кодировка
   по PEP 263 делает сам `ast`; `SyntaxError`/`ValueError` →
   `WiringInputError` с именем файла.
-- [ ] **Шаг 3:** мутация — отсечение циклов по накопленному множеству
-  вместо активного стека → тест модульного алиаса краснеет; записать.
+- [ ] **Шаг 3:** мутация — отсечение по накопленному множеству вместо
+  активного стека → краснеет тест `pkg.self.self.alias.C()` (второй проход
+  `resolve(pkg, self)` отсекается как повтор); тест независимости разных
+  запросов — отдельная мутация: общий стек на весь модуль. Записать обе.
 - [ ] **Шаг 4:** ruff, pyrefly, suite; коммит
   `feat(verifier): правило construct-only-in`.
 
@@ -317,9 +325,23 @@ def check_wiring(
 def render_report(report: WiringReport) -> list[str]: ...
 ```
 
-`check_wiring` — точка сборки: разбор блоков → при `dirty` находки
-`dirty-src` и выход → при несовпадении `src_tree` с `snapshot.tree` находка
-`stale-snapshot` и выход → индекс → нарушения обоих правил → покрытие.
+`check_wiring` — точка сборки. Порядок следует §6 «код `2` старше кода
+`1`»: сначала **все** проверки пригодности, и только потом находки.
+
+1. Разбор блоков и разделов задач (задача 2); сверка `member` записи с
+   видом объявленного правила: `member` у `construct-only-in` или его
+   отсутствие у `enumerates-all` → `WiringInputError`. Запись с
+   необъявленным `rule` здесь не ошибка — это будущий `dangling-cover`.
+2. Индекс снимка: разбор всех `.py` (задача 3).
+3. Пригодность правил против индекса: модуль и класс верхнего уровня,
+   пути `allowed`, модуль и функция `enumerates-all`, звёздочные и
+   относительные импорты — всё, что даёт код `2`.
+4. `dirty` непуст → находки `dirty-src`, выход.
+5. `src_tree` ≠ `snapshot.tree` → находка `stale-snapshot`, выход.
+6. Нарушения обоих правил → покрытие → находки.
+
+Индекс строится из объектов `HEAD`, поэтому шаги 2–3 осмысленны и при
+грязном `src`.
 
 - [ ] **Шаг 1: red-тесты** (синтетические деревья и планы):
   - каждая из пяти находок §5.3 порождается своим минимальным входом;
@@ -329,6 +351,14 @@ def render_report(report: WiringReport) -> list[str]: ...
     `enumerates-all` — `site` в разделе есть, `member` нет;
   - `dirty` непуст → только `dirty-src`, покрытие не вычисляется;
     отпечаток расходится → только `stale-snapshot`;
+  - **код `2` старше `1`:** каждое из сочетаний даёт `WiringInputError`, а
+    не `dirty-src`/`stale-snapshot` — грязный `src` плюс неразбираемый
+    `.py`; грязный `src` плюс отсутствующий класс правила; устаревший
+    отпечаток плюс отсутствующий путь `allowed`; устаревший отпечаток плюс
+    повтор номера задачи;
+  - `member` у записи для `construct-only-in` и его отсутствие у записи
+    для `enumerates-all` → `WiringInputError`; запись с необъявленным
+    `rule` → `dangling-cover`;
   - `Unverifiable` → находка `unverifiable`; запись покрытия на это место
     — `dangling-cover`, а не покрытие;
   - `render_report`: строки отсортированы по `(код, rule, site, member)`,
@@ -359,8 +389,9 @@ def render_report(report: WiringReport) -> list[str]: ...
   - код `2` старше `1`: битый блок правил при грязном `src` → `2`;
   - гейт ничего не пишет: `git status --porcelain --ignored` до и после
     совпадает, каталог `.disputatio/` не создаётся;
-  - **подключение**: `run_gate(GateSpec("wiring", f"{disp} gate wiring
-    …"), repo)`, где `disp = Path(sys.executable).parent / "disp"` —
+  - **подключение**: `run_gate(GateSpec("wiring", shlex.join([str(disp),
+    "gate", "wiring", …])), repo)` — `shlex.join`, потому что `run_gate`
+    разбирает команду `shlex.split`, а путь может содержать пробелы; где `disp = Path(sys.executable).parent / "disp"` —
     entry point той же установки, что гоняет тесты, даёт `pass` на
     покрытом дереве и `fail` на непокрытом, `exit_code` не `None`, то
     есть не `skip`. Абсолютный путь делает тест независимым от `PATH` и
@@ -368,8 +399,12 @@ def render_report(report: WiringReport) -> list[str]: ...
     с интерпретатором — провал теста, а не `skip`.
 - [ ] **Шаг 2: реализация.** Подпарсер `gate` с обязательной
   подкомандой `wiring`; аргументы `--spec`, `--plan`, `--src` (по умолчанию
-  `src`), `--root` (по умолчанию `.`), `set_defaults(journal=False)` —
-  гейт не пишет журнал ошибок в чужую ленту. Обработчик: чтение `--spec` и
+  `src`), `--root` (по умолчанию `.`),
+  `set_defaults(handler=cmd_gate_wiring, journal=False)` — гейт не пишет
+  журнал ошибок в чужую ленту. Обработчик — по протоколу `main`
+  (`cli.py:178–180`): `cmd_gate_wiring(args: argparse.Namespace, *, now:
+  Callable[[], datetime], journal: _ErrorJournal) -> int`, оба
+  keyword-аргумента не используются. Обработчик: чтение `--spec` и
   `--plan` как UTF-8 (ошибка чтения/декодирования → `WiringInputError`) →
   `read_snapshot` → `dirty_src_paths` → `check_wiring` → печать
   `render_report` → `0`, если находок нет, иначе `1`. `WiringInputError`
@@ -386,7 +421,8 @@ def render_report(report: WiringReport) -> list[str]: ...
 
 **Файлы:**
 - Create: `tests/fixtures/wiring/src-23c9297.tar.gz` — `git archive
-  --format=tar.gz 23c929776192e82e7463dd204743dd484694bc8d src`
+  --format=tar.gz --output=tests/fixtures/wiring/src-23c9297.tar.gz
+  23c929776192e82e7463dd204743dd484694bc8d src`
 - Create: `tests/fixtures/wiring/README.md` — происхождение архива и
   команда пересборки
 - Create: `tests/verifier/test_wiring_acceptance.py`
