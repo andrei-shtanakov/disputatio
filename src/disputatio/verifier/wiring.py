@@ -19,17 +19,23 @@
 Отдельно — `task_sections` (§5.3): заголовки задач плана (`### Задача N:` /
 `### Task N:`) и границы их разделов, нужные для проверки «раздел задачи
 ссылается на место нарушения».
+
+Вторая часть модуля — индекс модулей снимка (`build_index`) и правило
+`construct-only-in` (`construct_violations`, §3.2): статическое разрешение
+имён по снимку (§3.4) через множества объектов, с отсечением циклов по
+активному стеку обхода.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
-from disputatio.verifier.wiring_snapshot import WiringInputError
+from disputatio.verifier.wiring_snapshot import Snapshot, WiringInputError
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,3 +403,323 @@ def _parse_cover_entry(raw: object, index: int) -> Cover:
             f"{context}: `task` обязан быть целым числом ≥ 1: {task!r} (§5.1)"
         )
     return Cover(rule=rule, site=site, member=member, task=task)
+
+
+# --- Индекс модулей и `construct-only-in` (§3.2, §3.4) -------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Violation:
+    """Нарушение правила: место `путь:строка`, член и число вызовов (§3.2, §3.5)."""
+
+    rule: str
+    kind: str
+    site: str
+    member: str | None
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassRef:
+    """Объект разрешения «класс снимка» `module:name`."""
+
+    module: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleRef:
+    """Объект разрешения «модуль» (источник привязки — и модуль вне снимка)."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _External:
+    """Объект разрешения «внешний»: всё, чего нет в снимке."""
+
+
+@dataclass(frozen=True, slots=True)
+class _MemberRef:
+    """Источник привязки «член `(module, name)`» — `from module import name`."""
+
+    module: str
+    name: str
+
+
+_Resolved = _ClassRef | _ModuleRef | _External
+_Source = _ClassRef | _ModuleRef | _MemberRef
+
+_EXTERNAL = _External()
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleEntry:
+    """Модуль снимка: путь, AST и привязки «имя → источники» (§3.4).
+
+    Namespace-пакет — путь каталога, `tree = None` и пустые привязки.
+    """
+
+    path: str
+    tree: ast.Module | None
+    bindings: Mapping[str, tuple[_Source, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleIndex:
+    """Индекс снимка под `--src`: модульное имя → запись; строится один раз."""
+
+    modules: Mapping[str, ModuleEntry]
+    files: AbstractSet[str]
+
+
+def build_index(snapshot: Snapshot, src: str) -> ModuleIndex:
+    """Индекс модулей снимка под `src` (§3.4, §4 «Разбор исходников»).
+
+    Разбираются все `.py`-файлы под `src`; файлы вне него (например,
+    `tests/`) не анализируются. Файл, который не декодируется или не
+    разбирается, звёздочный импорт модуля снимка и относительный импорт
+    за корень `src` — `WiringInputError` с именем файла.
+    """
+    prefix = src.rstrip("/") + "/"
+    paths = sorted(path for path in snapshot.files if path.startswith(prefix))
+    trees = {path: _parse_source(path, snapshot.files[path]) for path in paths}
+    names = {path: _module_name(path[len(prefix) :]) for path in paths}
+    packages = {path for path in paths if path.endswith("/__init__.py")}
+    known = set(names.values()) | _namespace_names(names.values())
+    modules: dict[str, ModuleEntry] = {}
+    for name in sorted(known - set(names.values())):
+        modules[name] = ModuleEntry(
+            path=prefix + name.replace(".", "/"), tree=None, bindings={}
+        )
+    for path in paths:
+        name = names[path]
+        package = name if path in packages else name.rpartition(".")[0]
+        bindings = _collect_bindings(trees[path], name, package, path, known)
+        modules[name] = ModuleEntry(path=path, tree=trees[path], bindings=bindings)
+    return ModuleIndex(modules=modules, files=frozenset(paths))
+
+
+def construct_violations(index: ModuleIndex, rule: ConstructRule) -> list[Violation]:
+    """Нарушения `construct-only-in`: строки с вызовами класса вне `allowed` (§3.2).
+
+    Сначала проверяется пригодность правила снимку: модуль класса есть,
+    в нём есть класс верхнего уровня с этим именем, каждый путь `allowed`
+    есть в снимке — иначе `WiringInputError`. Несколько вызовов на одной
+    строке дают одно нарушение с `count`.
+    """
+    _check_construct_rule(index, rule)
+    target = _ClassRef(rule.class_module, rule.class_name)
+    allowed = set(rule.allowed)
+    violations: list[Violation] = []
+    for name, entry in sorted(index.modules.items(), key=lambda kv: kv[1].path):
+        if entry.tree is None or entry.path in allowed:
+            continue
+        counts: dict[int, int] = {}
+        for node in ast.walk(entry.tree):
+            if isinstance(node, ast.Call) and target in _resolve_func(
+                index, name, node.func
+            ):
+                counts[node.lineno] = counts.get(node.lineno, 0) + 1
+        violations.extend(
+            Violation(
+                rule=rule.id,
+                kind=_CONSTRUCT_ONLY_IN,
+                site=f"{entry.path}:{line}",
+                member=None,
+                count=count,
+            )
+            for line, count in sorted(counts.items())
+        )
+    return violations
+
+
+def _check_construct_rule(index: ModuleIndex, rule: ConstructRule) -> None:
+    """Предусловия `construct-only-in` (§3.2); нарушение — `WiringInputError`."""
+    entry = index.modules.get(rule.class_module)
+    if entry is None:
+        raise WiringInputError(
+            f"правило {rule.id!r}: модуля класса `{rule.class_module}` "
+            "нет в снимке (§3.2)"
+        )
+    top_classes = (
+        set()
+        if entry.tree is None
+        else {n.name for n in entry.tree.body if isinstance(n, ast.ClassDef)}
+    )
+    if rule.class_name not in top_classes:
+        raise WiringInputError(
+            f"правило {rule.id!r}: в `{entry.path}` нет класса верхнего уровня "
+            f"`{rule.class_name}` (§3.2)"
+        )
+    for path in rule.allowed:
+        if path not in index.files:
+            raise WiringInputError(
+                f"правило {rule.id!r}: путь `allowed` {path!r} "
+                "отсутствует в снимке (§3.2)"
+            )
+
+
+def _parse_source(path: str, data: bytes) -> ast.Module:
+    """AST файла снимка; кодировку по PEP 263 определяет сам `ast.parse`."""
+    try:
+        return ast.parse(data, filename=path)
+    except (SyntaxError, ValueError) as exc:
+        raise WiringInputError(f"файл снимка не разбирается: {path}: {exc}") from exc
+
+
+def _module_name(relpath: str) -> str:
+    """Модульное имя по пути от `--src`; `__init__.py` даёт имя пакета."""
+    parts = relpath[: -len(".py")].split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _namespace_names(module_names: Iterable[str]) -> set[str]:
+    """Все пакеты-предки модулей: каталоги под `--src` на любой глубине."""
+    prefixes: set[str] = set()
+    for name in module_names:
+        parts = name.split(".")
+        prefixes.update(".".join(parts[:i]) for i in range(1, len(parts)))
+    return prefixes
+
+
+def _collect_bindings(
+    tree: ast.Module,
+    module: str,
+    package: str,
+    path: str,
+    known: AbstractSet[str],
+) -> dict[str, tuple[_Source, ...]]:
+    """Привязки модуля со всего дерева, включая тела функций и классов (§3.4)."""
+    bindings: dict[str, list[_Source]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            bindings.setdefault(node.name, []).append(_ClassRef(module, node.name))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname is not None:
+                    bound, source = alias.asname, alias.name
+                else:
+                    bound = source = alias.name.partition(".")[0]
+                bindings.setdefault(bound, []).append(_ModuleRef(source))
+        elif isinstance(node, ast.ImportFrom):
+            origin = _import_origin(node, package, path)
+            for alias in node.names:
+                if alias.name == "*":
+                    if origin in known:
+                        raise WiringInputError(
+                            f"{path}:{node.lineno}: `from {origin} import *` "
+                            "из модуля снимка не поддерживается (§3.4)"
+                        )
+                    continue
+                bound = alias.asname or alias.name
+                bindings.setdefault(bound, []).append(_MemberRef(origin, alias.name))
+    return {name: tuple(sources) for name, sources in bindings.items()}
+
+
+def _import_origin(node: ast.ImportFrom, package: str, path: str) -> str:
+    """Абсолютное имя модуля `from`-импорта; относительный — от пакета модуля."""
+    if node.level == 0:
+        return node.module or ""
+    parts = package.split(".") if package else []
+    if node.level > len(parts):
+        raise WiringInputError(
+            f"{path}:{node.lineno}: относительный импорт выходит за корень "
+            "`--src` (§3.4)"
+        )
+    base = parts[: len(parts) - node.level + 1]
+    if node.module:
+        base.append(node.module)
+    return ".".join(base)
+
+
+def _resolve_func(
+    index: ModuleIndex, module: str, func: ast.expr
+) -> frozenset[_Resolved]:
+    """Разрешение `func` вызова — самостоятельный запрос с новым стеком (§3.4)."""
+    chain: list[str] = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        chain.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return frozenset()
+    resolver = _Resolver(index)
+    current = resolver.resolve(module, node.id)
+    for attr in reversed(chain):
+        current = resolver.attribute(current, attr)
+    return current
+
+
+_Key = tuple[str, str, str]
+
+
+class _Resolver:
+    """Обход `resolve`/`member` одного запроса; циклы — по активному стеку.
+
+    Ключ обхода — `(операция, модуль, имя)`. Повторный вход в ключ, который
+    лежит в активном стеке, даёт пустое множество; ключ снимается со
+    стека при возврате, поэтому последовательный повтор ключа (звенья
+    `pkg.self.self`) циклом не считается.
+    """
+
+    def __init__(self, index: ModuleIndex) -> None:
+        self._index = index
+        self._active: set[_Key] = set()
+
+    def attribute(
+        self, objects: frozenset[_Resolved], attr: str
+    ) -> frozenset[_Resolved]:
+        """Звено атрибута: `member(X, attr)` по модулям; прочее — внешний."""
+        result: set[_Resolved] = set()
+        for obj in objects:
+            if isinstance(obj, _ModuleRef):
+                result |= self.member(obj.name, attr)
+            else:
+                result.add(_EXTERNAL)
+        return frozenset(result)
+
+    def resolve(self, module: str, name: str) -> frozenset[_Resolved]:
+        """`resolve(M, n)`: объединение по всем источникам имени `n` в `M`."""
+        return self._guarded(("resolve", module, name), self._resolve)
+
+    def member(self, module: str, name: str) -> frozenset[_Resolved]:
+        """`member(X, N)`: что значит `X.N`; пусто или вне снимка — внешний."""
+        return self._guarded(("member", module, name), self._member)
+
+    def _guarded(
+        self, key: _Key, step: Callable[[str, str], frozenset[_Resolved]]
+    ) -> frozenset[_Resolved]:
+        if key in self._active:
+            return frozenset()
+        self._active.add(key)
+        try:
+            return step(key[1], key[2])
+        finally:
+            self._active.discard(key)
+
+    def _resolve(self, module: str, name: str) -> frozenset[_Resolved]:
+        entry = self._index.modules.get(module)
+        sources = () if entry is None else entry.bindings.get(name, ())
+        result: set[_Resolved] = set()
+        for source in sources:
+            if isinstance(source, _MemberRef):
+                result |= self.member(source.module, source.name)
+            elif isinstance(source, _ModuleRef):
+                known = source.name in self._index.modules
+                result.add(source if known else _EXTERNAL)
+            else:
+                result.add(source)
+        return frozenset(result)
+
+    def _member(self, module: str, name: str) -> frozenset[_Resolved]:
+        if module not in self._index.modules:
+            return frozenset({_EXTERNAL})
+        result = set(self.resolve(module, name))
+        submodule = f"{module}.{name}"
+        if submodule in self._index.modules:
+            result.add(_ModuleRef(submodule))
+        return frozenset(result or {_EXTERNAL})
