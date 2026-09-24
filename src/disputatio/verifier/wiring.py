@@ -542,9 +542,11 @@ def enumerate_violations(
     и не опровергнут, гейт не выносит суждения.
     """
     path, tree = _find_enumerate_module(index, rule)
-    function = _find_function(tree, rule)
+    function, owner = _find_function(tree, rule)
     site = f"{path}:{function.lineno}"
     try:
+        if owner is not None:
+            _check_owner_class(owner)
         checked = _checked_members(function, rule)
     except _UnsupportedBody as exc:
         return Unverifiable(rule=rule.id, site=site, reason=exc.reason)
@@ -571,29 +573,79 @@ def _find_enumerate_module(
     )
 
 
-def _find_function(tree: ast.Module, rule: EnumerateRule) -> _FunctionNode:
-    """Функция по qualname `rule.function`: `f` — верхнего уровня, `Class.method`.
+def _find_function(
+    tree: ast.Module, rule: EnumerateRule
+) -> tuple[_FunctionNode, ast.ClassDef | None]:
+    """Функция по qualname `rule.function` и её класс (`None` для `f`).
 
+    `f` — верхнего уровня, `Class.method` — метод класса верхнего уровня.
     Другая глубина qualname (несколько точек) правилом не поддерживается и
     даёт тот же отказ, что и отсутствующая функция (§3.5: только эти две
     формы описаны). Искомое имя обязано быть привязано в своей области
     видимости ровно одним безусловным определением (`_single_definition`);
-    иначе — тоже `WiringInputError` (§3.5).
+    для `Class.method` атрибут `Class.method` к тому же не перепривязан в
+    области модуля (`_check_attribute_rebinding`); иначе — `WiringInputError`
+    (§3.5).
     """
     parts = rule.function.split(".")
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef)
     if len(parts) == 1:
-        scope = tree.body
-    elif len(parts) == 2:
-        class_node = _single_definition(tree.body, parts[0], ast.ClassDef, rule)
-        scope = class_node.body
-    else:
+        return _single_definition(tree.body, parts[0], kinds, rule), None
+    if len(parts) != 2:
         raise WiringInputError(
             f"правило {rule.id!r}: `function` {rule.function!r} не "
             "поддерживается — только `f` или `Class.method` (§3.5)"
         )
-    return _single_definition(
-        scope, parts[-1], (ast.FunctionDef, ast.AsyncFunctionDef), rule
-    )
+    class_node = _single_definition(tree.body, parts[0], ast.ClassDef, rule)
+    function = _single_definition(class_node.body, parts[1], kinds, rule)
+    _check_attribute_rebinding(tree.body, parts[0], parts[1], rule)
+    return function, class_node
+
+
+def _check_attribute_rebinding(
+    body: list[ast.stmt], class_name: str, method: str, rule: EnumerateRule
+) -> None:
+    """Отказ, если атрибут `class_name.method` перепривязан в области `body`.
+
+    Цель присваивания (в том числе аннотированного и составного), `del`,
+    цель `for`/`with` вида `Class.method` в области модуля (обход — тот же,
+    что у `_scope_bindings`) подменяет разобранный метод — код 2 (§3.5).
+    Мутация из тел функций, `setattr` и чужих модулей — объявленная
+    граница, не отслеживается.
+    """
+    for node in _scope_nodes(body):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and node.attr == method
+            and isinstance(node.value, ast.Name)
+            and node.value.id == class_name
+        ):
+            raise WiringInputError(
+                f"правило {rule.id!r}: атрибут `{class_name}.{method}` "
+                f"перепривязан в `{rule.module}` (строка {node.lineno}) — "
+                "разобранное тело метода не то, что связано с классом (§3.5)"
+            )
+
+
+def _check_owner_class(class_node: ast.ClassDef) -> None:
+    """`_UnsupportedBody`, если класс может подменить свой метод (§3.5).
+
+    Декоратор класса и метакласс (`metaclass=` или распаковка `**` в
+    операторе `class`, которая может его нести) исполняются после тела
+    класса и вправе заменить метод: с `Class.method` связано уже не
+    разобранное тело.
+    """
+    if class_node.decorator_list:
+        raise _UnsupportedBody(
+            "класс под декоратором: декоратор класса может подменить метод, "
+            "с `Class.method` связано не разобранное тело (§3.5)"
+        )
+    if any(keyword.arg in (None, "metaclass") for keyword in class_node.keywords):
+        raise _UnsupportedBody(
+            "класс с метаклассом (`metaclass=` или `**` в операторе `class`): "
+            "метакласс может подменить метод (§3.5)"
+        )
 
 
 def _single_definition[T: ast.stmt](

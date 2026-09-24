@@ -12,10 +12,13 @@
 прямо из словаря «путь → текст».
 """
 
+import subprocess
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
+from disputatio.cli import EXIT_FAILED, main
 from disputatio.verifier.wiring import (
     EnumerateRule,
     ModuleIndex,
@@ -588,3 +591,161 @@ def test_decorated_target_is_unverifiable(
     assert isinstance(result, Unverifiable)
     assert result.site == f"{MODULE_PATH}:{line}"
     assert "декоратор" in result.reason
+
+
+# --- объемлющий класс `Class.method`: декоратор, метакласс, перепривязка -----
+
+# Декоратор класса или метакласс может подменить метод после разбора тела:
+# с `Guard.check` связан уже не разобранный `def`. Гейт не выносит суждения —
+# `Unverifiable` (§3.5). Присваивание/`del` атрибута `Guard.check` в области
+# модуля — перепривязка, как и прочие, код 2 (§3.5).
+
+CLASS_REPLACED_BY_DECORATOR = """\
+def replace(cls):
+    cls.check = lambda self, p: None
+    return cls
+
+
+@replace
+class Guard:
+    def check(self, p):
+        _check(p.a)
+"""
+
+CLASS_WITH_METACLASS = """\
+class M(type):
+    pass
+
+
+class Guard(metaclass=M):
+    def check(self, p):
+        _check(p.a)
+"""
+
+CLASS_WITH_KWARGS_UNPACK = """\
+class Guard(**options):
+    def check(self, p):
+        _check(p.a)
+"""
+
+UNDECORATED_CLASS = """\
+class Guard:
+    def check(self, p):
+        _check(p.a)
+"""
+
+
+def _class_rule(members: tuple[str, ...] = ("a",)) -> EnumerateRule:
+    return _rule(function="Guard.check", checkers=("_check",), members=members)
+
+
+@pytest.mark.parametrize(
+    ("source", "line", "reason"),
+    [
+        pytest.param(CLASS_REPLACED_BY_DECORATOR, 8, "декоратор", id="decorator"),
+        pytest.param(CLASS_WITH_METACLASS, 6, "метакласс", id="metaclass"),
+        pytest.param(CLASS_WITH_KWARGS_UNPACK, 2, "метакласс", id="kwargs-unpack"),
+    ],
+)
+def test_class_hook_on_enclosing_class_is_unverifiable(
+    source: str, line: int, reason: str
+) -> None:
+    index = _index({MODULE_PATH: source})
+    result = enumerate_violations(index, _class_rule())
+    assert isinstance(result, Unverifiable)
+    assert result.site == f"{MODULE_PATH}:{line}"
+    assert reason in result.reason
+
+
+def test_undecorated_class_still_yields_violation() -> None:
+    """Позитивный контроль: обычный класс без перепривязки разбирается."""
+    index = _index({MODULE_PATH: UNDECORATED_CLASS})
+    assert _missing(index, _class_rule(members=("a", "b"))) == [
+        Violation(
+            rule="r",
+            kind="enumerates-all",
+            site=f"{MODULE_PATH}:2",
+            member="b",
+            count=1,
+        )
+    ]
+
+
+ATTRIBUTE_REBINDINGS = {
+    "assign": "Guard.check = print\n",
+    "assign-under-if": "if True:\n    Guard.check = print\n",
+    "del": "del Guard.check\n",
+    "annotated": "Guard.check: object = print\n",
+    "augmented": "Guard.check += print\n",
+    "tuple-target": "Guard.check, other = print, print\n",
+    "for-target": "for Guard.check in ():\n    pass\n",
+    "with-target": "with ctx() as Guard.check:\n    pass\n",
+}
+
+
+@pytest.mark.parametrize(
+    "tail", ATTRIBUTE_REBINDINGS.values(), ids=ATTRIBUTE_REBINDINGS
+)
+def test_attribute_rebinding_of_class_method_is_input_error(tail: str) -> None:
+    index = _index({MODULE_PATH: UNDECORATED_CLASS + tail})
+    with pytest.raises(WiringInputError, match=r"Guard\.check"):
+        enumerate_violations(index, _class_rule())
+
+
+def test_attribute_rebinding_in_nested_scope_is_not_detected() -> None:
+    """Граница (§3.5): мутация из тела функции — динамика, гейт её не видит."""
+    source = UNDECORATED_CLASS + "def patch():\n    Guard.check = print\n"
+    index = _index({MODULE_PATH: source})
+    assert _missing(index, _class_rule()) == []
+
+
+def test_other_attribute_assignment_is_not_rebinding() -> None:
+    source = UNDECORATED_CLASS + "Guard.other = print\nOther.check = print\n"
+    index = _index({MODULE_PATH: source})
+    assert _missing(index, _class_rule()) == []
+
+
+def test_method_rebinding_inside_class_body_is_input_error() -> None:
+    source = UNDECORATED_CLASS + "    check = print\n"
+    index = _index({MODULE_PATH: source})
+    with pytest.raises(WiringInputError, match="check"):
+        enumerate_violations(index, _class_rule())
+
+
+def test_cli_decorated_enclosing_class_exits_failed(
+    git_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Сквозь CLI: подменённый декоратором класса метод — `unverifiable`, код 1."""
+    module = git_repo / "src" / "m.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(CLASS_REPLACED_BY_DECORATOR, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "src"], cwd=git_repo, check=True)
+    tree = subprocess.run(
+        ["git", "rev-parse", "HEAD:src"],
+        cwd=git_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    rule_body = (
+        '[[rule]]\nid = "r"\nkind = "enumerates-all"\nmodule = "src/m.py"\n'
+        'function = "Guard.check"\ncheckers = ["_check"]\nmembers = ["a"]\n'
+    )
+    (git_repo / "spec.md").write_text(
+        f"# Спека\n\n```disputatio-wiring\n{rule_body}```\n", encoding="utf-8"
+    )
+    (git_repo / "plan.md").write_text(
+        f'# План\n\n```disputatio-wiring-cover\nsrc_tree = "{tree}"\n```\n',
+        encoding="utf-8",
+    )
+
+    code = main(
+        ["gate", "wiring", "--spec", "spec.md", "--plan", "plan.md"]
+        + ["--root", str(git_repo)]
+    )
+
+    assert code == EXIT_FAILED
+    out = capsys.readouterr().out
+    assert "unverifiable" in out
+    assert "src/m.py:8" in out
