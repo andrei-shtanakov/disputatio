@@ -771,3 +771,102 @@ class TestFenceScannerForBlocks:
 
         with pytest.raises(WiringInputError):
             parse_rules(text)
+
+
+class TestTaskSectionsHtmlComments:
+    """HTML-комментарий вне фенса не рендерится — не заголовок и не текст (§5.3).
+
+    Комментарий, блочный или встроенный, вырезается до поиска заголовков и
+    сборки текста раздела; незакрытый `<!--` тянется до конца документа
+    (CommonMark, HTML-блок типа 2). Иначе невидимый `### Task N:` создавал бы
+    задачу, а невидимое место засчитывалось бы ссылкой — тихий код 0.
+    """
+
+    def test_task_heading_inside_block_comment_is_not_task(self) -> None:
+        text = "<!--\n### Task 1: скрытая\nsrc/pkg/guard.py:1 b\n-->\n"
+
+        assert task_sections(text) == {}
+
+    def test_unclosed_comment_hides_rest_of_document(self) -> None:
+        text = "### Задача 1: видимая\nтело\n<!--\n### Task 2: скрытая\nsrc/x.py:1\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {1}
+        assert "src/x.py:1" not in sections[1]
+
+    def test_site_inside_comment_is_not_section_text(self) -> None:
+        text = (
+            "### Задача 1: разбор\n"
+            "видимый текст <!-- src/pkg/a.py:3 --> и хвост\n"
+            "<!--\nsrc/pkg/b.py:4\n-->\n"
+            "после комментария\n"
+        )
+
+        section = task_sections(text)[1]
+
+        assert "src/pkg/a.py:3" not in section
+        assert "src/pkg/b.py:4" not in section
+        assert "видимый текст" in section
+        assert "и хвост" in section
+        assert "после комментария" in section
+
+    def test_hidden_heading_is_not_a_boundary(self) -> None:
+        """Невидимый заголовок раздел не обрывает: текст под ним — задачи 1."""
+        text = "### Задача 1: разбор\n<!--\n## Скрыто\n-->\nтекст задачи 1\n"
+
+        assert "текст задачи 1" in task_sections(text)[1]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("<!-- x -->### Task 2: мнимая", id="after-inline"),
+            pytest.param("<!-- x --> ### Task 2: мнимая", id="after-inline-space"),
+            pytest.param("   <!-- x -->### Task 2: мнимая", id="indented"),
+            pytest.param("<!---->### Task 2: мнимая", id="empty-comment"),
+            pytest.param("<!-->### Task 2: мнимая", id="short-comment"),
+        ],
+    )
+    def test_line_starting_with_comment_is_not_heading(self, line: str) -> None:
+        """Строка, начатая `<!--`, — HTML-блок до конца строки, не заголовок."""
+        text = f"### Задача 1: разбор\n{line}\n"
+
+        assert set(task_sections(text)) == {1}
+
+    @pytest.mark.parametrize("comment", ["<!-->", "<!--->", "<!---->"])
+    def test_short_comment_closes_immediately(self, comment: str) -> None:
+        """`<!-->` и `<!--->` — законченные комментарии (CommonMark)."""
+        text = f"### Задача 1: разбор\n{comment}\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" in task_sections(text)[1]
+
+    def test_line_ending_comment_is_not_heading(self) -> None:
+        text = "### Задача 1: разбор\n<!--\nскрыто\n--> ### Task 2: мнимая\n"
+
+        assert set(task_sections(text)) == {1}
+
+    def test_heading_with_trailing_inline_comment_is_task(self) -> None:
+        text = "### Task 3: разбор <!-- заметка -->\nтело задачи 3\n"
+
+        sections = task_sections(text)
+
+        assert set(sections) == {3}
+        assert "заметка" not in sections[3]
+
+    def test_comment_marker_inside_fence_is_literal(self) -> None:
+        text = "### Задача 1: разбор\n```html\n<!--\n```\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" in task_sections(text)[1]
+
+    def test_fence_inside_comment_is_not_block(self) -> None:
+        """Единственный блок внутри комментария — не блок: код 2."""
+        text = "<!--\n```disputatio-wiring\n" + EXAMPLE_RULES_BODY + "```\n-->\n"
+
+        with pytest.raises(WiringInputError, match="не найден"):
+            parse_rules(text)
+
+    def test_fence_inside_comment_does_not_hide_following_text(self) -> None:
+        """Открытая в комментарии «ограда» фенсом не считается и прозу не ест."""
+        text = "### Задача 1: разбор\n<!--\n```\n-->\nsrc/pkg/a.py:3\n"
+
+        assert "src/pkg/a.py:3" in task_sections(text)[1]

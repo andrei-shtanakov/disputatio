@@ -955,3 +955,26 @@ def test_member_inside_longer_word_is_not_a_link(mention: str) -> None:
 def test_member_with_punctuation_around_is_a_link(mention: str) -> None:
     """Член в кавычках, скобках, как атрибут — ссылка есть (§5.3)."""
     assert _member_findings_for_mention(mention) == []
+
+
+def test_missing_task_when_heading_is_only_inside_html_comment() -> None:
+    """Невидимый заголовок в HTML-комментарии задачу не создаёт (§5.3).
+
+    Воспроизведение находки ревью: `<!--\\n### Task 1: …\\nместо\\n-->` давал
+    задачу 1 со ссылкой на место — гейт проходил без видимой задачи.
+    """
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:4"
+task = 1
+""",
+    )
+    task_text = f"<!--\n### Task 1: скрытая\n{RUNNER_MODULE}:4\n-->\n"
+
+    report = _check(cover_body=cover_body, task_sections_text=task_text)
+
+    missing = [f for f in report.findings if f.code == "missing-task"]
+    assert missing != []

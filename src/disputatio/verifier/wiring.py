@@ -177,20 +177,23 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
 
     Заголовок задачи — `### Задача N:` или `### Task N:`; раздел — текст от
     заголовка до следующего заголовка уровня 1–3 по CommonMark (ATX или
-    setext; `####` раздел не обрывает). Fenced-блоки (`_scan_fences`) из
+    setext; `####` раздел не обрывает). Fenced-блоки (`_scan_markup`) из
     разделов вырезаются целиком, вместе со строками фенса: их строки не
     заголовки (иначе TOML-комментарий `# ...` читался бы как
     markdown-заголовок) и не текст раздела — иначе блок покрытия внутри
     раздела «ссылался» бы на все свои места сам, а место из примера кода
-    засчитывалось бы как ссылка задачи.
+    засчитывалось бы как ссылка задачи. HTML-комментарии вне фенсов
+    вырезаются так же: они не рендерятся, поэтому их текст — не заголовок,
+    не граница и не текст раздела.
     """
     lines = plan_text.splitlines()
-    fenced = _fenced_line_indices(lines)
-    prose = [index for index in range(len(lines)) if index not in fenced]
-    heading_lines = _heading_boundaries(lines, fenced)
+    markup = _scan_markup(lines)
+    visible = markup.visible
+    atx = _atx_headings(markup)
+    heading_lines = sorted(atx | _setext_headings(markup, atx))
     task_headings: dict[int, int] = {}
-    for index in heading_lines:
-        task_match = _TASK_HEADING_RE.match(lines[index])
+    for index in sorted(atx):
+        task_match = _TASK_HEADING_RE.match(visible[index] or "")
         if task_match:
             task_headings[index] = int(task_match.group(1))
 
@@ -202,45 +205,52 @@ def task_sections(plan_text: str) -> Mapping[int, str]:
             )
         end = next((h for h in heading_lines if h > heading_index), len(lines))
         sections[task_number] = "\n".join(
-            lines[i] for i in prose if heading_index <= i < end
+            text for text in visible[heading_index:end] if text is not None
         )
     return sections
 
 
-def _heading_boundaries(lines: list[str], fenced: set[int]) -> list[int]:
-    """Номера строк-границ разделов по возрастанию: ATX 1–3 и setext 1–2.
+def _atx_headings(markup: _Markup) -> set[int]:
+    """Номера строк ATX-заголовков уровня 1–3 среди строк, где заголовок возможен."""
+    return {
+        index
+        for index in markup.headable
+        if _ATX_HEADING_RE.match(markup.visible[index] or "")
+    }
+
+
+def _setext_headings(markup: _Markup, atx: set[int]) -> set[int]:
+    """Начала setext-заголовков уровня 1–2: первые строки их абзацев.
 
     Границей setext-заголовка служит первая строка его абзаца — весь абзац
     над подчёркиванием и есть текст заголовка (CommonMark). Подчёркивание
-    после пустой строки, заголовка или фенса заголовком ничего не делает.
+    после пустой строки, заголовка, фенса или HTML-комментария заголовком
+    ничего не делает.
     """
-    atx = {
-        index
-        for index, line in enumerate(lines)
-        if index not in fenced and _ATX_HEADING_RE.match(line)
-    }
-    setext = {
+    return {
         start
-        for index, line in enumerate(lines)
-        if index not in fenced and _SETEXT_UNDERLINE_RE.match(line)
-        for start in _paragraph_start(lines, index, fenced | atx)
+        for index in markup.headable
+        if _SETEXT_UNDERLINE_RE.match(markup.visible[index] or "")
+        for start in _paragraph_start(markup.visible, index, atx)
     }
-    return sorted(atx | setext)
 
 
-def _paragraph_start(lines: list[str], underline: int, stops: set[int]) -> list[int]:
+def _paragraph_start(
+    visible: tuple[str | None, ...], underline: int, stops: set[int]
+) -> list[int]:
     """Начало абзаца прямо над строкой `underline`; пусто — абзаца нет.
 
-    Абзац — подряд идущие непустые строки, не заголовки и не строки фенса
-    (`stops`); пустая строка или `stops` над подчёркиванием — абзаца нет.
+    Абзац — подряд идущие непустые видимые строки, не заголовки (`stops`) и
+    не строки фенса (`None`); пустая строка (в том числе целиком занятая
+    комментарием) или остановка над подчёркиванием — абзаца нет.
     """
     start = underline
-    while start > 0 and lines[start - 1].strip() and start - 1 not in stops:
+    while start > 0 and (visible[start - 1] or "").strip() and start - 1 not in stops:
         start -= 1
     return [start] if start < underline else []
 
 
-# --- fenced-блоки ------------------------------------------------------------
+# --- fenced-блоки и HTML-комментарии -----------------------------------------
 
 # Строка фенса: отступ не более 3 пробелов (CommonMark — большим отступом
 # начинается блок кода, а не фенс), затем 3+ одинаковых символа `` ` `` или
@@ -248,6 +258,12 @@ def _paragraph_start(lines: list[str], underline: int, stops: set[int]) -> list[
 # содержит (CommonMark): строка вида ```` ```x``` ```` — инлайн-код, а не
 # фенс.
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+# Строка, начатая HTML-комментарием (отступ до трёх пробелов), — HTML-блок
+# типа 2 до строки с `-->` включительно: текст после `-->` на ней же —
+# сырой HTML, а не заголовок (CommonMark).
+_COMMENT_LINE_RE = re.compile(r"^ {0,3}<!--")
+_COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,33 +280,96 @@ class _Fence:
     closed: bool
 
 
-def _scan_fences(lines: list[str]) -> list[_Fence]:
-    """Все fenced-блоки документа — единственный сканер фенсов модуля.
+@dataclass(frozen=True, slots=True)
+class _Markup:
+    """Разметка документа, которую видит гейт: фенсы и видимый текст строк.
+
+    `visible[i]` — строка `i` без HTML-комментариев, либо `None` для строк
+    fenced-блоков (включая строки фенса). `headable` — строки, которые
+    могут быть заголовком: не начаты внутри комментария и не начаты им.
+    """
+
+    fences: tuple[_Fence, ...]
+    visible: tuple[str | None, ...]
+    headable: frozenset[int]
+
+
+def _scan_markup(lines: list[str]) -> _Markup:
+    """Единственный сканер фенсов и HTML-комментариев модуля.
 
     Фенсы не вкладываются: внутри открытого блока любая строка — литерал,
-    кроме закрывающей. Закрывает блок только строка из символов того же
-    вида (`` ` `` или `~`), не короче открывающей и без info-строки
+    кроме закрывающей, поэтому `<!--` внутри фенса комментария не
+    открывает. Закрывает блок только строка из символов того же вида
+    (`` ` `` или `~`), не короче открывающей и без info-строки
     (CommonMark): ```` ``` ```` внутри ```` ```` ```` блок не закрывает.
-    Незакрытый блок тянется до конца документа.
+    Незакрытый блок тянется до конца документа. Внутри HTML-комментария,
+    наоборот, литерал — строка фенса: она блок не открывает. Незакрытый
+    `<!--` тянется до конца документа (CommonMark, HTML-блок типа 2).
     """
     fences: list[_Fence] = []
+    visible: list[str | None] = []
+    headable: set[int] = set()
+    in_comment = False
     index = 0
     while index < len(lines):
-        opening = _FENCE_RE.match(lines[index])
-        if opening is None or _is_inline_code(opening):
-            index += 1
+        line = lines[index]
+        opening = None if in_comment else _FENCE_RE.match(line)
+        if opening is not None and not _is_inline_code(opening):
+            fence = _fence_at(lines, index, opening)
+            fences.append(fence)
+            visible.extend([None] * (fence.end - fence.start + 1))
+            index = fence.end + 1
             continue
-        marker = opening.group(1)
-        end = next(
-            (j for j in range(index + 1, len(lines)) if _closes(lines[j], marker)),
-            None,
-        )
-        closed = end is not None
-        last = end if end is not None else len(lines) - 1
-        info = opening.group(2).strip()
-        fences.append(_Fence(info=info, start=index, end=last, closed=closed))
-        index = last + 1
-    return fences
+        if not in_comment and not _COMMENT_LINE_RE.match(line):
+            headable.add(index)
+        text, in_comment = _strip_comments(line, in_comment)
+        visible.append(text)
+        index += 1
+    return _Markup(
+        fences=tuple(fences), visible=tuple(visible), headable=frozenset(headable)
+    )
+
+
+def _fence_at(lines: list[str], index: int, opening: re.Match[str]) -> _Fence:
+    """Fenced-блок, открытый строкой `index`: до закрывающей или до конца."""
+    marker = opening.group(1)
+    end = next(
+        (j for j in range(index + 1, len(lines)) if _closes(lines[j], marker)),
+        None,
+    )
+    last = end if end is not None else len(lines) - 1
+    info = opening.group(2).strip()
+    return _Fence(info=info, start=index, end=last, closed=end is not None)
+
+
+def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Строка без HTML-комментариев и признак «комментарий открыт после неё».
+
+    Конец комментария ищется с позиции сразу после `<!`, так что `<!-->` и
+    `<!--->` закрываются сразу (CommonMark).
+    """
+    kept: list[str] = []
+    position = 0
+    while True:
+        if in_comment:
+            close = line.find(_COMMENT_CLOSE, position)
+            if close < 0:
+                return "".join(kept), True
+            position = close + len(_COMMENT_CLOSE)
+            in_comment = False
+            continue
+        start = line.find(_COMMENT_OPEN, position)
+        if start < 0:
+            kept.append(line[position:])
+            return "".join(kept), False
+        kept.append(line[position:start])
+        position = start + 2
+        in_comment = True
+
+
+def _scan_fences(lines: list[str]) -> tuple[_Fence, ...]:
+    """Все fenced-блоки документа вне HTML-комментариев (`_scan_markup`)."""
+    return _scan_markup(lines).fences
 
 
 def _is_inline_code(opening: re.Match[str]) -> bool:
@@ -307,15 +386,6 @@ def _closes(line: str, marker: str) -> bool:
         and len(closing.group(1)) >= len(marker)
         and closing.group(2).strip() == ""
     )
-
-
-def _fenced_line_indices(lines: list[str]) -> set[int]:
-    """Номера строк внутри fenced-блоков, включая сами строки фенса."""
-    return {
-        index
-        for fence in _scan_fences(lines)
-        for index in range(fence.start, fence.end + 1)
-    }
 
 
 def _find_fenced_blocks(text: str, info: str) -> list[str]:
