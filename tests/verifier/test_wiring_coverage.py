@@ -313,6 +313,34 @@ task = 7
     assert "7" in missing[0].detail
 
 
+def test_missing_task_when_heading_is_only_inside_fenced_example() -> None:
+    """4-пробельный `\\`\\`\\`` внутри примера фенс раньше времени не закрывает.
+
+    По CommonMark строка фенса — не более 3 пробелов отступа. Если бы отступ
+    не проверялся, `"    ```"` закрыла бы блок примера раньше настоящей
+    закрывающей строки, и текст `### Task 1: пример` вместе с местом внутри
+    примера стал бы прозой — мнимым заголовком задачи 1, хотя настоящей
+    задачи 1 в плане нет. Ожидание: заголовок остаётся скрыт фенсом целиком,
+    и запись покрытия на несуществующую задачу даёт `missing-task`.
+    """
+    cover_body = _cover_body(
+        TREE,
+        f"""\
+[[cover]]
+rule = "p10-policy"
+site = "{RUNNER_MODULE}:4"
+task = 1
+""",
+    )
+    task_text = f"```text\n    ```\n### Task 1: пример\n{RUNNER_MODULE}:4\n```\n"
+
+    report = _check(cover_body=cover_body, task_sections_text=task_text)
+
+    missing = [f for f in report.findings if f.code == "missing-task"]
+    assert missing != []
+    assert report.findings != ()
+
+
 # --- 5. `site-not-in-task` ---------------------------------------------------------
 
 

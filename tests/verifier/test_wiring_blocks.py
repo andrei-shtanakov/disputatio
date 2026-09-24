@@ -622,6 +622,54 @@ class TestTaskSectionsFences:
         assert "проза задачи 1" in sections[1]
 
 
+class TestFenceIndentation:
+    """Строка фенса — не более 3 пробелов отступа (CommonMark), как §5.3.
+
+    Без этого ограничения строка примера с отступом 4+ (частый случай —
+    иллюстрация фенса внутри фенса) закрывала бы или открывала бы блок
+    раньше времени, и код/заголовок внутри примера утекал бы в прозу.
+    """
+
+    def test_four_space_indent_does_not_close_fence(self) -> None:
+        text = (
+            "### Задача 1: разбор\n```text\n    ```\nвнутри фенса\n```\nпроза после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert "внутри фенса" not in sections[1]
+        assert "проза после" in sections[1]
+
+    def test_four_space_indent_does_not_open_fence(self) -> None:
+        text = "### Задача 1: разбор\n    ```\nпроза с отступом 4 остаётся прозой\n"
+
+        sections = task_sections(text)
+
+        assert "проза с отступом 4 остаётся прозой" in sections[1]
+
+    def test_tab_indent_is_not_a_fence_line(self) -> None:
+        text = "### Задача 1: разбор\n\t```\nпроза после табуляции\n"
+
+        sections = task_sections(text)
+
+        assert "проза после табуляции" in sections[1]
+
+    @pytest.mark.parametrize("indent", ["", " ", "  ", "   "], ids=["0", "1", "2", "3"])
+    def test_indent_zero_to_three_still_opens_and_closes(self, indent: str) -> None:
+        text = (
+            "### Задача 1: разбор\n"
+            f"{indent}```python\n"
+            "код внутри фенса\n"
+            f"{indent}```\n"
+            "проза после\n"
+        )
+
+        sections = task_sections(text)
+
+        assert "код внутри фенса" not in sections[1]
+        assert "проза после" in sections[1]
+
+
 class TestCommonMarkHeadingBoundaries:
     """Граница раздела — любой заголовок 1–3 уровня по CommonMark (§5.3).
 
