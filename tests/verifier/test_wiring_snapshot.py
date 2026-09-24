@@ -212,3 +212,59 @@ class TestGitOptionalLocks:
 
         after = index_path.read_bytes()
         assert after == before
+
+
+class TestUnfitRepositoryInputs:
+    """Непригодный корень, gitlink в `src`, отсутствие git — код `2` (§6)."""
+
+    def test_read_snapshot_raises_for_subdirectory_root(
+        self, wiring_repo: Path
+    ) -> None:
+        """`--root` — подкаталог: `ls-tree`/`status` смотрели бы не туда."""
+        with pytest.raises(WiringInputError, match="не корень репозитория"):
+            read_snapshot(wiring_repo / "src", "src")
+
+    def test_dirty_src_paths_raises_for_subdirectory_root(
+        self, wiring_repo: Path
+    ) -> None:
+        """Из подкаталога `status -- src` смотрел бы `src/src` — «чисто» молча."""
+        _write(wiring_repo, "src/pkg/mod.py", "VALUE = 2\n")
+
+        with pytest.raises(WiringInputError, match="не корень репозитория"):
+            dirty_src_paths(wiring_repo / "src", "src")
+
+    def test_raises_for_gitlink_under_src(self, wiring_repo: Path, git_run) -> None:
+        """Подмодуль под `src` — непроанализированный код: отказ, а не пропуск."""
+        head = git_run(wiring_repo, "rev-parse", "HEAD").strip()
+        git_run(
+            wiring_repo,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{head},src/sub",
+        )
+        git_run(
+            wiring_repo,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "add gitlink",
+        )
+
+        with pytest.raises(WiringInputError, match="src/sub"):
+            read_snapshot(wiring_repo, "src")
+
+    def test_missing_git_binary_raises_input_error(
+        self, wiring_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Нет `git` в `PATH` — отказ окружения (код `2`), а не traceback."""
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+
+        with pytest.raises(WiringInputError, match="git"):
+            read_snapshot(wiring_repo, "src")

@@ -44,6 +44,7 @@ def src_fingerprint(repo_root: Path, src: str) -> str:
     `WiringInputError` — вызывающему коду достаточно одного вида отказа
     для всех «непригодных входов» (§6).
     """
+    _require_top_level(repo_root)
     result = _run_git(repo_root, ("rev-parse", f"HEAD:{src}"))
     if result.returncode != 0:
         raise WiringInputError(
@@ -61,6 +62,7 @@ def dirty_src_paths(repo_root: Path, src: str) -> tuple[str, ...]:
     (флаг `--ignored` не передаётся), поэтому запись в игнорируемый файл
     внутри `src` чистоту не портит.
     """
+    _require_top_level(repo_root)
     result = _run_git(
         repo_root,
         ("status", "--porcelain", "--untracked-files=all", "--", src),
@@ -88,6 +90,26 @@ def read_snapshot(repo_root: Path, src: str) -> Snapshot:
     contents = _read_blobs(repo_root, {sha for _, sha in entries})
     files = {f"{normalized_src}/{relpath}": contents[sha] for relpath, sha in entries}
     return Snapshot(tree=tree, files=files)
+
+
+def _require_top_level(repo_root: Path) -> None:
+    """`repo_root` обязан быть корнем рабочего дерева, а не его подкаталогом.
+
+    Из подкаталога `ls-tree` отдаёт пути относительно него, а pathspec
+    `status -- <src>` читается от него же, тогда как `HEAD:<src>` — от
+    корня: снимок вышел бы пустым, а грязь `src` — невидимой. Непустой
+    `git rev-parse --show-prefix` — `WiringInputError` (код 2).
+    """
+    result = _run_git(repo_root, ("rev-parse", "--show-prefix"))
+    if result.returncode != 0:
+        raise WiringInputError(
+            f"--root {repo_root}: не git-репозиторий: {_diagnostic(result)}"
+        )
+    prefix = _decode(result.stdout).strip()
+    if prefix:
+        raise WiringInputError(
+            f"--root {repo_root} не корень репозитория (подкаталог {prefix!r})"
+        )
 
 
 def _parse_porcelain_paths(output: str) -> list[str]:
@@ -127,6 +149,10 @@ def _list_python_blobs(repo_root: Path, tree: str, src: str) -> list[tuple[str, 
     об ошибке — сам список остаётся путями относительно `tree`.
     Не-`.py` символлинк такому правилу не подчиняется и игнорируется, как
     любой другой не-`.py` файл дерева.
+
+    Подмодуль (gitlink, тип `commit`, режим `160000`) `ls-tree -r` не
+    раскрывает: его код в снимок не попал бы, и нарушение в нём прошло бы
+    молча. Поэтому gitlink под `src` — тоже `WiringInputError`.
     """
     result = _run_git(repo_root, ("ls-tree", "-r", "-z", tree))
     if result.returncode != 0:
@@ -139,9 +165,13 @@ def _list_python_blobs(repo_root: Path, tree: str, src: str) -> list[tuple[str, 
             continue
         meta, _, path_bytes = record.partition(b"\t")
         mode, obj_type, sha = meta.split()
+        path = path_bytes.decode("utf-8", errors="replace")
+        if obj_type == b"commit":
+            raise WiringInputError(
+                f"подмодуль (gitlink) в дереве не анализируется: {src}/{path}"
+            )
         if obj_type != b"blob":
             continue
-        path = path_bytes.decode("utf-8", errors="replace")
         if not path.endswith(".py"):
             continue
         if mode == _SYMLINK_MODE:
@@ -211,17 +241,25 @@ def _run_git(
     переопределения. Без `GIT_OPTIONAL_LOCKS=0` `git status` вправе
     переписать `.git/index`, освежив в нём stat-данные путей, — а гейт
     обязан быть read-only (§4).
+
+    `OSError` запуска (нет бинаря `git`, недоступный `cwd`) — отказ
+    окружения, код 2 (`WiringInputError`), а не traceback.
     """
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
-    return subprocess.run(
-        ("git", *args),
-        shell=False,
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        input=input_bytes,
-        env=env,
-    )
+    try:
+        return subprocess.run(
+            ("git", *args),
+            shell=False,
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            input=input_bytes,
+            env=env,
+        )
+    except OSError as exc:
+        raise WiringInputError(
+            f"не удалось запустить git в {repo_root}: {exc}"
+        ) from exc
 
 
 def _decode(data: bytes) -> str:

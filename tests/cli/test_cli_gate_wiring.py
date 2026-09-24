@@ -252,6 +252,42 @@ class TestExitCodeTwoCauses:
             capsys, wiring_repo, spec="spec.md", plan="plan.md"
         )
 
+    def test_root_is_subdirectory_of_repository(
+        self, wiring_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--root` — подкаталог репозитория: код `2`, а не пустой снимок (§6)."""
+        tree = _tree(wiring_repo)
+        _write(wiring_repo, "spec.md", _spec())
+        _write(wiring_repo, "plan.md", _plan(tree))
+
+        message = _assert_exits_error_one_line(
+            capsys,
+            wiring_repo / SRC,
+            spec=str(wiring_repo / "spec.md"),
+            plan=str(wiring_repo / "plan.md"),
+        )
+
+        assert "не корень репозитория" in message
+
+    def test_git_binary_missing(
+        self,
+        wiring_repo: Path,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`git` не найден в `PATH`: код `2` одной строкой, без traceback (§6)."""
+        tree = _tree(wiring_repo)
+        _write(wiring_repo, "spec.md", _spec())
+        _write(wiring_repo, "plan.md", _plan(tree))
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+
+        _assert_exits_error_one_line(
+            capsys, wiring_repo, spec="spec.md", plan="plan.md"
+        )
+
     def test_duplicate_task_number_in_plan(
         self, wiring_repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
