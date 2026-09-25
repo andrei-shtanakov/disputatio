@@ -17,6 +17,7 @@
 """
 
 import os
+import posixpath
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,27 @@ from pathlib import Path
 
 class WiringInputError(Exception):
     """Непригодные входы гейта: код 2 (§6)."""
+
+
+def normalize_src(src: str) -> str:
+    """Единственное написание `--src` (design §2): без `./`, без хвостового `/`.
+
+    `posixpath.normpath` схлопывает `.`, `./` и завершающий `/`, поэтому
+    `src`, `./src`, `src/` и `./src/` после нормализации совпадают и дают
+    один и тот же ключ снимка (§4) — литералы `allowed` в правилах пишутся
+    относительно корня репозитория (`src/...`), а не относительно того, как
+    именно оператор написал `--src`. Единственный хелпер: и CLI-граница
+    (`cli.cmd_gate_wiring`), и `read_snapshot`, и `build_index` вызывают
+    ровно эту функцию — второго написания правила нет.
+
+    Абсолютный путь, путь, равный `.`, или путь, выходящий за корень
+    репозитория (после нормализации начинается с `..`), — непригодный вход:
+    `WiringInputError` (код 2).
+    """
+    normalized = posixpath.normpath(src)
+    if normalized == "." or normalized.startswith(("/", "..")):
+        raise WiringInputError(f"--src: недопустимое значение {src!r}")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +104,11 @@ def read_snapshot(repo_root: Path, src: str) -> Snapshot:
     `cat-file --batch`), а не с диска, поэтому незакоммиченная правка файла
     в выдачу не попадает. Отсутствие `src` в `HEAD` (как и любой другой
     непригодный вход) даёт `WiringInputError` тем же путём, что и
-    `src_fingerprint`.
+    `src_fingerprint`. `src` нормализуется через `normalize_src` (design §2)
+    раньше обращения к git — тем же написанием, что и `build_index`.
     """
-    tree = src_fingerprint(repo_root, src)
-    normalized_src = src.rstrip("/")
+    normalized_src = normalize_src(src)
+    tree = src_fingerprint(repo_root, normalized_src)
     entries = _list_python_blobs(repo_root, tree, normalized_src)
     contents = _read_blobs(repo_root, {sha for _, sha in entries})
     files = {f"{normalized_src}/{relpath}": contents[sha] for relpath, sha in entries}

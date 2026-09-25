@@ -22,6 +22,7 @@ from disputatio.verifier.wiring_snapshot import (
     Snapshot,
     WiringInputError,
     dirty_src_paths,
+    normalize_src,
     read_snapshot,
 )
 
@@ -40,6 +41,7 @@ __all__ = [
     "gate_doc_links",
     "gate_doc_paths",
     "gate_doc_scope",
+    "normalize_src",
     "read_snapshot",
     "render_report",
     "resolve_inside",

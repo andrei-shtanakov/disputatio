@@ -94,19 +94,13 @@ def wiring_repo(git_repo: Path) -> Path:
     return git_repo
 
 
-def _run_gate_cli(root: Path, *, spec: str = "spec.md", plan: str = "plan.md") -> int:
-    return main(
-        [
-            "gate",
-            "wiring",
-            "--spec",
-            spec,
-            "--plan",
-            plan,
-            "--root",
-            str(root),
-        ]
-    )
+def _run_gate_cli(
+    root: Path, *, spec: str = "spec.md", plan: str = "plan.md", src: str | None = None
+) -> int:
+    args = ["gate", "wiring", "--spec", spec, "--plan", plan, "--root", str(root)]
+    if src is not None:
+        args += ["--src", src]
+    return main(args)
 
 
 # --- §6: коды 0/1 --------------------------------------------------------------
@@ -145,6 +139,58 @@ class TestExitCodes:
             lines
         )
         assert lines[-1] == "wiring: 1 нарушений, 0 покрыто, 1 находок"
+
+
+# --- §2: нормализация `--src` ---------------------------------------------------
+
+
+class TestSrcNormalisation:
+    """`--src` нормализуется один раз на границе CLI (design §2).
+
+    `./src`, `src/`, `./src/` обязаны давать тот же результат, что `src`:
+    иначе ключи снимка несут лишний `./` и не совпадают с литералами
+    `allowed` из правил (`src/...`), написанными относительно корня
+    репозитория, а не относительно значения `--src` как есть.
+    """
+
+    @pytest.mark.parametrize("src", ["src", "./src", "src/", "./src/"])
+    def test_equivalent_src_spellings_agree(
+        self, wiring_repo: Path, capsys: pytest.CaptureFixture[str], src: str
+    ) -> None:
+        _write(wiring_repo, "src/pkg/runner.py", RUNNER_SOURCE)
+        _commit(wiring_repo, "add violation")
+        tree = _tree(wiring_repo)
+        _write(wiring_repo, "spec.md", _spec())
+        _write(wiring_repo, "plan.md", _plan(tree))
+
+        code = _run_gate_cli(wiring_repo, src=src)
+
+        assert code == EXIT_FAILED
+        lines = capsys.readouterr().out.strip("\n").splitlines()
+        assert "uncovered construct-only-in p1-policy src/pkg/runner.py:3 count=1" in (
+            lines
+        )
+        assert lines[-1] == "wiring: 1 нарушений, 0 покрыто, 1 находок"
+
+    @pytest.mark.parametrize("src", ["/abs", ".", "../x"])
+    def test_invalid_src_exits_error(
+        self, wiring_repo: Path, capsys: pytest.CaptureFixture[str], src: str
+    ) -> None:
+        """Абсолютный, `.` или выходящий за корень `--src` — код `2` (design §2)."""
+        tree = _tree(wiring_repo)
+        _write(wiring_repo, "spec.md", _spec())
+        _write(wiring_repo, "plan.md", _plan(tree))
+
+        code = _run_gate_cli(wiring_repo, src=src)
+
+        assert code == EXIT_ERROR
+        captured = capsys.readouterr()
+        out_lines = captured.out.strip("\n").splitlines()
+        err_lines = captured.err.strip("\n").splitlines()
+        assert len(out_lines) == 1, out_lines
+        assert len(err_lines) == 1, err_lines
+        assert out_lines[0] == err_lines[0]
+        assert src in out_lines[0]
 
 
 # --- §6: код 2 — по одной причине из таблицы -----------------------------------

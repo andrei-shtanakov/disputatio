@@ -17,6 +17,7 @@ import pytest
 from disputatio.verifier.wiring_snapshot import (
     WiringInputError,
     dirty_src_paths,
+    normalize_src,
     read_snapshot,
     src_fingerprint,
 )
@@ -122,6 +123,21 @@ class TestDirtySrcPaths:
         assert dirty_src_paths(wiring_repo, "src") == ()
 
 
+class TestNormalizeSrc:
+    """`normalize_src` — единственное написание `--src` (design §2)."""
+
+    @pytest.mark.parametrize(
+        "src", ["src", "./src", "src/", "./src/", "a/../src", "a/./b/../../src"]
+    )
+    def test_equivalent_spellings_normalize_to_src(self, src: str) -> None:
+        assert normalize_src(src) == "src"
+
+    @pytest.mark.parametrize("src", ["/abs", ".", "..", "../x", "src/.."])
+    def test_absolute_dot_or_escaping_raises(self, src: str) -> None:
+        with pytest.raises(WiringInputError, match=r"--src"):
+            normalize_src(src)
+
+
 class TestReadSnapshot:
     def test_returns_exactly_py_files_of_head_src_tree(self, wiring_repo: Path) -> None:
         _write(wiring_repo, "src/pkg/readme.txt", "не питон\n")
@@ -130,6 +146,18 @@ class TestReadSnapshot:
 
         assert set(snapshot.files) == {"src/pkg/mod.py"}
         assert snapshot.files["src/pkg/mod.py"] == b"VALUE = 1\n"
+
+    @pytest.mark.parametrize("src", ["./src", "src/", "./src/"])
+    def test_alternate_src_spellings_give_identical_keys(
+        self, wiring_repo: Path, src: str
+    ) -> None:
+        """`./src`, `src/`, `./src/` дают те же ключи снимка, что `src` (§2, §4)."""
+        canonical = read_snapshot(wiring_repo, "src")
+
+        snapshot = read_snapshot(wiring_repo, src)
+
+        assert snapshot.files == canonical.files
+        assert snapshot.tree == canonical.tree
 
     def test_tree_matches_fingerprint(self, wiring_repo: Path) -> None:
         snapshot = read_snapshot(wiring_repo, "src")
