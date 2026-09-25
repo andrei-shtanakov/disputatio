@@ -489,12 +489,14 @@ def decide_step(ctx: StepContext) -> None:
     тестом шага.
 
     Повтор над уже записанным решением ПРЕЖНЕЙ версии (без
-    `budget_snapshot`) — единственный случай, когда ядро не спрашивают
-    (§4.5): такое решение авторитетно, снимок в неизменяемый артефакт не
-    дописывается, прогноз §5.2 для раунда не применяется, а переход
-    завершается по записанному исходу в том же порядке — финализация и
-    коммит, затем переход. Решение новой версии повтор выносит заново и
-    сверяет с диском (`_write_decision`).
+    `budget_snapshot`, §4.5) ядро тоже спрашивает — на тех же входах, но без
+    прогноза §5.2, которого прежняя версия не знала. Решение остаётся как
+    записано (снимок в него не дописывается), только если его `round` —
+    этот раунд, а исход, причина, открытые замечания и директива совпали с
+    ядром; иначе — `RoundImmutableError`, как у любого расхождения. Отсутствие
+    снимка — не признак доверия: `decision.json` без него может подложить
+    автор (дерево пишет он) или соседняя сессия с общим `rounds/`. Решение
+    новой версии повтор выносит заново и сверяет с диском (`_write_decision`).
     """
     round_no = ctx.round
     artifacts = ctx.artifact_root
@@ -502,9 +504,9 @@ def decide_step(ctx: StepContext) -> None:
     _purge_partial_artifacts(artifacts, round_no)
     recorded = load_decision(artifacts, round_no)
     if recorded is not None and recorded.budget_snapshot is None:
-        # Решение прежней версии авторитетно (§4.5): не пересчитывается, в
-        # неизменяемый артефакт снимок не дописывается, переход — по нему.
-        draft = _recorded_draft(recorded)
+        # Решение прежней версии (§4.5) стоит, только если совпадает с
+        # ядром на тех же входах без прогноза; снимок в него не дописывается.
+        draft = _adopt_prior_version(ctx, round_no, recorded)
     else:
         draft = _decide_and_write(ctx, round_no)
 
@@ -541,20 +543,38 @@ def _decide_and_write(ctx: StepContext, round_no: int) -> DecisionDraft:
     return draft
 
 
-def _recorded_draft(recorded: Decision) -> DecisionDraft:
-    """Черновик из уже записанного решения прежней версии (§4.5).
+def _adopt_prior_version(
+    ctx: StepContext, round_no: int, recorded: Decision
+) -> DecisionDraft:
+    """Решение прежней версии, сверенное с ядром; расхождение — отказ (§4.5).
 
-    Исход, причина, открытые замечания и директива — ровно записанные,
-    снимка нет. `forced_review` в `decision.json` не хранится и переходом не
-    читается; восстанавливать его по коду причины значило бы повторить здесь
-    реестр причин §5, поэтому — `False`.
+    Ядро считает на тех же входах, но без прогноза: снимков прошлых раундов
+    и нулевой базы ему не дают, а без наблюдений прогноз §5.2 не
+    применяется. Сверяются номер раунда и четыре поля, которые решение
+    несёт в переход; `forced_review` в `decision.json` не хранится.
+    Записанный файл не источник истины поверх ядра — он лишь вправе
+    остаться, когда с ядром согласен.
     """
+    draft = decide(_deciding_inputs(ctx, predict=False))
+    agrees = (
+        recorded.round == round_no
+        and recorded.outcome is draft.outcome
+        and recorded.reason == draft.reason
+        and tuple(recorded.open_issues_carried) == draft.open_issues_carried
+        and recorded.next_round_directive == draft.next_round_directive
+    )
+    if not agrees:
+        raise RoundImmutableError(
+            f"decision.json раунда {round_no:03d} без budget_snapshot не "
+            "совпадает с решением ядра на тех же входах: чужое решение шаг не "
+            "принимает и не переписывает"
+        )
     return DecisionDraft(
-        outcome=recorded.outcome,
-        reason=recorded.reason,
-        open_issues_carried=tuple(recorded.open_issues_carried),
-        next_round_directive=recorded.next_round_directive,
-        forced_review=False,
+        outcome=draft.outcome,
+        reason=draft.reason,
+        open_issues_carried=draft.open_issues_carried,
+        next_round_directive=draft.next_round_directive,
+        forced_review=draft.forced_review,
         budget_snapshot=None,
     )
 
@@ -594,7 +614,7 @@ def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
             leftover.unlink(missing_ok=True)
 
 
-def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
+def _deciding_inputs(ctx: StepContext, *, predict: bool = True) -> DecidingInputs:
     """Снимок раунда N для ядра — четыре источника, ни одного вывода.
 
     Ревью и отчёт берутся у раунда N, замечания и патч — у соседей по
@@ -605,6 +625,10 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
     правок законен, и падать на нём шагу не на чем. `patch_two_back`
     отсутствие сохраняет как `None` — для ядра «правок не было» и
     «сравнивать не с чем» это разные входы.
+
+    `predict=False` — те же входы без наблюдений стоимости: снимков прошлых
+    раундов нет, нулевой базы нет (`tracked_from_start` снят), значит
+    прогноз §5.2 не применяется. Нужен сверке решения прежней версии.
     """
     artifacts = ctx.artifact_root
     round_no = ctx.round
@@ -618,9 +642,11 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
         patch_current=load_patch(artifacts, round_no) or "",
         patch_two_back=load_patch(artifacts, round_no - 2),
         issue_history=issue_history(artifacts, round_no),
-        budget_used=state.budget_used,
+        budget_used=state.budget_used
+        if predict
+        else state.budget_used.model_copy(update={"tracked_from_start": False}),
         limits=state.limits,
-        budget_snapshots=budget_snapshots(artifacts, round_no),
+        budget_snapshots=budget_snapshots(artifacts, round_no) if predict else {},
     )
 
 

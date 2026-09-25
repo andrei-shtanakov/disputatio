@@ -388,3 +388,52 @@ def test_replayed_deciding_without_evidence_reaches_the_same_stop(
     assert replay.fsm.state.state is first.fsm.state.state
     assert replay.fsm.state.state is SessionPhase.EXPORTING
     assert git.commits == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"outcome": Outcome.CONVERGED, "reason": "чужое решение"},
+        {
+            "round": 1,
+            "outcome": Outcome.CONTINUE,
+            "reason": "continue_revise_cycle",
+            "open_issues_carried": ["I-002-A"],
+            "next_round_directive": "mod002.py: замечание A раунда 002",
+        },
+    ],
+    ids=["foreign-outcome", "wrong-round"],
+)
+def test_resume_refuses_a_snapshotless_decision_that_disagrees(
+    tmp_path: Path, fields: dict[str, object]
+) -> None:
+    """Близнец теста выше в форме прежней версии — без `budget_snapshot`.
+
+    Отсутствие снимка не делает решение авторитетным (§4.5): оно стоит,
+    только если совпадает с ядром и называет этот раунд. Чужой исход или
+    чужой `round` — тот же отказ, что у решения новой версии.
+    """
+    _seed(tmp_path)
+    payload: dict[str, object] = {
+        "schema": "disputatio/v1",
+        "round": _ROUND,
+        "open_issues_carried": [],
+        "next_round_directive": None,
+        **fields,
+    }
+    write_round_artifact(
+        tmp_path,
+        _ROUND,
+        DECISION_NAME,
+        Decision.model_validate(payload).model_dump_json(by_alias=True),
+    )
+    finalize_round(tmp_path, _ROUND)
+    before = _decision_on_disk(tmp_path)
+    assert before.budget_snapshot is None
+    git = SpyGit()
+
+    with pytest.raises(RoundImmutableError):
+        decide_step(_context(tmp_path, git))
+
+    assert git.commits == []
+    assert _decision_on_disk(tmp_path) == before

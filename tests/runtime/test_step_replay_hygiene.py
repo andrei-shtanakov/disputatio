@@ -547,6 +547,41 @@ def test_deciding_sweeps_before_it_finds_the_round_closed(tmp_path: Path) -> Non
     assert on_disk.reason == "чужое решение"
 
 
+def test_deciding_sweeps_before_refusing_a_snapshotless_foreign_decision(
+    tmp_path: Path,
+) -> None:
+    """Близнец теста выше: чужое решение прежней версии (без снимка).
+
+    Отсутствие `budget_snapshot` не делает чужое решение авторитетным
+    (§4.5): шаг отказывает так же, а уборка всё равно идёт до отказа.
+    """
+    _seed_for_decision(tmp_path)
+    foreign = Decision(
+        round=_ROUND,
+        outcome=Outcome.CONVERGED,
+        reason="чужое решение",
+        open_issues_carried=[],
+        next_round_directive=None,
+    )
+    write_round_artifact(
+        tmp_path, _ROUND, DECISION_NAME, foreign.model_dump_json(by_alias=True)
+    )
+    finalize_round(tmp_path, _ROUND)
+    _seed_leftovers(tmp_path, DECISION_NAME)
+    git = CountingGit()
+
+    with pytest.raises(RoundImmutableError):
+        decide_step(_context(tmp_path, phase=SessionPhase.DECIDING, git=git))
+
+    assert _leftovers(tmp_path) == []
+    assert (round_dir(tmp_path, _ROUND) / _FINALIZED_MARKER).exists()
+    assert git.commits == []
+    on_disk = Decision.model_validate_json(
+        round_artifact(tmp_path, _ROUND, DECISION_NAME).read_text(encoding="utf-8")
+    )
+    assert on_disk == foreign
+
+
 def test_a_directory_named_like_a_leftover_is_left_alone(git_repo: Path) -> None:
     """Уборка снимает файлы, а не всё, что подошло по имени ([REQ-015]).
 

@@ -29,7 +29,11 @@ from disputatio.contracts import (
     SessionState,
 )
 from disputatio.core import REASON_BUDGET_PREDICTED, SessionFsm
-from disputatio.events import finalize_round, write_round_artifact
+from disputatio.events import (
+    RoundImmutableError,
+    finalize_round,
+    write_round_artifact,
+)
 from disputatio.runtime import loop
 from disputatio.runtime.layout import DECISION_NAME, round_artifact
 from disputatio.runtime.steps import StepContext, decide_step
@@ -93,7 +97,8 @@ def _write_prior_version_decision(root: Path, *, finalized: bool, **fields: Any)
         "outcome": Outcome.CONTINUE,
         "reason": "continue_revise_cycle",
         "open_issues_carried": ["I-002-A"],
-        "next_round_directive": "директива прежней версии",
+        # Ровно то, что ядро выносит этому раунду без прогноза.
+        "next_round_directive": "mod002.py: замечание A раунда 002",
     }
     payload.update(fields)
     text = Decision(**payload).model_dump_json(by_alias=True)
@@ -179,11 +184,12 @@ def test_prior_version_round_one_gives_no_base(tmp_path: Path) -> None:
 def test_prior_version_decision_is_authoritative_on_replay(
     tmp_path: Path, finalized: bool
 ) -> None:
-    """Повтор над решением прежней версии завершает его переход (§4.5).
+    """Согласное с ядром решение прежней версии остаётся как записано (§4.5).
 
     Ни `RoundImmutableError`, ни дописанного снимка, ни прогноза: бюджет у
-    края и снимок раунда 1 есть, то есть новая версия вынесла бы
-    `BUDGET_HIT`, — но записанный исход `CONTINUE` авторитетен.
+    края и снимок раунда 1 есть, то есть с прогнозом ядро вынесло бы
+    `BUDGET_HIT`, — но сверка идёт с ядром без прогноза, и `CONTINUE`
+    совпадает с ним полем в поле.
     """
     _seed(tmp_path)
     _seed_round_one_snapshot(tmp_path)
@@ -201,29 +207,44 @@ def test_prior_version_decision_is_authoritative_on_replay(
     assert round_artifact(tmp_path, _ROUND, ".finalized").exists()
 
 
-def test_prior_version_terminal_outcome_is_kept(tmp_path: Path) -> None:
-    """Записанный терминальный исход прежней версии не пересчитывается.
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {
+            "outcome": Outcome.CONVERGED,
+            "reason": "approve_with_gates_pass",
+            "next_round_directive": None,
+        },
+        {"round": 1},
+        {"outcome": Outcome.DEADLOCK, "reason": "max_rounds"},
+    ],
+    ids=["planted-converged", "wrong-round", "other-terminal"],
+)
+def test_planted_prior_version_decision_is_refused(
+    tmp_path: Path, fields: dict[str, Any]
+) -> None:
+    """Решение без снимка, несогласное с ядром, — отказ, а не сходимость.
 
-    Сейчас раунд решился бы `CONTINUE`; на диске — `DEADLOCK` прежней
-    версии, и переход идёт по нему: к экспорту, без финализации и коммита.
+    Сценарий ревью PR #132: автор (дерево пишет он) или соседняя сессия с
+    общим `rounds/` подкладывает `decision.json` без снимка. Ревью раунда —
+    `request_changes`, а подложено `CONVERGED`: шаг обязан упасть
+    `RoundImmutableError`, не сойтись, не финализировать и не коммитить
+    раунд, и сам файл не трогать. Так же — чужой `round` при прочих
+    совпадениях и терминальный исход, которого ядро не выносит.
     """
     _seed(tmp_path)
-    before = _write_prior_version_decision(
-        tmp_path,
-        finalized=False,
-        outcome=Outcome.DEADLOCK,
-        reason="max_rounds",
-        next_round_directive=None,
-    )
+    before = _write_prior_version_decision(tmp_path, finalized=False, **fields)
     git = SpyGit()
     ctx = _context(tmp_path, git)
 
-    decide_step(ctx)
+    with pytest.raises(RoundImmutableError):
+        decide_step(ctx)
 
     after = round_artifact(tmp_path, _ROUND, DECISION_NAME).read_text(encoding="utf-8")
     assert after == before
-    assert ctx.fsm.state.state is SessionPhase.EXPORTING
+    assert ctx.fsm.state.state is SessionPhase.DECIDING
     assert git.commits == []
+    assert not round_artifact(tmp_path, _ROUND, ".finalized").exists()
 
 
 def test_new_version_decision_replays_identically(tmp_path: Path) -> None:
