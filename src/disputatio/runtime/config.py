@@ -212,6 +212,10 @@ class RuntimeConfig:
         вызывающего, ровно потому, что вызывающих двое — `disp run` и фабрика
         ревизии пайплайна, — и разойдись они, doc-сессия рождалась бы
         валидной у одного и невозможной у другого.
+
+        `tracked_from_start=True` ставится ровно здесь: это рождение сессии,
+        и счётчики с этой точки ведутся по правилам §4.1. Умолчание модели
+        (`False`) оставлено чтению `session.json` прежней версии (§5.2).
         """
         return SessionState(
             schema=SCHEMA_V2 if self.mode is Mode.DOCUMENT else SCHEMA_V1,
@@ -238,7 +242,7 @@ class RuntimeConfig:
                 max_wall_seconds=self.limits.max_wall_seconds,
                 schema_retries=self.limits.schema_retries,
             ),
-            budget_used=BudgetUsed(),
+            budget_used=BudgetUsed(tracked_from_start=True),
         )
 
 

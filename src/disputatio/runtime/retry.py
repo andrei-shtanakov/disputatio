@@ -104,6 +104,7 @@ async def run_with_schema_retry[T](
     session_ref: str | None = None,
     on_invalid: Callable[[Exception], None] | None = None,
     lifecycle: SessionLifecyclePolicy | None = None,
+    on_attempt: Callable[[AgentTurn], None] | None = None,
 ) -> tuple[T, AgentTurn] | None:
     """Зовёт агента, пока его вывод не пройдёт `parse` или не кончится лимит.
 
@@ -125,6 +126,15 @@ async def run_with_schema_retry[T](
     увидела бы исходный снапшот. Передаёт политику только шаг автора: право
     писать есть у него одного (§7), и сверять control plane вокруг хода
     ревьюера незачем. `None` — no-op, путь до пайплайна байт-в-байт.
+
+    `on_attempt` получает `AgentTurn` КАЖДОЙ попытки — и отвергнутой, и
+    принятой — сразу после вызова адаптера (§4.1: в расход входят все
+    вызовы агента, включая повторы по схеме). Обратный вызов, а не третий
+    элемент результата, по той же причине, что и `on_invalid`: попытки
+    нужны шагу, чтобы отдать их границе шага на начисление, а считать
+    бюджет сам хелпер не вправе — он внутри retry-петли (ADR-004).
+    Та же попытка ложится и в `ctx.attempt_log`, если граница шага его
+    завела: упавший шаг попыток не возвращает, а расход их потрачен.
     """
     detail: str | None = None
     attempt = 0
@@ -136,6 +146,10 @@ async def run_with_schema_retry[T](
 
         _run_lifecycle_hook(ctx, lifecycle, point=_BEFORE_TURN)
         turn = await adapter.run(prompt, session_ref=session_ref)
+        if on_attempt is not None:
+            on_attempt(turn)
+        if ctx.attempt_log is not None:
+            ctx.attempt_log.append(turn)
         _run_lifecycle_hook(ctx, lifecycle, point=_AFTER_TURN)
         try:
             parsed = parse(turn.text)

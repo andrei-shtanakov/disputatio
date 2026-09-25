@@ -12,14 +12,26 @@
 Отсутствующий артефакт — `None`, а не ошибка: раунд 1 прошлого не имеет
 вовсе, а раунд, оборванный до `REVIEWING`, честно не оставил `review.json`.
 Битый артефакт, наоборот, поднимает `ValidationError` — молча подставленный
-`None` превратил бы повреждённую историю в «замечаний не было».
+`None` превратил бы повреждённую историю в «замечаний не было». Битым
+считается и артефакт, чьё поле `round` не совпадает с номером его каталога
+`rounds/NNN/` (SPEC-001 §4): подложенный под чужой номер, он иначе стал бы
+ревью, отчётом или снимком не того раунда.
 """
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from disputatio.contracts import Decision, Issue, Review, VerificationReport
+from pydantic import ValidationError
+from pydantic_core import InitErrorDetails, PydanticCustomError
+
+from disputatio.contracts import (
+    BudgetSnapshot,
+    Decision,
+    Issue,
+    Review,
+    VerificationReport,
+)
 from disputatio.runtime.layout import (
     CHANGES_PATCH_NAME,
     DECISION_NAME,
@@ -178,11 +190,51 @@ def issue_history(artifact_root: Path, round_no: int) -> dict[int, tuple[Issue, 
     return history
 
 
+def budget_snapshots(artifact_root: Path, round_no: int) -> dict[int, BudgetSnapshot]:
+    """`{n: budget_snapshot решения n}` по раундам строго до `round_no` (§5.2).
+
+    Раунд без решения или с решением прежней версии (снимка нет) в словарь
+    не попадает: отсутствующий снимок нулём не заменяется, и прогноз обязан
+    видеть пропуск как пропуск.
+    """
+    snapshots: dict[int, BudgetSnapshot] = {}
+    for prior in range(1, round_no):
+        decision = load_decision(artifact_root, prior)
+        if decision is not None and decision.budget_snapshot is not None:
+            snapshots[prior] = decision.budget_snapshot
+    return snapshots
+
+
 def _load[T: (Review, VerificationReport, Decision)](
     artifact_root: Path, round_no: int, name: str, model: type[T]
 ) -> T | None:
-    """Разбирает `rounds/NNN/name` моделью `model`; нет файла — `None`."""
+    """Разбирает `rounds/NNN/name` моделью `model`; нет файла — `None`.
+
+    Поле `round` обязано совпасть с `round_no` каталога: иначе — та же
+    `ValidationError`, что у схемно-невалидного артефакта, и та же обработка
+    ниже по течению. Молчаливый пропуск превратил бы подмену в «артефакта
+    нет» (§5.2: снимок с чужим номером — ошибка, а не «наблюдения нет»).
+    """
     path = round_artifact(artifact_root, round_no, name)
     if not path.is_file():
         return None
-    return model.model_validate_json(path.read_text(encoding="utf-8"))
+    artifact = model.model_validate_json(path.read_text(encoding="utf-8"))
+    if artifact.round != round_no:
+        raise _round_mismatch(model, name, round_no, artifact.round)
+    return artifact
+
+
+def _round_mismatch(
+    model: type, name: str, round_no: int, found: int
+) -> ValidationError:
+    """`ValidationError` артефакта, чей `round` расходится с каталогом."""
+    detail = InitErrorDetails(
+        type=PydanticCustomError(
+            "round_mismatch",
+            "{name} лежит в rounds/{directory}/, но несёт round={found}",
+            {"name": name, "directory": f"{round_no:03d}", "found": found},
+        ),
+        loc=("round",),
+        input=found,
+    )
+    return ValidationError.from_exception_data(model.__name__, [detail])

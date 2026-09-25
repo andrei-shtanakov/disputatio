@@ -7,6 +7,7 @@ FSM, enum'ы, чистые функции и константы причин т�
 
 from disputatio.core.deciding import (
     REASON_ANTI_SYCOPHANCY,
+    REASON_BUDGET_PREDICTED,
     REASON_BUDGET_TOKENS,
     REASON_BUDGET_WALL,
     REASON_CONTINUE,
@@ -42,6 +43,7 @@ __all__ = [  # noqa: RUF022 — отсортирован по codepoint (тес�
     "InvalidTransition",
     "OSCILLATION_DIFF_THRESHOLD",
     "REASON_ANTI_SYCOPHANCY",
+    "REASON_BUDGET_PREDICTED",
     "REASON_BUDGET_TOKENS",
     "REASON_BUDGET_WALL",
     "REASON_CONTINUE",

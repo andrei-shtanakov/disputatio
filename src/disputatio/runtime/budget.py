@@ -23,17 +23,31 @@
    пересадка посреди шага обнулила бы лимит I4 на каждой попытке и
    превратила `schema_retries` в бесконечность.
 
-Отсюда же два сознательных умолчания. Начислять нечего — писать нечего:
-состояние, не изменившееся от начисления, на диск не переписывается и FSM не
+Отсюда же сознательное умолчание: начислять нечего — писать нечего.
+Состояние, не изменившееся от начисления, на диск не переписывается и FSM не
 пересаживает, поэтому «шаг без расхода и без времени» не оставляет следа
-вовсе, а не сочиняет запись о нуле. И шаг, не дошедший до конца (исчерпанные
-повторы, упавший порт), бюджета не начисляет: расход провалившихся попыток
-теряется, но сессия к этому моменту уже `FAILED`, и считать её бюджет некому.
+вовсе, а не сочиняет запись о нуле.
+
+Шаг, который ядро перевело в `FAILED` (исчерпанные повторы, отказ P9),
+тоже начисляет расход (§4.1: в расход входят все вызовы агента, включая
+повторы) — `charge_failed_step`. Его попытки собирает журнал
+`StepContext.attempt_log`, раз вернуть их шаг уже не может. Начисление
+сохраняет текущее состояние `FAILED` с новым бюджетом и больше ничего: фазу
+не трогает, FSM не пересаживает — исключение уходит наружу, и цикл этим
+контекстом больше не пользуется. Шаг, оборванный в нетерминальной фазе, не
+начисляется: resume переиграет его, а запись `session.json` посреди хода
+автора сверка P9 сочла бы подменой control plane.
+
+Шаг, дошедший до конца, отдаёт ВСЕ свои попытки, а не только принятую
+(§4.1): токены отвергнутых по схеме попыток потрачены так же, как и
+принятой, и терять их значило бы занижать стоимость раунда — ровно ту
+величину, по которой §5.2 прогнозирует следующий.
 """
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from disputatio.contracts import AgentTurn, SessionState
+from disputatio.contracts import AgentTurn, SessionPhase, SessionState
 from disputatio.core import SessionFsm
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотации, импорта нет
@@ -41,7 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover - только для аннотации, 
 
 
 def charge_step(
-    ctx: "StepContext", *, turn: AgentTurn | None, elapsed_s: float
+    ctx: "StepContext", *, turns: Sequence[AgentTurn], elapsed_s: float
 ) -> "StepContext":
     """Начисляет бюджет завершённого шага и пересаживает FSM на новое состояние.
 
@@ -60,7 +74,7 @@ def charge_step(
     Гарантия структурная — начисление физически не может случиться раньше,
     чем шаг вернул управление.
     """
-    charged = accumulate(ctx.fsm.state, turn=turn, elapsed_s=elapsed_s)
+    charged = accumulate(ctx.fsm.state, turns=turns, elapsed_s=elapsed_s)
     if charged == ctx.fsm.state:
         return ctx
 
@@ -75,16 +89,40 @@ def charge_step(
     )
 
 
+def charge_failed_step(
+    ctx: "StepContext", *, turns: Sequence[AgentTurn], elapsed_s: float
+) -> None:
+    """Сохраняет расход упавшего шага в состояние `FAILED`, без пересадки FSM.
+
+    Начисляется только шаг, который ядро уже перевело в `FAILED`
+    (исчерпанные повторы, отказ политики P9): фаза берётся у FSM как есть,
+    и начисление не возрождает ни одну фазу. Шаг, упавший в нетерминальной
+    фазе (обрыв, упавший порт), не начисляется: resume переиграет его
+    целиком, а `session.json`, переписанный посреди хода автора, сверка
+    control plane P9 (SPEC-002 §7.1) приняла бы за подмену. Пересадки нет:
+    исключение уйдёт наружу, продолжать с этим контекстом некому, и лимит
+    I4 обнулить негде (ADR-004).
+    """
+    if ctx.fsm.state.state is not SessionPhase.FAILED:
+        return
+    charged = accumulate(ctx.fsm.state, turns=turns, elapsed_s=elapsed_s)
+    if charged != ctx.fsm.state:
+        ctx.deps.store.save(charged)
+
+
 def accumulate(
-    state: SessionState, *, turn: AgentTurn | None, elapsed_s: float
+    state: SessionState, *, turns: Sequence[AgentTurn], elapsed_s: float
 ) -> SessionState:
     """Возвращает копию состояния с обновлённым `budget_used` ([REQ-009]).
 
-    `turn.tokens_used is None` — «адаптер не сообщил»: счётчик не растёт и
-    неизвестность НЕ выдаётся за ноль. `tokens_used == 0` — сообщённый ноль:
-    прибавляется как 0, что наблюдаемо тем, что счётчик не становится `None`
-    и не теряет предыдущее значение. `turn is None` — шаг без разговора с
-    агентом (`VERIFYING`, `DECIDING`): токенов он не тратит, а время тратит.
+    `turns` — все попытки шага (§4.1): токены суммируются по всем, а не
+    берутся у последней. `tokens_used is None` — «адаптер не сообщил»:
+    `tokens` не растёт, неизвестность НЕ выдаётся за ноль, а
+    `unreported_turns` растёт на единицу. `tokens_used == 0` — сообщённый
+    ноль: прибавляется как 0 и счётчик неотчитавшихся не трогает. Пустой
+    `turns` — шаг без разговора с агентом (`VERIFYING`, `DECIDING`):
+    токенов он не тратит и о них не отчитывается, поэтому ни один счётчик
+    токенов не меняется, а время идёт.
 
     `elapsed_s` берётся из монотонных часов сессии (`deps.monotonic`) и
     поэтому неотрицателен — отсюда `wall_seconds` не убывает ни на одном
@@ -95,14 +133,17 @@ def accumulate(
     append-only, и правка состояния на месте лишила бы вызывающего
     возможности сравнить «до» и «после».
     """
-    delta = token_delta(turn)
+    deltas = [token_delta(turn) for turn in turns]
+    reported = sum(delta for delta in deltas if delta is not None)
+    unreported = sum(1 for delta in deltas if delta is None)
     used = state.budget_used
     return state.model_copy(
         update={
             "budget_used": used.model_copy(
                 update={
-                    "tokens": used.tokens if delta is None else used.tokens + delta,
+                    "tokens": used.tokens + reported,
                     "wall_seconds": used.wall_seconds + elapsed_s,
+                    "unreported_turns": used.unreported_turns + unreported,
                 }
             )
         }

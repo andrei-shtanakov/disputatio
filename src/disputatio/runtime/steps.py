@@ -10,8 +10,8 @@
 [DESIGN-015]), поэтому первым делом он убирает огрызки прерванной попытки
 (`_purge_partial_artifacts`), а не пытается их доиспользовать.
 
-Общее у всех четырёх и окончание: шаг отдаёт наружу свой `AgentTurn`, если
-агента звал, и `None`, если не звал. Расход этого turn'а начисляет граница
+Общее у всех четырёх и окончание: шаг отдаёт наружу `AgentTurn` всех своих
+попыток, если агента звал, и `None`, если не звал. Их расход начисляет граница
 шага ([DESIGN-009]) — сам шаг бюджета не считает и `session.json` из-за него
 не переписывает: запись изнутри шага попала бы в retry-петлю, где пересадка
 FSM обнулила бы лимит schema-повторов (ADR-004).
@@ -52,6 +52,7 @@ from disputatio.contracts import (
 )
 from disputatio.core import (
     DecidingInputs,
+    DecisionDraft,
     SessionFsm,
     Writer,
     active_writer,
@@ -68,6 +69,7 @@ from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import (
     PriorRound,
+    budget_snapshots,
     carried_issues,
     issue_history,
     load_adopted_findings,
@@ -166,6 +168,11 @@ class StepContext:
     (SPEC-002 §5.1, §5.3). Тоже от вызывающего и тоже с дефолтом `None`:
     `disp run` doc-сессий не заводит, и без него ни одна строка шага не
     меняется.
+
+    `attempt_log` — журнал вызовов агента текущего шага, который заводит
+    граница шага (`loop._run_step`), а пополняет `run_with_schema_retry`.
+    Нужен он ровно тогда, когда шаг упал и своих попыток не вернул: их
+    расход всё равно потрачен и начисляется (§4.1). `None` — журнала нет.
     """
 
     deps: RuntimeDeps
@@ -174,6 +181,7 @@ class StepContext:
     gates: tuple[GateSpec, ...] = field(default=())
     lifecycle: SessionLifecyclePolicy | None = None
     documents: DocSessionSpec | None = None
+    attempt_log: list[AgentTurn] | None = None
 
     @property
     def workspace_root(self) -> Path:
@@ -211,6 +219,7 @@ class StepContext:
             gates=self.gates,
             lifecycle=self.lifecycle,
             documents=self.documents,
+            attempt_log=self.attempt_log,
         )
 
     def with_lifecycle(self, lifecycle: "SessionLifecyclePolicy") -> "StepContext":
@@ -227,10 +236,27 @@ class StepContext:
             gates=self.gates,
             lifecycle=lifecycle,
             documents=self.documents,
+            attempt_log=self.attempt_log,
+        )
+
+    def with_attempt_log(self, attempt_log: list[AgentTurn]) -> "StepContext":
+        """Тот же контекст с журналом попыток шага — для начисления при сбое.
+
+        Копия по тому же списку полей, что и у `with_fsm`; FSM общий —
+        переходы шага видит и тот, кто завёл журнал.
+        """
+        return StepContext(
+            deps=self.deps,
+            fsm=self.fsm,
+            base_commit=self.base_commit,
+            gates=self.gates,
+            lifecycle=self.lifecycle,
+            documents=self.documents,
+            attempt_log=attempt_log,
         )
 
 
-async def propose(ctx: StepContext) -> AgentTurn:
+async def propose(ctx: StepContext) -> tuple[AgentTurn, ...]:
     """Шаг PROPOSING раунда `ctx.round`: reset → prompt → author → артефакты.
 
     Порядок операций — само поведение шага, а не его деталь:
@@ -260,8 +286,9 @@ async def propose(ctx: StepContext) -> AgentTurn:
        `proposal.md`: каталог сессии из диффа исключён, поэтому порядок
        безопасен, а обратный лишил бы патч правок, сделанных автором позже.
 
-    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
-    шага ([DESIGN-009]). Считать бюджет здесь значило бы поставить
+    Возвращаются `AgentTurn` ВСЕХ попыток, отвергнутых и принятой, — их
+    расход начислит граница шага ([DESIGN-009], §4.1: повторы по схеме
+    тоже тратят бюджет). Считать бюджет здесь значило бы поставить
     `store.save` внутрь шага, то есть внутрь retry-петли, где новый FSM
     обнулил бы лимит I4 (ADR-004).
     """
@@ -276,6 +303,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
 
     prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
+    attempts: list[AgentTurn] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.author,
@@ -285,6 +313,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
         session_ref=_author_session_ref(ctx),
         on_invalid=failures.append,
         lifecycle=ctx.lifecycle,
+        on_attempt=attempts.append,
     )
     if outcome is None:
         raise _exhausted(failures)
@@ -295,7 +324,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
     write_round_artifact(artifacts, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
-    return turn
+    return tuple(attempts)
 
 
 def verify(ctx: StepContext) -> None:
@@ -350,7 +379,7 @@ def verify(ctx: StepContext) -> None:
     )
 
 
-async def review(ctx: StepContext) -> AgentTurn:
+async def review(ctx: StepContext) -> tuple[AgentTurn, ...]:
     """Шаг REVIEWING раунда `ctx.round`: промпт → ревьюер → `review.json`.
 
     Правила §4.4 здесь не переписываются ни одной строкой: деградация
@@ -388,7 +417,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     через schema-retry ([DESIGN-006]): ревьюера переспрашивают с текстом
     ошибки, и только исчерпание лимита делает раунд `FAILED`.
 
-    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
+    Возвращаются `AgentTurn` всех попыток — их расход начислит граница
     шага ([DESIGN-009]), по той же причине, что и у автора: внутри шага
     начисление попало бы в retry-петлю и обнулило бы лимит I4 (ADR-004).
     """
@@ -399,6 +428,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     verification = _round_verification(artifacts, round_no)
     prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
+    attempts: list[AgentTurn] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.reviewer,
@@ -407,10 +437,11 @@ async def review(ctx: StepContext) -> AgentTurn:
         source=EventSource.REVIEWER,
         session_ref=_reviewer_session_ref(ctx),
         on_invalid=failures.append,
+        on_attempt=attempts.append,
     )
     if outcome is None:
         raise _exhausted(failures)
-    review_model, turn = outcome
+    review_model, _ = outcome
 
     write_round_artifact(
         artifacts,
@@ -420,7 +451,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     )
 
     ctx.fsm.handle_step_success()
-    return turn
+    return tuple(attempts)
 
 
 def decide_step(ctx: StepContext) -> None:
@@ -456,11 +487,43 @@ def decide_step(ctx: StepContext) -> None:
     артефакт обязан лежать на диске. Обе материализации собираются из
     одного `DecisionDraft` и одного номера раунда, и их равенство пинится
     тестом шага.
+
+    Повтор над уже записанным решением ПРЕЖНЕЙ версии (без
+    `budget_snapshot`, §4.5) ядро тоже спрашивает — на тех же входах, но без
+    прогноза §5.2, которого прежняя версия не знала. Решение остаётся как
+    записано (снимок в него не дописывается), только если его `round` —
+    этот раунд, а исход, причина, открытые замечания и директива совпали с
+    ядром; иначе — `RoundImmutableError`, как у любого расхождения. Отсутствие
+    снимка — не признак доверия: `decision.json` без него может подложить
+    автор (дерево пишет он) или соседняя сессия с общим `rounds/`. Решение
+    новой версии повтор выносит заново и сверяет с диском (`_write_decision`).
     """
     round_no = ctx.round
     artifacts = ctx.artifact_root
 
     _purge_partial_artifacts(artifacts, round_no)
+    recorded = load_decision(artifacts, round_no)
+    if recorded is not None and recorded.budget_snapshot is None:
+        # Решение прежней версии (§4.5) стоит, только если совпадает с
+        # ядром на тех же входах без прогноза; снимок в него не дописывается.
+        draft = _adopt_prior_version(ctx, round_no, recorded)
+    else:
+        draft = _decide_and_write(ctx, round_no)
+
+    if not is_partial(draft.outcome):
+        finalize_round(artifacts, round_no)
+        ctx.deps.git.commit_round(round_no)
+
+    ctx.fsm.apply_decision(draft)
+
+
+def _decide_and_write(ctx: StepContext, round_no: int) -> DecisionDraft:
+    """Решение ядра по снимку с диска, записанное в `decision.json`.
+
+    Повтор над решением новой версии приходит сюда же и выносит то же
+    решение: снимок бюджета — сохранённый расход на входе в шаг, а
+    начисление идёт после шага (§4.5).
+    """
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
         # Тег схемы выбирается режимом сессии: §5.1 SPEC-002 требует, чтобы
@@ -474,14 +537,46 @@ def decide_step(ctx: StepContext) -> None:
         reason=draft.reason,
         open_issues_carried=list(draft.open_issues_carried),
         next_round_directive=draft.next_round_directive,
+        budget_snapshot=draft.budget_snapshot,
     )
-    _write_decision(artifacts, round_no, decision)
+    _write_decision(ctx.artifact_root, round_no, decision)
+    return draft
 
-    if not is_partial(draft.outcome):
-        finalize_round(artifacts, round_no)
-        ctx.deps.git.commit_round(round_no)
 
-    ctx.fsm.apply_decision(draft)
+def _adopt_prior_version(
+    ctx: StepContext, round_no: int, recorded: Decision
+) -> DecisionDraft:
+    """Решение прежней версии, сверенное с ядром; расхождение — отказ (§4.5).
+
+    Ядро считает на тех же входах, но без прогноза: снимков прошлых раундов
+    и нулевой базы ему не дают, а без наблюдений прогноз §5.2 не
+    применяется. Сверяются номер раунда и четыре поля, которые решение
+    несёт в переход; `forced_review` в `decision.json` не хранится.
+    Записанный файл не источник истины поверх ядра — он лишь вправе
+    остаться, когда с ядром согласен.
+    """
+    draft = decide(_deciding_inputs(ctx, predict=False))
+    agrees = (
+        recorded.round == round_no
+        and recorded.outcome is draft.outcome
+        and recorded.reason == draft.reason
+        and tuple(recorded.open_issues_carried) == draft.open_issues_carried
+        and recorded.next_round_directive == draft.next_round_directive
+    )
+    if not agrees:
+        raise RoundImmutableError(
+            f"decision.json раунда {round_no:03d} без budget_snapshot не "
+            "совпадает с решением ядра на тех же входах: чужое решение шаг не "
+            "принимает и не переписывает"
+        )
+    return DecisionDraft(
+        outcome=draft.outcome,
+        reason=draft.reason,
+        open_issues_carried=draft.open_issues_carried,
+        next_round_directive=draft.next_round_directive,
+        forced_review=draft.forced_review,
+        budget_snapshot=None,
+    )
 
 
 def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
@@ -519,7 +614,7 @@ def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
             leftover.unlink(missing_ok=True)
 
 
-def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
+def _deciding_inputs(ctx: StepContext, *, predict: bool = True) -> DecidingInputs:
     """Снимок раунда N для ядра — четыре источника, ни одного вывода.
 
     Ревью и отчёт берутся у раунда N, замечания и патч — у соседей по
@@ -530,6 +625,10 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
     правок законен, и падать на нём шагу не на чем. `patch_two_back`
     отсутствие сохраняет как `None` — для ядра «правок не было» и
     «сравнивать не с чем» это разные входы.
+
+    `predict=False` — те же входы без наблюдений стоимости: снимков прошлых
+    раундов нет, нулевой базы нет (`tracked_from_start` снят), значит
+    прогноз §5.2 не применяется. Нужен сверке решения прежней версии.
     """
     artifacts = ctx.artifact_root
     round_no = ctx.round
@@ -543,8 +642,11 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
         patch_current=load_patch(artifacts, round_no) or "",
         patch_two_back=load_patch(artifacts, round_no - 2),
         issue_history=issue_history(artifacts, round_no),
-        budget_used=state.budget_used,
+        budget_used=state.budget_used
+        if predict
+        else state.budget_used.model_copy(update={"tracked_from_start": False}),
         limits=state.limits,
+        budget_snapshots=budget_snapshots(artifacts, round_no) if predict else {},
     )
 
 

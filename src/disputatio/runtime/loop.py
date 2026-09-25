@@ -33,7 +33,7 @@
 конфига окружения и `store.load` вместо `config.to_session_state`.
 """
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
@@ -48,22 +48,23 @@ from disputatio.contracts import (
 )
 from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import exporting, steps
-from disputatio.runtime.budget import charge_step
+from disputatio.runtime.budget import charge_failed_step, charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
 from disputatio.runtime.steps import DocSessionSpec, StepContext
 
-StepFn = Callable[[StepContext], Awaitable[AgentTurn | None] | AgentTurn | None]
+StepResult = Sequence[AgentTurn] | None
+StepFn = Callable[[StepContext], Awaitable[StepResult] | StepResult]
 """Тело шага: синхронное (`verify`, `decide_step`) либо ожидаемое.
 
 Разговор с агентом асинхронен, прогон гейтов и решение — нет, и обёртывать
 синхронный шаг в корутину ради единообразия значило бы делать вид, что у
 него есть точка отмены, которой нет.
 
-Возвращает шаг ровно то, что нужно для учёта бюджета ([DESIGN-009]): свой
-`AgentTurn`, если агента звал, и `None`, если не звал. Расход считает не шаг,
-а граница шага — иначе `store.save` бюджета оказался бы внутри шага, то есть
+Возвращает шаг ровно то, что нужно для учёта бюджета ([DESIGN-009]):
+`AgentTurn` всех своих попыток, если агента звал (§4.1), и `None`, если не
+звал. Расход считает не шаг, а граница шага — иначе `store.save` бюджета оказался бы внутри шага, то есть
 внутри retry-петли, где новый FSM обнулил бы лимит I4 (ADR-004).
 """
 
@@ -302,10 +303,22 @@ async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:
     Начисление идёт ПОСЛЕ шага — то есть после `handle_step_success` внутри
     него: сюда управление приходит только у шага, дошедшего до конца, и
     обнулить лимит I4 посреди retry-петли эта граница не может по построению
-    (ADR-004). Упавший шаг бюджета не начисляет вовсе: исключение уходит
-    наружу мимо этой строки.
+    (ADR-004). Шаг, упавший в `FAILED`, начисляет расход тоже (§4.1): его
+    попытки собираются в `attempt_log`, их токены и время шага сохраняются
+    в состояние `FAILED` (`charge_failed_step`), и исключение уходит наружу
+    прежним. Сбой ловится `finally`, а не `except`: ни одна ошибка шага —
+    в том числе I3 — здесь не перехватывается и не переупаковывается.
     """
+    attempts: list[AgentTurn] = []
     started = ctx.deps.monotonic()
-    outcome = step(ctx)
-    turn = await outcome if isawaitable(outcome) else outcome
-    return charge_step(ctx, turn=turn, elapsed_s=ctx.deps.monotonic() - started)
+    finished = False
+    try:
+        outcome = step(ctx.with_attempt_log(attempts))
+        turns = await outcome if isawaitable(outcome) else outcome
+        finished = True
+    finally:
+        if not finished:
+            charge_failed_step(
+                ctx, turns=attempts, elapsed_s=ctx.deps.monotonic() - started
+            )
+    return charge_step(ctx, turns=turns or (), elapsed_s=ctx.deps.monotonic() - started)

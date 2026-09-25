@@ -31,6 +31,7 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "decide",
         "REASON_CONVERGED",
         "REASON_ANTI_SYCOPHANCY",
+        "REASON_BUDGET_PREDICTED",
         "REASON_BUDGET_TOKENS",
         "REASON_BUDGET_WALL",
         "REASON_OSCILLATION_DIFF",

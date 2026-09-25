@@ -178,6 +178,7 @@ class SessionFsm:
             reason=draft.reason,
             open_issues_carried=list(draft.open_issues_carried),
             next_round_directive=draft.next_round_directive,
+            budget_snapshot=draft.budget_snapshot,
         )
 
         if chain is not None:

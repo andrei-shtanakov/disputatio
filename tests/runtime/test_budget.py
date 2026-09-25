@@ -564,7 +564,7 @@ def test_reported_zero_tokens_keep_the_previous_count() -> None:
     accumulate = _budget_attr("accumulate")
     before = _state(SessionPhase.PROPOSING, 1, budget=_used(_PRIOR_TOKENS, _PRIOR_WALL))
 
-    after = accumulate(before, turn=_turn(0), elapsed_s=_ELAPSED)
+    after = accumulate(before, turns=(_turn(0),), elapsed_s=_ELAPSED)
 
     assert after.budget_used.tokens == _PRIOR_TOKENS
     assert after.budget_used.wall_seconds == _PRIOR_WALL + _ELAPSED
@@ -590,7 +590,7 @@ def test_unknown_tokens_neither_grow_the_counter_nor_pass_for_zero() -> None:
     token_delta = _budget_attr("token_delta")
     before = _state(SessionPhase.PROPOSING, 1, budget=_used(_PRIOR_TOKENS, _PRIOR_WALL))
 
-    after = accumulate(before, turn=_turn(None), elapsed_s=_ELAPSED)
+    after = accumulate(before, turns=(_turn(None),), elapsed_s=_ELAPSED)
 
     assert after.budget_used.tokens == _PRIOR_TOKENS
     assert after.budget_used.wall_seconds == _PRIOR_WALL + _ELAPSED
@@ -608,7 +608,7 @@ def test_absent_turn_does_not_grow_the_token_counter() -> None:
     token_delta = _budget_attr("token_delta")
     before = _state(SessionPhase.VERIFYING, 1, budget=_used(_PRIOR_TOKENS, _PRIOR_WALL))
 
-    after = accumulate(before, turn=None, elapsed_s=_ELAPSED)
+    after = accumulate(before, turns=(), elapsed_s=_ELAPSED)
 
     assert after.budget_used.tokens == _PRIOR_TOKENS
     assert after.budget_used.wall_seconds == _PRIOR_WALL + _ELAPSED
