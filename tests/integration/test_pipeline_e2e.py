@@ -1700,21 +1700,23 @@ def test_checklist_override_reaches_the_reviewer(
     Контур pair трогается тем же утверждением с другой стороны: его пункты
     не переопределялись, и их вендоренные тексты обязаны остаться.
     """
-    override = "S1: ни одной находки severity blocker или major (переопределено)"
+    # `S2`, а не `S1`: текст пункта с ролью findings-item не переопределяем
+    # (#123), а доезжание override до ревьюера пинится на обычном пункте.
+    override = "S2: нет открытых архитектурных вопросов (переопределено)"
     stand = build_stand(
         tmp_path,
         monkeypatch,
         happy_path_turns(),
-        extra_pipeline=f'\n[pipeline.checklists.spec]\nS1 = "{override}"\n',
+        extra_pipeline=f'\n[pipeline.checklists.spec]\nS2 = "{override}"\n',
     )
 
     assert run_cli(stand, "run", "--task", TASK_TEXT) == EXIT_OK
 
     spec_prompt = stand.script.prompts_of("spec-r1", "reviewer")[0]
     assert override in spec_prompt
-    assert CHECKLIST_TEXT["S1"] not in spec_prompt
+    assert CHECKLIST_TEXT["S2"] not in spec_prompt
     # Непереопределённые пункты своего контура на месте.
-    assert CHECKLIST_TEXT["S2"] in spec_prompt
+    assert CHECKLIST_TEXT["S3"] in spec_prompt
     # Чужой контур override не задевает.
     pair_prompt = stand.script.prompts_of("pair-r1", "reviewer")[0]
     assert CHECKLIST_TEXT["P1"] in pair_prompt

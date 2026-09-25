@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from disputatio.contracts import FINDINGS_ITEM_TEXT
 from disputatio.contracts.pipeline import PipelineKind
 from disputatio.runtime.errors import ConfigError
 from disputatio.runtime.pipeline_config import load_pipeline_config
@@ -183,13 +184,13 @@ def test_pair_checklist_form_unchanged(tmp_path: Path) -> None:
 spec_path = "docs/spec.md"
 plan_path = "docs/plan.md"
 [pipeline.checklists.spec]
-S1 = "переписанный текст"
+S2 = "переписанный текст"
 """
         + _AGENTS,
     )
     checklist = load_pipeline_config(path).checklists["spec"]
     assert checklist.order == ("S1", "S2", "S3", "S4", "S5")
-    assert checklist.texts["S1"] == "переписанный текст"
+    assert checklist.texts["S2"] == "переписанный текст"
     assert checklist.findings_item == "S1"
 
 
@@ -299,3 +300,79 @@ def test_pipeline_forms_remain_exclusive_and_kind_change_is_drift(
             "pair-docs"
         )
     assert "kind" in {diff.field for diff in pair_excinfo.value.diffs}
+
+
+# --- #123: текст пункта с ролью findings-item не переопределяем -----------
+
+
+def test_spec_findings_item_keeps_its_canonical_text(tmp_path: Path) -> None:
+    """`S1` с неизменённым каноническим текстом — допустим (#123)."""
+    path = _write(
+        tmp_path,
+        "[pipeline]\n"
+        'spec_path = "docs/spec.md"\nplan_path = "docs/plan.md"\n'
+        f'[pipeline.checklists.spec]\nS1 = "{FINDINGS_ITEM_TEXT}"\n' + _AGENTS,
+    )
+
+    checklist = load_pipeline_config(path).checklists["spec"]
+
+    assert checklist.texts["S1"] == FINDINGS_ITEM_TEXT
+
+
+def test_spec_findings_item_text_override_is_a_config_error(tmp_path: Path) -> None:
+    """Иной текст пункта с ролью у `spec` — `ConfigError` (код 2), не тихий merge."""
+    path = _write(
+        tmp_path,
+        "[pipeline]\n"
+        'spec_path = "docs/spec.md"\nplan_path = "docs/plan.md"\n'
+        '[pipeline.checklists.spec]\nS1 = "спека читается легко"\n' + _AGENTS,
+    )
+
+    with pytest.raises(ConfigError, match="findings-item"):
+        load_pipeline_config(path)
+
+
+def test_doc_findings_item_text_must_be_canonical(tmp_path: Path) -> None:
+    """У `doc` запрет привязан к роли: пункт, названный `findings_item`, а не id."""
+    body = (
+        '[pipeline]\ndocument_path = "docs/charter.md"\n'
+        '[pipeline.checklists.doc]\nfindings_item = "B1"\n'
+        "[pipeline.checklists.doc.items]\n"
+        'B1 = "границы и не-цели названы явно"\n'
+        f'B3 = "{FINDINGS_ITEM_TEXT}"\n'
+    )
+
+    with pytest.raises(ConfigError, match="B1 — пункт с ролью findings-item"):
+        load_pipeline_config(_write(tmp_path, body + _AGENTS))
+
+
+def test_doc_items_without_the_role_keep_free_text(tmp_path: Path) -> None:
+    """Прочие пункты `doc` оператор формулирует сам — ограничение только у роли."""
+    body = (
+        '[pipeline]\ndocument_path = "docs/charter.md"\n'
+        '[pipeline.checklists.doc]\nfindings_item = "B3"\n'
+        "[pipeline.checklists.doc.items]\n"
+        'B1 = "границы и не-цели названы явно"\n'
+        f'B3 = "{FINDINGS_ITEM_TEXT}"\n'
+    )
+
+    checklist = load_pipeline_config(_write(tmp_path, body + _AGENTS)).checklists["doc"]
+
+    assert checklist.texts["B1"] == "границы и не-цели названы явно"
+    assert checklist.findings_item == "B3"
+
+
+def test_pair_has_no_findings_item_so_any_text_is_allowed(tmp_path: Path) -> None:
+    """У `pair` роли нет (её работу делает V7): переопределять можно любой пункт."""
+    path = _write(
+        tmp_path,
+        "[pipeline]\n"
+        'spec_path = "docs/spec.md"\nplan_path = "docs/plan.md"\n'
+        '[pipeline.checklists.pair]\nP1 = "каждый пункт плана трассируется"\n'
+        + _AGENTS,
+    )
+
+    checklist = load_pipeline_config(path).checklists["pair"]
+
+    assert checklist.findings_item is None
+    assert checklist.texts["P1"] == "каждый пункт плана трассируется"

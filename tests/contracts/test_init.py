@@ -29,6 +29,7 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "CHECKLIST_BY_CONTOUR",
         "CHECKLIST_TEXT",
         "FINDINGS_ITEM_BY_CONTOUR",
+        "FINDINGS_ITEM_TEXT",
         "ResolvedChecklist",
     ),
     "session": (

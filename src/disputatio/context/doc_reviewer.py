@@ -102,6 +102,21 @@ _PAIR_DEFECT_CLASS_NOTE: Final = (
 )
 
 
+_VERDICT_CONSISTENCY_NOTE: Final = (
+    "Согласованность вердикта (V3, V7 §5.2): `approve` несовместим со "
+    "`status: fail` у любого пункта чеклиста и с наличием в этом же ревью "
+    "находок severity `blocker` или `major`. Согласованность чеклиста с "
+    "находками (V8 §5.2): пункт, условие которого опровергает находка этого "
+    "ревью, обязан иметь `status: fail` и ссылаться на неё через `issue_ids`."
+)
+
+_FINDINGS_ITEM_NOTE: Final = (
+    "Пункт `{item_id}` — findings-item контура («нет blocker/major-находок»): "
+    "при любой находке severity `blocker` или `major` в этом ревью его "
+    "статус не может быть `pass` (V8 §5.2, проверяется валидатором)."
+)
+
+
 def build_doc_reviewer_prompt(
     *,
     contour: str,
@@ -128,7 +143,9 @@ def build_doc_reviewer_prompt(
     на документ), отчёт детерминированных проверок (целиком, включая
     провал), чеклист сходимости контура со статическим требованием
     evidence, требования §4.4 к `review.json` (в doc-редакции, тег
-    `disputatio/v2`), и для pair-контура — дополнительное требование
+    `disputatio/v2`), согласованность вердикта и чеклиста V3/V7/V8 (§5.2:
+    doc-ревью несёт §4.4 и V1–V8 вместе, и промпт обязан требовать оба), и
+    для pair-контура — дополнительное требование
     `defect_class`. Требование `defect_class` стоит последним намеренно:
     оно про поля `issues`, то есть продолжает блок требований к выводу, а
     не открывает новую тему.
@@ -141,7 +158,10 @@ def build_doc_reviewer_prompt(
         render_verification_section(verification),
         _render_checklist_section(checklist),
         DOC_REVIEW_SCHEMA_REQUIREMENTS,
+        _VERDICT_CONSISTENCY_NOTE,
     ]
+    if checklist.findings_item is not None:
+        parts.append(_FINDINGS_ITEM_NOTE.format(item_id=checklist.findings_item))
     if contour == "pair":
         parts.append(_PAIR_DEFECT_CLASS_NOTE)
     return "\n\n".join(part for part in parts if part)

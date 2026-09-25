@@ -468,11 +468,11 @@
   — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio — имена выводятся из констант `doc_gates` (2026-09-25)
   — issue #116 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] SPEC-002 §5.2 не говорит, что doc-ревью несёт контракт вывода §4.4 SPEC-001 @id:spec002-doc-review-carries-4-4 @epic:eco.disputatio
+- [x] SPEC-002 §5.2 не говорит, что doc-ревью несёт контракт вывода §4.4 SPEC-001 @id:spec002-doc-review-carries-4-4 @epic:eco.disputatio — записано в SPEC-002 §5.2 (2026-09-25)
   — issue #117 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] В журнале пайплайна нет события для припаркованной сессии @id:pipeline-park-event @epic:eco.disputatio
+- [x] В журнале пайплайна нет события для припаркованной сессии @id:pipeline-park-event @epic:eco.disputatio — без нового события; §4.1 описывает штатные события и подтверждение по манифесту (2026-09-25)
   — issue #118 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] `superseded_by` (§7.3) разнороден и пишется однократно — допущение не записано @id:spec002-superseded-by-semantics @epic:eco.disputatio
+- [x] `superseded_by` (§7.3) разнороден и пишется однократно — допущение не записано @id:spec002-superseded-by-semantics @epic:eco.disputatio — записано в §4.2/§7.3, правки кода не нужны (2026-09-25)
   — issue #119 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] §7.2: считаются ли операторские возвраты в потолок `max_architectural_returns` @id:spec002-return-ceiling-by-edge @epic:eco.disputatio — записано в SPEC-002 §7.2 (2026-09-25)
   — issue #120 (остаток ревью PR #51, аудит 2026-09-25).
@@ -480,7 +480,7 @@
   — issue #121 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] §8.2: правило честности `export` не записано @id:spec002-export-honesty-rule @epic:eco.disputatio — записано в SPEC-002 §8.2 (2026-09-25)
   — issue #122 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] Текст `S1` переопределяем, а V8 продолжает требовать от него «нет blocker/major» @id:checklist-findings-role-text-override @epic:eco.disputatio
+- [x] Текст `S1` переопределяем, а V8 продолжает требовать от него «нет blocker/major» @id:checklist-findings-role-text-override @epic:eco.disputatio — текст роли не переопределяем: ConfigError, §3.2/§5.3 (2026-09-25)
   — issue #123 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] SPEC-002 не называет авторитетный конфиг: снапшот или живой @id:spec002-authoritative-config @epic:eco.disputatio — записано в SPEC-002 §3.2, §8.1 шаг 1 (2026-09-25)
   — issue #124 (остаток ревью PR #51, аудит 2026-09-25).
@@ -488,7 +488,7 @@
   — issue #125 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] Анкер P9: вне toplevel репозитория, а не вне `workspace_root` — нормы расходятся @id:spec002-anchor-containment-toplevel @epic:eco.disputatio — записано в SPEC-002 P9, §3.1 `run` и `phase`, §3.2, §10 (2026-09-25)
   — issue #126 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] SPEC-002 §8.2: «экспорт FAILED только явным --partial» — код не отказывает @id:spec002-export-failed-without-partial @epic:eco.disputatio
+- [x] SPEC-002 §8.2: «экспорт FAILED только явным --partial» — код не отказывает @id:spec002-export-failed-without-partial @epic:eco.disputatio — спека приведена к коду: P7 и §8.2 (2026-09-25)
   — §8.2 пишет «`FAILED` — ненулевой, экспорт только явным `export --partial`»; `disp pipeline export`
   без флага на FAILED-пайплайне не отказывает: экспортирует с `converged: false` (`runtime/pipeline_export.py:170`)
   и ненулевым кодом (`cli.py:549` → `_pipeline_exit_code`, `cli.py:736`). Ждёт решения владельца спеки, какая сторона права.
