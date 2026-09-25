@@ -37,6 +37,7 @@ from disputatio.contracts import (
     AgentAdapter,
     AgentRef,
     AgentTurn,
+    BudgetSnapshot,
     BudgetUsed,
     Decision,
     DiffStats,
@@ -523,6 +524,9 @@ def test_deciding_sweeps_before_it_finds_the_round_closed(tmp_path: Path) -> Non
         reason="чужое решение",
         open_issues_carried=[],
         next_round_directive=None,
+        # Решение новой версии: без снимка оно было бы прежней версии и по
+        # §4.5 авторитетным — шаг завершил бы переход, а не упал.
+        budget_snapshot=BudgetSnapshot(tokens=0, wall_seconds=0.0, unreported_turns=0),
     )
     write_round_artifact(
         tmp_path, _ROUND, DECISION_NAME, foreign.model_dump_json(by_alias=True)

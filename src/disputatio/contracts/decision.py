@@ -48,7 +48,8 @@ class Decision(ArtifactBase):
 
     `budget_snapshot` — расширение v1 (§4.5): новая версия пишет его в
     каждое решение, решение прежней версии читается с `None` и наблюдением
-    стоимости раунда не служит.
+    стоимости раунда не служит. `None` не сериализуется: у решения без
+    снимка ключа нет, как у артефакта прежней версии, а не `null`.
     """
 
     round: int = Field(ge=1)
@@ -56,4 +57,6 @@ class Decision(ArtifactBase):
     reason: str
     open_issues_carried: list[str] = Field(default_factory=list)
     next_round_directive: str | None
-    budget_snapshot: BudgetSnapshot | None = None
+    budget_snapshot: BudgetSnapshot | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )

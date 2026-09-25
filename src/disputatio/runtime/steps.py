@@ -52,6 +52,7 @@ from disputatio.contracts import (
 )
 from disputatio.core import (
     DecidingInputs,
+    DecisionDraft,
     SessionFsm,
     Writer,
     active_writer,
@@ -68,6 +69,7 @@ from disputatio.runtime.errors import ReviewNotAccepted
 from disputatio.runtime.git import base_rev
 from disputatio.runtime.history import (
     PriorRound,
+    budget_snapshots,
     carried_issues,
     issue_history,
     load_adopted_findings,
@@ -461,11 +463,41 @@ def decide_step(ctx: StepContext) -> None:
     артефакт обязан лежать на диске. Обе материализации собираются из
     одного `DecisionDraft` и одного номера раунда, и их равенство пинится
     тестом шага.
+
+    Повтор над уже записанным решением ПРЕЖНЕЙ версии (без
+    `budget_snapshot`) — единственный случай, когда ядро не спрашивают
+    (§4.5): такое решение авторитетно, снимок в неизменяемый артефакт не
+    дописывается, прогноз §5.2 для раунда не применяется, а переход
+    завершается по записанному исходу в том же порядке — финализация и
+    коммит, затем переход. Решение новой версии повтор выносит заново и
+    сверяет с диском (`_write_decision`).
     """
     round_no = ctx.round
     artifacts = ctx.artifact_root
 
     _purge_partial_artifacts(artifacts, round_no)
+    recorded = load_decision(artifacts, round_no)
+    if recorded is not None and recorded.budget_snapshot is None:
+        # Решение прежней версии авторитетно (§4.5): не пересчитывается, в
+        # неизменяемый артефакт снимок не дописывается, переход — по нему.
+        draft = _recorded_draft(recorded)
+    else:
+        draft = _decide_and_write(ctx, round_no)
+
+    if not is_partial(draft.outcome):
+        finalize_round(artifacts, round_no)
+        ctx.deps.git.commit_round(round_no)
+
+    ctx.fsm.apply_decision(draft)
+
+
+def _decide_and_write(ctx: StepContext, round_no: int) -> DecisionDraft:
+    """Решение ядра по снимку с диска, записанное в `decision.json`.
+
+    Повтор над решением новой версии приходит сюда же и выносит то же
+    решение: снимок бюджета — сохранённый расход на входе в шаг, а
+    начисление идёт после шага (§4.5).
+    """
     draft = decide(_deciding_inputs(ctx))
     decision = Decision(
         # Тег схемы выбирается режимом сессии: §5.1 SPEC-002 требует, чтобы
@@ -481,13 +513,26 @@ def decide_step(ctx: StepContext) -> None:
         next_round_directive=draft.next_round_directive,
         budget_snapshot=draft.budget_snapshot,
     )
-    _write_decision(artifacts, round_no, decision)
+    _write_decision(ctx.artifact_root, round_no, decision)
+    return draft
 
-    if not is_partial(draft.outcome):
-        finalize_round(artifacts, round_no)
-        ctx.deps.git.commit_round(round_no)
 
-    ctx.fsm.apply_decision(draft)
+def _recorded_draft(recorded: Decision) -> DecisionDraft:
+    """Черновик из уже записанного решения прежней версии (§4.5).
+
+    Исход, причина, открытые замечания и директива — ровно записанные,
+    снимка нет. `forced_review` в `decision.json` не хранится и переходом не
+    читается; восстанавливать его по коду причины значило бы повторить здесь
+    реестр причин §5, поэтому — `False`.
+    """
+    return DecisionDraft(
+        outcome=recorded.outcome,
+        reason=recorded.reason,
+        open_issues_carried=tuple(recorded.open_issues_carried),
+        next_round_directive=recorded.next_round_directive,
+        forced_review=False,
+        budget_snapshot=None,
+    )
 
 
 def _purge_partial_artifacts(artifact_root: Path, round_no: int) -> None:
@@ -551,6 +596,7 @@ def _deciding_inputs(ctx: StepContext) -> DecidingInputs:
         issue_history=issue_history(artifacts, round_no),
         budget_used=state.budget_used,
         limits=state.limits,
+        budget_snapshots=budget_snapshots(artifacts, round_no),
     )
 
 

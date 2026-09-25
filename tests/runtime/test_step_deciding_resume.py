@@ -30,6 +30,7 @@ import pytest
 from disputatio.contracts import (
     AgentRef,
     AgentTurn,
+    BudgetSnapshot,
     BudgetUsed,
     Decision,
     DiffStats,
@@ -332,6 +333,11 @@ def test_resume_does_not_rewrite_a_decision_that_disagrees_with_the_round(
             reason="чужое решение",
             open_issues_carried=[],
             next_round_directive=None,
+            # Решение новой версии: решение без снимка — прежней версии и
+            # по §4.5 авторитетно, отказа на нём не бывает.
+            budget_snapshot=BudgetSnapshot(
+                tokens=4242, wall_seconds=7.5, unreported_turns=0
+            ),
         ).model_dump_json(by_alias=True),
     )
     finalize_round(tmp_path, _ROUND)

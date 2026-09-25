@@ -19,7 +19,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from disputatio.contracts import Decision, Issue, Review, VerificationReport
+from disputatio.contracts import (
+    BudgetSnapshot,
+    Decision,
+    Issue,
+    Review,
+    VerificationReport,
+)
 from disputatio.runtime.layout import (
     CHANGES_PATCH_NAME,
     DECISION_NAME,
@@ -176,6 +182,21 @@ def issue_history(artifact_root: Path, round_no: int) -> dict[int, tuple[Issue, 
         if review is not None:
             history[prior] = tuple(review.issues)
     return history
+
+
+def budget_snapshots(artifact_root: Path, round_no: int) -> dict[int, BudgetSnapshot]:
+    """`{n: budget_snapshot решения n}` по раундам строго до `round_no` (§5.2).
+
+    Раунд без решения или с решением прежней версии (снимка нет) в словарь
+    не попадает: отсутствующий снимок нулём не заменяется, и прогноз обязан
+    видеть пропуск как пропуск.
+    """
+    snapshots: dict[int, BudgetSnapshot] = {}
+    for prior in range(1, round_no):
+        decision = load_decision(artifact_root, prior)
+        if decision is not None and decision.budget_snapshot is not None:
+            snapshots[prior] = decision.budget_snapshot
+    return snapshots
 
 
 def _load[T: (Review, VerificationReport, Decision)](
