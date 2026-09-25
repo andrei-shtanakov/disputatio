@@ -139,9 +139,6 @@ def test_pipeline_paths_follow_layout(session_root: Path) -> None:
     assert pp.pipeline_dir(session_root, _SLUG) == base
     assert pp.manifest_path(session_root, _SLUG) == base / "pipeline.json"
     assert pp.events_path(session_root, _SLUG) == base / "events.jsonl"
-    assert pp.sessions_dir(session_root, _SLUG) == base / "sessions"
-    assert pp.adoptions_dir(session_root, _SLUG) == base / "adoptions"
-    assert pp.result_dir(session_root, _SLUG) == base / "result"
 
 
 def test_slug_grammar_rejected(session_root: Path) -> None:

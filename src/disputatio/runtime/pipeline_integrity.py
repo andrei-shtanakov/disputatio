@@ -43,20 +43,19 @@ from typing import Final
 from disputatio.contracts import AppendOnlyEntry, IntegritySnapshot, SessionState
 from disputatio.events import AnchorRecord, IntegrityAnchor
 from disputatio.runtime.errors import ControlPlaneTampered
-from disputatio.runtime.layout import SESSION_DIR_NAME, rounds_dir
+from disputatio.runtime.layout import (
+    PIPELINE_MANIFEST_NAME,
+    SESSION_DIR_NAME,
+    rounds_dir,
+)
 from disputatio.runtime.pipeline_config import validate_anchor_path
-
-#: Имя манифеста. Публичная константа, потому что о нём знают двое: снапшот
-#: P9 (ниже) и терминальная отметка анкера (`pipeline_runner._mark_terminal`)
-#: — второй литерал разошёлся бы с первым молча.
-MANIFEST_NAME: Final = "pipeline.json"
 
 #: Файлы каталога пайплайна, неизменяемые в пределах хода автора (§4.1).
 #: `pipeline.json` — тот самый манифест, ради недостижимости которого анкер и
 #: вынесен из дерева; снапшоты task/config/checklists неизменны на весь
 #: пайплайн, и их хеши записаны в манифесте.
 _PIPELINE_IMMUTABLE: Final = (
-    MANIFEST_NAME,
+    PIPELINE_MANIFEST_NAME,
     "task.md",
     "config.toml",
     "checklists.toml",
@@ -310,22 +309,22 @@ def verify_terminal_mark(
             f"а спрошен {pipeline_id!r}: журнал целостности принадлежит не "
             "этому пайплайну"
         )
-    recorded = record.immutable.get(MANIFEST_NAME)
+    recorded = record.immutable.get(PIPELINE_MANIFEST_NAME)
     if recorded is None:
         raise ControlPlaneTampered(
-            f"терминальная отметка не несёт хеша {MANIFEST_NAME}: сверять фазу не с чем"
+            f"терминальная отметка не несёт хеша {PIPELINE_MANIFEST_NAME}: сверять фазу не с чем"
         )
     try:
         actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     except OSError as exc:
         raise ControlPlaneTampered(
-            f"{MANIFEST_NAME} не читается ({exc}), а анкер утверждает фазу "
+            f"{PIPELINE_MANIFEST_NAME} не читается ({exc}), а анкер утверждает фазу "
             f"{record.phase!r}: подтвердить её нечем"
         ) from exc
     if actual != recorded:
         raise ControlPlaneTampered(
             f"целостность control plane нарушена (P9, terminal): "
-            f"{MANIFEST_NAME} изменился после остановки пайплайна "
+            f"{PIPELINE_MANIFEST_NAME} изменился после остановки пайплайна "
             f"({recorded[:12]}… → {actual[:12]}…). Анкер помнит фазу "
             f"{record.phase!r}; что говорит манифест сейчас — не доказательство"
         )

@@ -73,6 +73,11 @@ from disputatio.events import PipelineEvent, PipelineEventType, atomic_write
 from disputatio.runtime.errors import AdoptionScopeError, PipelineNotResumable
 from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
 from disputatio.runtime.history import load_review
+from disputatio.runtime.layout import (
+    adoptions_dir_of,
+    artifact_root_of,
+    pipeline_dir_of,
+)
 from disputatio.runtime.pipeline_config import PipelineConfig
 from disputatio.runtime.pipeline_runner import (
     CONTOUR_PAIR,
@@ -80,10 +85,8 @@ from disputatio.runtime.pipeline_runner import (
     PipelineSink,
     active_session,
     architectural_findings,
-    artifact_root_of,
     escalation_update,
     load_session_state,
-    pipeline_dir_of,
     recompute_budget,
     returns_exhausted,
     revision_id,
@@ -96,9 +99,6 @@ from disputatio.runtime.pipeline_runner import (
 ADOPT_KIND: Final = "adopt_external"
 DISCARD_KIND: Final = "discard_round"
 OPERATOR_KINDS: Final = frozenset({ADOPT_KIND, DISCARD_KIND})
-
-#: Каталог канонических патчей принятых правок (§4.1).
-ADOPTIONS_DIR_NAME: Final = "adoptions"
 
 #: Заголовок операторского чекпоинта (§3.1); идентичность операции — в
 #: трейлере, потому что заголовок одинаков у всех adoption'ов пайплайна.
@@ -420,8 +420,8 @@ class OperatorIntents:
         неоткуда, и запись «пустого патча» поверх сохранённого была бы
         потерей provenance.
         """
-        directory = pipeline_dir_of(self._workspace_root, state.pipeline_id)
-        patch = directory / ADOPTIONS_DIR_NAME / f"{action.operation_id}.patch"
+        directory = adoptions_dir_of(self._workspace_root, state.pipeline_id)
+        patch = directory / f"{action.operation_id}.patch"
         if patch.is_file():
             return patch
         if _sha256(diff) != action.args["diff_sha256"]:

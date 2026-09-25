@@ -58,7 +58,7 @@ from disputatio.runtime.config import RuntimeConfig
 from disputatio.runtime.errors import ConfigError, UnknownAdapterError
 from disputatio.runtime.git import GitOps
 from disputatio.runtime.history import load_patch
-from disputatio.runtime.layout import adopted_findings_json
+from disputatio.runtime.layout import adopted_findings_json, pipeline_dir_of
 from disputatio.runtime.pipeline_adopt import (
     AdoptionRouter,
     OperatorIntents,
@@ -79,7 +79,6 @@ from disputatio.runtime.pipeline_runner import (
     PipelineRunner,
     SessionCreation,
     load_session_state,
-    pipeline_dir_of,
     split_revision,
 )
 from disputatio.verifier import DocVerifier, VerifierRunner

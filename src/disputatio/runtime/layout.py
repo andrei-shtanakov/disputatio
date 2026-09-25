@@ -35,6 +35,17 @@ VERIFICATION_NAME: Final = "verification.json"
 REVIEW_NAME: Final = "review.json"
 DECISION_NAME: Final = "decision.json"
 
+#: Раскладка каталога пайплайна `.disputatio/pipelines/<slug>/` (SPEC-002
+#: §4.1) — единственная копия в `runtime`. Писатель манифеста и журнала
+#: (`events.pipeline_paths`) держит свою, по тому же правилу, что и для
+#: сессии: подмодуль `events` наружу не экспортируется. Расхождение двух копий
+#: ловит `tests/runtime/test_pipeline_layout_mirror.py`.
+PIPELINES_DIR_NAME: Final = "pipelines"
+PIPELINE_MANIFEST_NAME: Final = "pipeline.json"
+PIPELINE_SESSIONS_DIR_NAME: Final = "sessions"
+ADOPTIONS_DIR_NAME: Final = "adoptions"
+PIPELINE_RESULT_DIR_NAME: Final = "result"
+
 
 def session_dir(artifact_root: Path) -> Path:
     """Корневая директория сессии: `artifact_root/.disputatio`."""
@@ -82,3 +93,42 @@ def round_artifact(artifact_root: Path, round_no: int, name: str) -> Path:
     ответа на один вопрос.
     """
     return round_dir(artifact_root, round_no) / name
+
+
+def pipeline_dir_of(workspace_root: Path, slug: str) -> Path:
+    """`.disputatio/pipelines/<slug>` (§4.1) — корень остальных путей пайплайна.
+
+    Корень — `workspace_root` (git-репозиторий), а не `artifact_root`: каталог
+    пайплайна лежит в репозитории, а `artifact_root` каждой ревизии — уже
+    внутри него. Слаг здесь не валидируется: его грамматику проверяет
+    писатель (`events.pipeline_paths.validate_slug`) до создания каталога.
+    """
+    return workspace_root / SESSION_DIR_NAME / PIPELINES_DIR_NAME / slug
+
+
+def artifact_root_of(workspace_root: Path, slug: str, session_id: str) -> Path:
+    """`artifact_root` одной ревизии: `sessions/<revision>` (§4.1)."""
+    return (
+        pipeline_dir_of(workspace_root, slug) / PIPELINE_SESSIONS_DIR_NAME / session_id
+    )
+
+
+def adoptions_dir_of(workspace_root: Path, slug: str) -> Path:
+    """Каталог канонических патчей принятых внешних правок `adoptions/` (§3.1)."""
+    return pipeline_dir_of(workspace_root, slug) / ADOPTIONS_DIR_NAME
+
+
+def result_dir_of(workspace_root: Path, slug: str) -> Path:
+    """Каталог экспорта пайплайна `result/` (§8.2)."""
+    return pipeline_dir_of(workspace_root, slug) / PIPELINE_RESULT_DIR_NAME
+
+
+def result_dir_relative(slug: str) -> str:
+    """`result/` относительно `workspace_root` POSIX-строкой (§8.2).
+
+    Строка, а не `Path`: она попадает в текст `publish.txt`, и содержимое
+    файла не должно зависеть от разделителя пути ОС, на которой собирался
+    экспорт.
+    """
+    pipelines = f"{SESSION_DIR_NAME}/{PIPELINES_DIR_NAME}"
+    return f"{pipelines}/{slug}/{PIPELINE_RESULT_DIR_NAME}"

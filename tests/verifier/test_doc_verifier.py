@@ -17,6 +17,7 @@ import pytest
 from disputatio.contracts.ports import Verifier
 from disputatio.contracts.verification import GateStatus, OverallStatus
 from disputatio.verifier import BASELINE_GATE_NAMES, GateSpec
+from disputatio.verifier.doc_gates import GATE_DOC_SCOPE
 from disputatio.verifier.doc_verifier import DocVerifier
 
 # Тот же герметичный набор, что и в conftest.py::_git_env — коммит внутри
@@ -163,7 +164,7 @@ def test_overall_fails_on_scope_escape(tmp_git_repo: Path) -> None:
     report = verifier.verify(1)
 
     assert report.overall is OverallStatus.FAIL
-    scope_gate = next(g for g in report.gates if g.name == "doc-scope")
+    scope_gate = next(g for g in report.gates if g.name == GATE_DOC_SCOPE)
     assert scope_gate.status is GateStatus.FAIL
 
 
@@ -237,7 +238,7 @@ def test_pure_rename_outside_allowed_fails_overall(tmp_git_repo: Path) -> None:
     report = verifier.verify(1)
 
     assert report.overall is OverallStatus.FAIL
-    scope_gate = next(g for g in report.gates if g.name == "doc-scope")
+    scope_gate = next(g for g in report.gates if g.name == GATE_DOC_SCOPE)
     assert scope_gate.status is GateStatus.FAIL
 
 

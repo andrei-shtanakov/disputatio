@@ -38,7 +38,7 @@ from disputatio.contracts import (
     Verdict,
 )
 from disputatio.runtime import composition
-from disputatio.runtime.pipeline_runner import artifact_root_of, pipeline_dir_of
+from disputatio.runtime.layout import artifact_root_of, pipeline_dir_of
 
 SLUG: Final = "charter"
 DOCUMENT_PATH: Final = "docs/charter.md"

@@ -39,7 +39,7 @@ from disputatio.contracts import (
     TransitionReason,
 )
 from disputatio.events.atomic import atomic_write as real_atomic_write
-from disputatio.events.pipeline_paths import result_dir
+from disputatio.runtime.layout import result_dir_of
 from disputatio.runtime.pipeline_export import (
     MANIFEST_NAME,
     PR_BODY_NAME,
@@ -199,7 +199,7 @@ def test_export_writes_the_four_canonical_files(tmp_path: Path) -> None:
         partial=False,
     )
 
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     assert manifest_path == directory / MANIFEST_NAME
     on_disk = {entry.name for entry in directory.iterdir()}
     assert on_disk == {PR_TITLE_NAME, PR_BODY_NAME, PUBLISH_NAME, MANIFEST_NAME}
@@ -216,7 +216,7 @@ def test_export_is_byte_for_byte_idempotent(tmp_path: Path) -> None:
     }
 
     export_pipeline(state, **kwargs)
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     first = {entry.name: entry.read_bytes() for entry in directory.iterdir()}
 
     export_pipeline(state, **kwargs)
@@ -242,7 +242,7 @@ def test_manifest_carries_the_declared_created_at_and_transition_timestamps(
         partial=False,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["created_at"] == _CREATED_AT.isoformat().replace("+00:00", "Z")
     at_values = {entry["at"] for entry in manifest["transitions"]}
     assert _STARTED_AT.isoformat().replace("+00:00", "Z") in at_values
@@ -260,7 +260,7 @@ def test_manifest_is_the_commit_marker_written_last(tmp_path: Path) -> None:
         partial=False,
     )
 
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     manifest = _manifest(directory)
     files = manifest["files"]
     assert set(files) == {PR_TITLE_NAME, PR_BODY_NAME, PUBLISH_NAME}
@@ -276,7 +276,7 @@ def test_interrupted_export_leaves_no_manifest_and_repair_fixes_it(
 ) -> None:
     """Обрыв перед манифестом — набор без манифеста; повтор его чинит."""
     state = _base_state()
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
 
     def _boom(path: Path, content: str | bytes, *, encoding: str = "utf-8") -> None:
         if path.name == MANIFEST_NAME:
@@ -325,7 +325,7 @@ def test_interrupted_re_export_leaves_no_stale_commit_marker(
     содержимое обновлено наполовину, а записанные в нём sha256 больше не
     соответствуют файлам.
     """
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     export_pipeline(
         _converged_state(),
         workspace_root=tmp_path,
@@ -364,7 +364,7 @@ def test_start_of_export_removes_stale_files_outside_the_new_set(
 ) -> None:
     """Stale-остаток прежнего экспорта не переживает повтор."""
     state = _base_state()
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     directory.mkdir(parents=True)
     stale = directory / "old_leftover.txt"
     stale.write_text("мусор прошлой версии экспортёра", encoding="utf-8")
@@ -396,7 +396,7 @@ def test_honest_partial_export_reports_not_converged_with_reason_and_findings(
         partial=True,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["converged"] is False
     assert manifest["escalation_reason"] == TransitionReason.SESSION_DEADLOCK.value
     assert manifest["open_issues"] == [
@@ -422,7 +422,7 @@ def test_non_partial_export_reports_converged_with_no_escalation(
         partial=False,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["converged"] is True
     assert manifest["escalation_reason"] is None
     assert manifest["open_issues"] == []
@@ -455,7 +455,7 @@ def test_stopped_pipeline_is_never_converged_without_the_flag(
         partial=False,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["converged"] is False
     assert manifest["escalation_reason"] == expected_reason
 
@@ -470,7 +470,7 @@ def test_export_before_a_terminal_phase_is_not_converged(tmp_path: Path) -> None
         partial=False,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["phase"] == PipelinePhase.PAIR_LOOP.value
     assert manifest["converged"] is False
     assert manifest["escalation_reason"] is None
@@ -490,7 +490,7 @@ def test_partial_flag_only_narrows_honesty(tmp_path: Path) -> None:
         partial=True,
     )
 
-    manifest = _manifest(result_dir(tmp_path, _PIPELINE_ID))
+    manifest = _manifest(result_dir_of(tmp_path, _PIPELINE_ID))
     assert manifest["converged"] is False
     assert manifest["escalation_reason"] is None, (
         "эскалации не было — причину нельзя выдумывать по флагу оператора"
@@ -519,8 +519,8 @@ def test_both_outcomes_share_the_same_manifest_key_set(tmp_path: Path) -> None:
         partial=False,
     )
 
-    escalated = _manifest(result_dir(escalated_root, _PIPELINE_ID))
-    converged = _manifest(result_dir(converged_root, _PIPELINE_ID))
+    escalated = _manifest(result_dir_of(escalated_root, _PIPELINE_ID))
+    converged = _manifest(result_dir_of(converged_root, _PIPELINE_ID))
     assert set(escalated) == set(converged)
 
 
@@ -538,7 +538,7 @@ def test_publish_txt_uses_a_warning_template_when_remote_or_branch_is_unknown(
         partial=False,
     )
 
-    publish = _read(result_dir(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
+    publish = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
     assert "git push" not in publish or "<REMOTE>" in publish
     assert "<REMOTE>" in publish
     assert "<BRANCH>" in publish
@@ -560,7 +560,7 @@ def test_publish_txt_uses_the_real_remote_and_branch_when_both_are_known(
         partial=False,
     )
 
-    publish = _read(result_dir(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
+    publish = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
     assert "<REMOTE>" not in publish
     assert "<BRANCH>" not in publish
     assert shlex.quote("git@github.com:acme/repo.git") in publish
@@ -590,7 +590,7 @@ def test_publish_txt_references_pr_files_relative_to_the_workspace_root(
         partial=False,
     )
 
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     relative = directory.relative_to(tmp_path).as_posix()
     publish = _read(directory / PUBLISH_NAME)
     assert f"{relative}/{PR_BODY_NAME}" in publish
@@ -614,7 +614,7 @@ def test_publish_txt_quotes_a_branch_name_with_shell_metacharacters(
         partial=False,
     )
 
-    publish = _read(result_dir(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
+    publish = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
     assert shlex.quote(hostile_branch) in publish
     assert f" {hostile_branch}\n" not in publish
     assert f" {hostile_branch} " not in publish
@@ -639,7 +639,7 @@ def test_publish_txt_quotes_a_remote_url_with_shell_metacharacters(
         partial=False,
     )
 
-    publish = _read(result_dir(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
+    publish = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PUBLISH_NAME)
     assert shlex.quote(hostile_remote) in publish
     parsed_lines = [shlex.split(line) for line in publish.splitlines() if line.strip()]
     for tokens in parsed_lines:
@@ -661,7 +661,7 @@ def test_pr_title_and_body_are_non_empty_and_reference_the_documents(
         partial=False,
     )
 
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     title = _read(directory / PR_TITLE_NAME)
     body = _read(directory / PR_BODY_NAME)
     assert title.strip()
@@ -687,7 +687,7 @@ def test_pair_pr_body_labels_are_untouched(tmp_path: Path) -> None:
         partial=False,
     )
 
-    body = _read(result_dir(tmp_path, _PIPELINE_ID) / PR_BODY_NAME)
+    body = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PR_BODY_NAME)
     assert "Спека: `docs/specs/foo.md`" in body
     assert "План: `docs/plans/foo.md`" in body
 
@@ -702,7 +702,7 @@ def test_pair_pr_title_is_byte_identical_to_v01(tmp_path: Path) -> None:
         partial=False,
     )
 
-    title = _read(result_dir(tmp_path, _PIPELINE_ID) / PR_TITLE_NAME)
+    title = _read(result_dir_of(tmp_path, _PIPELINE_ID) / PR_TITLE_NAME)
     # `_base_state` стоит в PAIR_LOOP, поэтому сходимости нет и заголовок
     # честно несёт пометку частичного исхода — это прежнее поведение (§8.2).
     assert title == "[partial] docs: docs/specs/foo.md + docs/plans/foo.md\n"
