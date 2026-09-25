@@ -513,7 +513,7 @@ def test_analyze_run_without_gates_still_converges(
     assert _SESSION_ID_RE.match(_session_id(capsys))
 
 
-def test_gateless_develop_run_ends_unconverged_with_a_symptom_reason(
+def test_gateless_develop_run_stops_on_round_one_naming_the_cause(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Деградировавший путь наблюдается целиком, а не выводится из предикатов.
@@ -521,17 +521,17 @@ def test_gateless_develop_run_ends_unconverged_with_a_symptom_reason(
     `develop` без гейтов до §4.3 сходился на первом `approve`; теперь
     `overall == indeterminate` в каждом раунде, сходимость невозможна, и
     сессия уходит штатным `DEADLOCK → ESCALATED → EXPORTING(partial)`.
-    Тест пинит именно то, что записано в §4.3 как открытый хвост:
-    завершение честное (`converged: false`), но причина называет **симптом**
-    (`max_rounds`), а код возврата — `0`, то есть по коду несошедшаяся
-    сессия неотличима от успешной. Когда пункт
-    `todo://disputatio/indeterminate-stop-reason` будет взят, красным станет
-    этот тест — и это правильный сигнал: исход изменится намеренно.
+    До §5.2a причина называла симптом (`max_rounds`) и приходила только на
+    исходе лимита; теперь сессия встаёт на первом же раунде без
+    свидетельства с причиной `verification_indeterminate`. Лимит раундов
+    нарочно с запасом, а очереди агентов — ровно на один раунд: лишний
+    раунд упал бы исчерпанием очереди. Код возврата по-прежнему `0` —
+    несошедшаяся сессия отличается от успешной манифестом, а не кодом.
     """
     bench = _bench(
         git_repo,
         monkeypatch,
-        profile=_profile(gates=(), max_rounds=1),
+        profile=_profile(gates=(), max_rounds=4),
         author_replies=[_proposal(1)],
         reviewer_replies=[_approve(1)],
     )
@@ -553,10 +553,11 @@ def test_gateless_develop_run_ends_unconverged_with_a_symptom_reason(
 
     assert code == 0
     assert state.state is SessionPhase.DONE
+    assert state.current_round == 1
     assert verification["overall"] == "indeterminate"
     assert verification["gates"] == []
     assert decision["outcome"] == "deadlock"
-    assert decision["reason"] == "max_rounds"
+    assert decision["reason"] == "verification_indeterminate"
 
 
 def test_config_snapshot_replaces_only_the_fields_owned_by_the_run(
