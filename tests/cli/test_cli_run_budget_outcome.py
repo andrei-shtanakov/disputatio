@@ -116,7 +116,7 @@ def _install_charging_drive(monkeypatch: pytest.MonkeyPatch) -> None:
         ctx.fsm.transition(SessionPhase.PROPOSING)
         charged = charge_step(
             ctx,
-            turn=AgentTurn(text="ответ автора", tokens_used=_TOKENS),
+            turns=(AgentTurn(text="ответ автора", tokens_used=_TOKENS),),
             elapsed_s=_ELAPSED,
         )
         assert charged.fsm is not ctx.fsm, (

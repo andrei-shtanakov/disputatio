@@ -184,7 +184,12 @@ class SpyAdapter:
         assert self.replies, (
             f"SpyAdapter {self.name}: очередь ответов исчерпана, лишний вызов"
         )
-        return AgentTurn(text=self.replies.pop(0), session_ref=session_ref)
+        # Сообщённый ноль, а не «не сообщил»: ход без отчёта растит
+        # `unreported_turns` (§4.1) и дал бы лишнее сохранение начисления,
+        # а предмет этих тестов — только сохранения переходов.
+        return AgentTurn(
+            text=self.replies.pop(0), session_ref=session_ref, tokens_used=0
+        )
 
 
 @dataclass

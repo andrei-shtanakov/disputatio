@@ -29,8 +29,14 @@
 вовсе, а не сочиняет запись о нуле. И шаг, не дошедший до конца (исчерпанные
 повторы, упавший порт), бюджета не начисляет: расход провалившихся попыток
 теряется, но сессия к этому моменту уже `FAILED`, и считать её бюджет некому.
+
+Шаг, дошедший до конца, отдаёт ВСЕ свои попытки, а не только принятую
+(§4.1): токены отвергнутых по схеме попыток потрачены так же, как и
+принятой, и терять их значило бы занижать стоимость раунда — ровно ту
+величину, по которой §5.2 прогнозирует следующий.
 """
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from disputatio.contracts import AgentTurn, SessionState
@@ -41,7 +47,7 @@ if TYPE_CHECKING:  # pragma: no cover - только для аннотации, 
 
 
 def charge_step(
-    ctx: "StepContext", *, turn: AgentTurn | None, elapsed_s: float
+    ctx: "StepContext", *, turns: Sequence[AgentTurn], elapsed_s: float
 ) -> "StepContext":
     """Начисляет бюджет завершённого шага и пересаживает FSM на новое состояние.
 
@@ -60,7 +66,7 @@ def charge_step(
     Гарантия структурная — начисление физически не может случиться раньше,
     чем шаг вернул управление.
     """
-    charged = accumulate(ctx.fsm.state, turn=turn, elapsed_s=elapsed_s)
+    charged = accumulate(ctx.fsm.state, turns=turns, elapsed_s=elapsed_s)
     if charged == ctx.fsm.state:
         return ctx
 
@@ -76,15 +82,18 @@ def charge_step(
 
 
 def accumulate(
-    state: SessionState, *, turn: AgentTurn | None, elapsed_s: float
+    state: SessionState, *, turns: Sequence[AgentTurn], elapsed_s: float
 ) -> SessionState:
     """Возвращает копию состояния с обновлённым `budget_used` ([REQ-009]).
 
-    `turn.tokens_used is None` — «адаптер не сообщил»: счётчик не растёт и
-    неизвестность НЕ выдаётся за ноль. `tokens_used == 0` — сообщённый ноль:
-    прибавляется как 0, что наблюдаемо тем, что счётчик не становится `None`
-    и не теряет предыдущее значение. `turn is None` — шаг без разговора с
-    агентом (`VERIFYING`, `DECIDING`): токенов он не тратит, а время тратит.
+    `turns` — все попытки шага (§4.1): токены суммируются по всем, а не
+    берутся у последней. `tokens_used is None` — «адаптер не сообщил»:
+    `tokens` не растёт, неизвестность НЕ выдаётся за ноль, а
+    `unreported_turns` растёт на единицу. `tokens_used == 0` — сообщённый
+    ноль: прибавляется как 0 и счётчик неотчитавшихся не трогает. Пустой
+    `turns` — шаг без разговора с агентом (`VERIFYING`, `DECIDING`):
+    токенов он не тратит и о них не отчитывается, поэтому ни один счётчик
+    токенов не меняется, а время идёт.
 
     `elapsed_s` берётся из монотонных часов сессии (`deps.monotonic`) и
     поэтому неотрицателен — отсюда `wall_seconds` не убывает ни на одном
@@ -95,14 +104,17 @@ def accumulate(
     append-only, и правка состояния на месте лишила бы вызывающего
     возможности сравнить «до» и «после».
     """
-    delta = token_delta(turn)
+    deltas = [token_delta(turn) for turn in turns]
+    reported = sum(delta for delta in deltas if delta is not None)
+    unreported = sum(1 for delta in deltas if delta is None)
     used = state.budget_used
     return state.model_copy(
         update={
             "budget_used": used.model_copy(
                 update={
-                    "tokens": used.tokens if delta is None else used.tokens + delta,
+                    "tokens": used.tokens + reported,
                     "wall_seconds": used.wall_seconds + elapsed_s,
+                    "unreported_turns": used.unreported_turns + unreported,
                 }
             )
         }

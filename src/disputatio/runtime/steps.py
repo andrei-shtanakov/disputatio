@@ -10,8 +10,8 @@
 [DESIGN-015]), поэтому первым делом он убирает огрызки прерванной попытки
 (`_purge_partial_artifacts`), а не пытается их доиспользовать.
 
-Общее у всех четырёх и окончание: шаг отдаёт наружу свой `AgentTurn`, если
-агента звал, и `None`, если не звал. Расход этого turn'а начисляет граница
+Общее у всех четырёх и окончание: шаг отдаёт наружу `AgentTurn` всех своих
+попыток, если агента звал, и `None`, если не звал. Их расход начисляет граница
 шага ([DESIGN-009]) — сам шаг бюджета не считает и `session.json` из-за него
 не переписывает: запись изнутри шага попала бы в retry-петлю, где пересадка
 FSM обнулила бы лимит schema-повторов (ADR-004).
@@ -230,7 +230,7 @@ class StepContext:
         )
 
 
-async def propose(ctx: StepContext) -> AgentTurn:
+async def propose(ctx: StepContext) -> tuple[AgentTurn, ...]:
     """Шаг PROPOSING раунда `ctx.round`: reset → prompt → author → артефакты.
 
     Порядок операций — само поведение шага, а не его деталь:
@@ -260,8 +260,9 @@ async def propose(ctx: StepContext) -> AgentTurn:
        `proposal.md`: каталог сессии из диффа исключён, поэтому порядок
        безопасен, а обратный лишил бы патч правок, сделанных автором позже.
 
-    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
-    шага ([DESIGN-009]). Считать бюджет здесь значило бы поставить
+    Возвращаются `AgentTurn` ВСЕХ попыток, отвергнутых и принятой, — их
+    расход начислит граница шага ([DESIGN-009], §4.1: повторы по схеме
+    тоже тратят бюджет). Считать бюджет здесь значило бы поставить
     `store.save` внутрь шага, то есть внутрь retry-петли, где новый FSM
     обнулил бы лимит I4 (ADR-004).
     """
@@ -276,6 +277,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
 
     prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
+    attempts: list[AgentTurn] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.author,
@@ -285,6 +287,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
         session_ref=_author_session_ref(ctx),
         on_invalid=failures.append,
         lifecycle=ctx.lifecycle,
+        on_attempt=attempts.append,
     )
     if outcome is None:
         raise _exhausted(failures)
@@ -295,7 +298,7 @@ async def propose(ctx: StepContext) -> AgentTurn:
     write_round_artifact(artifacts, round_no, CHANGES_PATCH_NAME, diff)
 
     ctx.fsm.handle_step_success()
-    return turn
+    return tuple(attempts)
 
 
 def verify(ctx: StepContext) -> None:
@@ -350,7 +353,7 @@ def verify(ctx: StepContext) -> None:
     )
 
 
-async def review(ctx: StepContext) -> AgentTurn:
+async def review(ctx: StepContext) -> tuple[AgentTurn, ...]:
     """Шаг REVIEWING раунда `ctx.round`: промпт → ревьюер → `review.json`.
 
     Правила §4.4 здесь не переписываются ни одной строкой: деградация
@@ -388,7 +391,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     через schema-retry ([DESIGN-006]): ревьюера переспрашивают с текстом
     ошибки, и только исчерпание лимита делает раунд `FAILED`.
 
-    Возвращается `AgentTurn` принятой попытки — его расход начислит граница
+    Возвращаются `AgentTurn` всех попыток — их расход начислит граница
     шага ([DESIGN-009]), по той же причине, что и у автора: внутри шага
     начисление попало бы в retry-петлю и обнулило бы лимит I4 (ADR-004).
     """
@@ -399,6 +402,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     verification = _round_verification(artifacts, round_no)
     prior = load_prior_round(artifacts, round_no - 1)
     failures: list[Exception] = []
+    attempts: list[AgentTurn] = []
     outcome = await run_with_schema_retry(
         ctx,
         adapter=ctx.deps.reviewer,
@@ -407,10 +411,11 @@ async def review(ctx: StepContext) -> AgentTurn:
         source=EventSource.REVIEWER,
         session_ref=_reviewer_session_ref(ctx),
         on_invalid=failures.append,
+        on_attempt=attempts.append,
     )
     if outcome is None:
         raise _exhausted(failures)
-    review_model, turn = outcome
+    review_model, _ = outcome
 
     write_round_artifact(
         artifacts,
@@ -420,7 +425,7 @@ async def review(ctx: StepContext) -> AgentTurn:
     )
 
     ctx.fsm.handle_step_success()
-    return turn
+    return tuple(attempts)
 
 
 def decide_step(ctx: StepContext) -> None:

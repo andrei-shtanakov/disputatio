@@ -33,7 +33,7 @@
 конфига окружения и `store.load` вместо `config.to_session_state`.
 """
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
@@ -54,15 +54,16 @@ from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
 from disputatio.runtime.steps import DocSessionSpec, StepContext
 
-StepFn = Callable[[StepContext], Awaitable[AgentTurn | None] | AgentTurn | None]
+StepResult = Sequence[AgentTurn] | None
+StepFn = Callable[[StepContext], Awaitable[StepResult] | StepResult]
 """Тело шага: синхронное (`verify`, `decide_step`) либо ожидаемое.
 
 Разговор с агентом асинхронен, прогон гейтов и решение — нет, и обёртывать
 синхронный шаг в корутину ради единообразия значило бы делать вид, что у
 него есть точка отмены, которой нет.
 
-Возвращает шаг ровно то, что нужно для учёта бюджета ([DESIGN-009]): свой
-`AgentTurn`, если агента звал, и `None`, если не звал. Расход считает не шаг,
+Возвращает шаг ровно то, что нужно для учёта бюджета ([DESIGN-009]): `AgentTurn`
+всех своих попыток, если агента звал (§4.1), и `None`, если не звал. Расход считает не шаг,
 а граница шага — иначе `store.save` бюджета оказался бы внутри шага, то есть
 внутри retry-петли, где новый FSM обнулил бы лимит I4 (ADR-004).
 """
@@ -307,5 +308,5 @@ async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:
     """
     started = ctx.deps.monotonic()
     outcome = step(ctx)
-    turn = await outcome if isawaitable(outcome) else outcome
-    return charge_step(ctx, turn=turn, elapsed_s=ctx.deps.monotonic() - started)
+    turns = await outcome if isawaitable(outcome) else outcome
+    return charge_step(ctx, turns=turns or (), elapsed_s=ctx.deps.monotonic() - started)

@@ -65,7 +65,7 @@ def test_budget_used_defaults_are_untracked() -> None:
 def test_unreported_turns_cannot_be_negative() -> None:
     """Счётчик вызовов без отчёта неотрицателен, как и `tokens`."""
     with pytest.raises(ValidationError):
-        BudgetUsed(unreported_turns=-1)
+        BudgetUsed.model_validate({"unreported_turns": -1})
 
 
 def test_new_session_is_tracked_from_start() -> None:
