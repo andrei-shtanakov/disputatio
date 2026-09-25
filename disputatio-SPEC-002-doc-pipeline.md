@@ -702,6 +702,8 @@ mutable по умолчанию). Происхождение решения — 
       config.toml          # снапшот конфига
       task.md              # снапшот исходного prompt
       checklists.toml      # снапшот действующих чеклистов
+      semantic_proof.json  # версионированное доказательство immutable-проекции
+                           # [pipeline] со ссылками на снапшоты config/checklists (§3.2)
       events.jsonl         # append-only события уровня пайплайна
       adoptions/           # патчи принятых внешних правок (§3.1)
       sessions/

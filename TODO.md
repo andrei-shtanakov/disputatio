@@ -488,6 +488,10 @@
   — issue #125 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] Анкер P9: вне toplevel репозитория, а не вне `workspace_root` — нормы расходятся @id:spec002-anchor-containment-toplevel @epic:eco.disputatio — записано в SPEC-002 P9, §3.1 `run` и `phase`, §3.2, §10 (2026-09-25)
   — issue #126 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] SPEC-002 §8.2: «экспорт FAILED только явным --partial» — код не отказывает @id:spec002-export-failed-without-partial @epic:eco.disputatio
+  — §8.2 пишет «`FAILED` — ненулевой, экспорт только явным `export --partial`»; `disp pipeline export`
+  без флага на FAILED-пайплайне не отказывает: экспортирует с `converged: false` (`runtime/pipeline_export.py:170`)
+  и ненулевым кодом (`cli.py:549` → `_pipeline_exit_code`, `cli.py:736`). Ждёт решения владельца спеки, какая сторона права.
 - [x] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio — закрыт 2026-09-24: `spec-runner.config.yaml` и `pyrefly.toml` внесены в `harness_files` `project.yaml` (сверено по коду spec-runner: guard хеширует файлы на диске, неотслеживаемый сгенерированный конфиг покрыт; maestro пишет его до запуска); расхождение doc §2 ↔ SSOT запинено `tests/test_project_harness.py`
   — `docs/workstream-setup.md` §2 и операторский эталон подают
   `spec-runner.config.yaml` и `pyrefly.toml` как harness-пути (обоснование —
