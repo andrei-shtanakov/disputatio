@@ -363,7 +363,8 @@ def verify_terminal_mark(
     recorded = record.immutable.get(PIPELINE_MANIFEST_NAME)
     if recorded is None:
         raise ControlPlaneTampered(
-            f"терминальная отметка не несёт хеша {PIPELINE_MANIFEST_NAME}: сверять фазу не с чем"
+            f"терминальная отметка не несёт хеша {PIPELINE_MANIFEST_NAME}: "
+            "сверять фазу не с чем"
         )
     try:
         actual = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
