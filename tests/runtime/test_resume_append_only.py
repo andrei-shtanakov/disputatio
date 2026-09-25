@@ -78,6 +78,7 @@ from disputatio.runtime.layout import (
     VERIFICATION_NAME,
     session_dir,
 )
+from disputatio.runtime.retry import SESSION_CLOSING_ERRORS
 from disputatio.verifier import GateSpec
 
 from ._fakes import GitOpsFakeBase
@@ -119,14 +120,14 @@ _WRITING_PHASES = (
 # `finally`: kill во время хода автора обязан оставлять сессию в `PROPOSING`,
 # то есть переигрываемой, а не помечать её отказавшей.
 #
-# Третий — граница ревизии пайплайна (SPEC-002 §7.2, задача 17). Он тоже
-# широкий и по той же причине: исход оборвавшейся сессии спрашивается у
-# ДИСКА, а не у типа исключения. Записи под ним нет ни одной — в `try` ровно
-# `anyio.run` цикла, — и `raise` в нём есть: терпится РОВНО терминальная
-# сессия (`FAILED`/`DONE` уже в `session.json`), всё остальное уходит выше
-# как есть. Поймай он I3 у нетерминальной сессии — сработал бы `raise`, то
-# есть тихой правки раунда этот обработчик не даёт ни в одной ветке.
-# Четвёртый — отметка `FAILED` по подмене control plane на resume (SPEC-002
+# Драйвер ревизии пайплайна (`composition.session_driver`) в списке был, пока
+# ловил `Exception`; с #113 он ловит `retry.SESSION_CLOSING_ERRORS` — кортеж
+# из другого модуля, содержимого которого сканер (замыкание имён в пределах
+# одного файла) не видит. Поэтому его отсутствие здесь — не вывод сканера, а
+# следствие `test_session_closing_errors_never_catch_i3` ниже: тот пинит, что
+# ни один тип кортежа не ловит I3.
+#
+# Третий — отметка `FAILED` по подмене control plane на resume (SPEC-002
 # §8.1 шаг 0). Он широкий, потому что пишется манифест, про который ровно
 # сейчас доказано, что верить ему нельзя: перечень причин, по которым запись
 # может не удаться, здесь и был дырой — подделанная фаза `DONE` давала
@@ -136,7 +137,6 @@ _WRITING_PHASES = (
 # причиной того же `ControlPlaneTampered`, то есть тихой правки этот
 # обработчик не даёт ни в одной ветке.
 _TOLERATED_HANDLERS = [
-    ("composition.py", "session_driver", "Exception", True),
     ("pipeline_resume.py", "_close_tampered", "Exception", True),
     ("retry.py", "_run_lifecycle_hook", "Exception", True),
     ("steps.py", "_write_decision", "RoundImmutableError", True),
@@ -660,6 +660,24 @@ def test_the_only_immutability_handlers_are_the_two_named_ones() -> None:
         (handler.module.name, handler.function, handler.caught, handler.reraises)
         for handler in handlers
     ] == _TOLERATED_HANDLERS
+
+
+def test_session_closing_errors_never_catch_i3() -> None:
+    """`except SESSION_CLOSING_ERRORS` не видит I3 — ни прямо, ни базой (#113).
+
+    Драйверы (`composition.session_driver`, `cli._drive_to_terminal`) при
+    терминальной фазе на диске пойманное НЕ пробрасывают. Попади в кортеж
+    `RoundImmutableError` или любая его база (`Exception`), драйвер молча
+    проглотил бы I3 — а сканер обработчиков этого не заметит: кортеж
+    объявлен в другом модуле. Проверка здесь его заменяет.
+    """
+    catches_i3 = [
+        caught
+        for caught in SESSION_CLOSING_ERRORS
+        if issubclass(RoundImmutableError, caught)
+    ]
+
+    assert catches_i3 == []
 
 
 @pytest.mark.parametrize(

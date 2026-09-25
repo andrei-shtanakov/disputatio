@@ -53,7 +53,13 @@ from disputatio.contracts import (
     SessionPhase,
 )
 from disputatio.core import RetryAction
-from disputatio.runtime.errors import ReviewNotAccepted, ReviewParseError
+from disputatio.events import AnchorCorrupted
+from disputatio.runtime.errors import (
+    ControlPlaneTampered,
+    LifecyclePolicyFailed,
+    ReviewNotAccepted,
+    ReviewParseError,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотации, импорта нет
     from disputatio.runtime.steps import StepContext
@@ -82,6 +88,24 @@ SCHEMA_INVALID_ERRORS: tuple[type[Exception], ...] = (
 `FAILED` с причиной «агент вернул невалидный вывод», которой не было.
 `ReviewNotAccepted` здесь наравне со схемными ошибками: §4.4 — такое же
 требование к выводу, только протокольное ([DESIGN-005]).
+"""
+
+SESSION_CLOSING_ERRORS: tuple[type[Exception], ...] = (
+    *SCHEMA_INVALID_ERRORS,
+    ControlPlaneTampered,
+    AnchorCorrupted,
+    LifecyclePolicyFailed,
+)
+"""Исключения, с которыми шаг уходит из уже закрытой ядром сессии (#113).
+
+Два пути, оба пишут `FAILED` до того, как исключение покинет шаг:
+исчерпанный schema-retry поднимает ошибку последней попытки (один из
+`SCHEMA_INVALID_ERRORS`), хук политики P9 — отказ сверки своим типом либо
+любой иной сбой как `LifecyclePolicyFailed` (`_run_lifecycle_hook`).
+Драйверы (`disp run`/`resume`, драйвер ревизии пайплайна) признают исходом сессии только их, и только при терминальной
+фазе на диске: дефект оркестратора, поднятый после записи `FAILED`, иначе
+выглядел бы штатным исходом и был бы замолчан. Кортеж полон: других
+путей, на которых ядро пишет `FAILED` и пробрасывает исключение, нет.
 """
 
 _RETRY_SECTION_TEMPLATE = (
@@ -180,10 +204,13 @@ def _run_lifecycle_hook(
     `phase` называет шаг, на котором сорвалась сверка, а после перехода
     последняя запись журнала назвала бы фазой `failed` и потеряла бы место
     сбоя (та же причина, что у `_emit_error`). Переход — вторым: он несёт
-    write-ahead `session.json` и собственное `state_change`. Исходное
-    исключение — третьим, как есть: почему снапшот не сошёлся, знает
-    политика, и переписывать её причину в свой текст значило бы завести
-    второй источник правды о P9.
+    write-ahead `session.json` и собственное `state_change`. Исключение —
+    третьим. Отказ сверки (`ControlPlaneTampered`/`AnchorCorrupted`) уходит
+    как есть: почему снапшот не сошёлся, знает политика, и переписывать её
+    причину значило бы завести второй источник правды о P9. Любое другое
+    исключение политики — сбой, а не отказ, — уходит `LifecyclePolicyFailed`
+    с исходным в `__cause__`: сессия уже закрыта, и драйверы обязаны узнать
+    это по типу (`SESSION_CLOSING_ERRORS`, #113), а не по фазе на диске.
     """
     if lifecycle is None:
         return
@@ -197,7 +224,11 @@ def _run_lifecycle_hook(
     except Exception as exc:
         _emit_invariant_violation(ctx, point=point, detail=str(exc))
         ctx.fsm.transition(SessionPhase.FAILED)
-        raise
+        if isinstance(exc, (ControlPlaneTampered, AnchorCorrupted)):
+            raise
+        raise LifecyclePolicyFailed(
+            f"хук политики P9 ({point}) упал сбоем, сессия закрыта FAILED: {exc}"
+        ) from exc
 
 
 def _emit_invariant_violation(ctx: "StepContext", *, point: str, detail: str) -> None:

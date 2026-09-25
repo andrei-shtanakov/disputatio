@@ -1917,3 +1917,59 @@ def test_legacy_manifest_without_proof_still_stops_on_live_drift(
     )
 
     assert run_cli(stand, "resume") == EXIT_ERROR
+
+
+def test_defect_after_failed_is_not_mistaken_for_session_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#113: дефект, поднятый после записи `FAILED`, не глотается драйвером.
+
+    Драйвер ревизии признаёт исходом только названные типы — те, с которыми
+    ядро само закрывает сессию (исчерпанный schema-retry, отказ P9). Здесь
+    ревизия записывает `FAILED` и падает `AssertionError`, то есть дефектом
+    оркестратора: фаза на диске терминальна, но это не делает сбой исходом,
+    и он обязан дойти до вызывающего, а не превратиться в `FAILED`
+    пайплайна.
+    """
+    from disputatio.events import FileStateStore
+    from disputatio.runtime import loop
+
+    async def failing_after_failed(
+        workspace: Path, session_id: str, *, artifact_root: Path, **_: object
+    ) -> None:
+        store = FileStateStore(artifact_root)
+        state = store.load(session_id)
+        store.save(state.model_copy(update={"state": SessionPhase.FAILED}))
+        raise AssertionError("defect after FAILED")
+
+    monkeypatch.setattr(loop, "resume_session", failing_after_failed)
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+
+    with pytest.raises(AssertionError, match="defect after FAILED"):
+        run_cli(stand, "run", "--task", TASK_TEXT)
+
+
+def test_io_failure_in_the_p9_hook_closes_the_pipeline_as_session_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#113: сбой хука P9 не сверкой, а вводом-выводом — штатный `FAILED`.
+
+    Хук закрывает сессию `FAILED` при любом исключении политики. Сбой, не
+    являющийся отказом сверки (здесь `OSError` при сверке после хода),
+    уходит объявленным `LifecyclePolicyFailed`, который драйвер ревизии
+    признаёт исходом: пайплайн закрывается кодом `1`, а не обрывается
+    traceback'ом с неисполненным интентом.
+    """
+    from disputatio.runtime.pipeline_integrity import PipelineIntegrityPolicy
+
+    def broken_after(self: object, state: object) -> None:
+        raise OSError("EIO: не читается файл control plane")
+
+    monkeypatch.setattr(PipelineIntegrityPolicy, "after_author_turn", broken_after)
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+
+    code = run_cli(stand, "run", "--task", TASK_TEXT)
+
+    assert code == EXIT_FAILED
+    assert stand.session_state("spec-r1").state is SessionPhase.FAILED
+    assert stand.manifest()["phase"] == PipelinePhase.FAILED.value

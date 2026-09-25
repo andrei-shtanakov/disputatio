@@ -77,6 +77,7 @@ from disputatio.runtime import (
     RuntimeConfig,
     RuntimeDeps,
 )
+from disputatio.runtime.errors import LifecyclePolicyFailed
 from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.steps import StepContext
 from disputatio.verifier import GateSpec
@@ -296,8 +297,12 @@ def test_lifecycle_error_fails_session(
     ctx = _context(git_repo, author=author, reviewer=reviewer)
     write_config_snapshot(git_repo, _config().render_toml())
 
-    with pytest.raises(ControlPlaneTampered):
+    # Политика здесь чужая и отказывает своим типом: runtime отдаёт его
+    # объявленным `LifecyclePolicyFailed`, сохраняя исходный в `__cause__`
+    # (#113) — иначе драйверы не узнали бы закрытую ядром сессию по типу.
+    with pytest.raises(LifecyclePolicyFailed) as excinfo:
         anyio.run(lambda: drive(ctx, lifecycle=policy))
+    assert isinstance(excinfo.value.__cause__, ControlPlaneTampered)
 
     # Durable-состояние, а не только исключение: сессия, оставшаяся в
     # PROPOSING, считалась бы для resume активной, и подмену control plane

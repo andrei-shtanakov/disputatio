@@ -155,3 +155,29 @@ def test_failed_session_after_a_budget_charge_still_exits_one(
     assert on_disk.state is SessionPhase.FAILED
     assert on_disk.budget_used.tokens == _TOKENS
     assert on_disk.budget_used.wall_seconds == _ELAPSED
+
+
+def test_a_defect_after_failed_is_not_reported_as_the_session_outcome(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#113: `FAILED` на диске — не повод глотать дефект оркестратора.
+
+    Исходом сессии CLI признаёт только исключения, с которыми её закрывает
+    само ядро (`retry.SESSION_CLOSING_ERRORS`). Здесь цикл записывает
+    `FAILED` и падает `AssertionError`: фаза на диске терминальна, но
+    сломанный оркестратор обязан упасть, а не отчитаться кодом `1`.
+    """
+    (git_repo.parent / "profile.toml").write_text(
+        _profile().render_toml(), encoding="utf-8"
+    )
+
+    async def defective_drive(ctx: StepContext) -> SessionState:
+        """Закрывает сессию `FAILED` и падает дефектом, а не исходом."""
+        ctx.fsm.transition(SessionPhase.PROPOSING)
+        ctx.fsm.transition(SessionPhase.FAILED)
+        raise AssertionError("defect after FAILED")
+
+    monkeypatch.setattr(_cli(), "drive", defective_drive)
+
+    with pytest.raises(AssertionError, match="defect after FAILED"):
+        _main(_argv(git_repo))
