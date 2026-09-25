@@ -1917,3 +1917,33 @@ def test_legacy_manifest_without_proof_still_stops_on_live_drift(
     )
 
     assert run_cli(stand, "resume") == EXIT_ERROR
+
+
+def test_defect_after_failed_is_not_mistaken_for_session_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#113: дефект, поднятый после записи `FAILED`, не глотается драйвером.
+
+    Драйвер ревизии признаёт исходом только названные типы — те, с которыми
+    ядро само закрывает сессию (исчерпанный schema-retry, отказ P9). Здесь
+    ревизия записывает `FAILED` и падает `AssertionError`, то есть дефектом
+    оркестратора: фаза на диске терминальна, но это не делает сбой исходом,
+    и он обязан дойти до вызывающего, а не превратиться в `FAILED`
+    пайплайна.
+    """
+    from disputatio.events import FileStateStore
+    from disputatio.runtime import loop
+
+    async def failing_after_failed(
+        workspace: Path, session_id: str, *, artifact_root: Path, **_: object
+    ) -> None:
+        store = FileStateStore(artifact_root)
+        state = store.load(session_id)
+        store.save(state.model_copy(update={"state": SessionPhase.FAILED}))
+        raise AssertionError("defect after FAILED")
+
+    monkeypatch.setattr(loop, "resume_session", failing_after_failed)
+    stand = build_stand(tmp_path, monkeypatch, happy_path_turns())
+
+    with pytest.raises(AssertionError, match="defect after FAILED"):
+        run_cli(stand, "run", "--task", TASK_TEXT)

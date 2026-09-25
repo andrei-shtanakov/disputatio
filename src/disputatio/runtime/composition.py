@@ -82,6 +82,7 @@ from disputatio.runtime.pipeline_runner import (
     pipeline_dir_of,
     split_revision,
 )
+from disputatio.runtime.retry import SESSION_CLOSING_ERRORS
 from disputatio.verifier import DocVerifier, VerifierRunner
 
 AdapterFactory = Callable[..., AgentAdapter]
@@ -478,10 +479,11 @@ def build_pipeline(
         Пропусти его наружу — и runner не дошёл бы до `finish_session`:
         пайплайн остался бы с непроигранным интентом и объявил бы себя
         `FAILED` только на следующем `resume`, хотя всё нужное для этого
-        уже лежит на диске (§7.2). Любое ДРУГОЕ исключение уходит выше как
-        есть: сессия, оставшаяся нетерминальной, — это обрыв, и выдавать
-        его за исход значило бы объявить пайплайн упавшим там, где его
-        нужно продолжить.
+        уже лежит на диске (§7.2). Исходом признаются только
+        `SESSION_CLOSING_ERRORS` при терминальной фазе на диске; любое
+        ДРУГОЕ исключение уходит выше как есть — и обрыв (сессия осталась
+        нетерминальной), и дефект, поднятый уже после записи `FAILED`:
+        дискриминатор — тип исключения, а не одна фаза на диске (#113).
         """
         contour = _contour_of(session_id)
         session_sink = JsonlEventSink(artifact_root)
@@ -521,7 +523,7 @@ def build_pipeline(
 
         try:
             return anyio.run(call)
-        except Exception:
+        except SESSION_CLOSING_ERRORS:
             settled = load_session_state(artifact_root, session_id)
             if settled is not None and settled.state in TERMINAL_PHASES:
                 return settled

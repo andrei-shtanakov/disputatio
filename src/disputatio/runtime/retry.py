@@ -53,7 +53,12 @@ from disputatio.contracts import (
     SessionPhase,
 )
 from disputatio.core import RetryAction
-from disputatio.runtime.errors import ReviewNotAccepted, ReviewParseError
+from disputatio.events import AnchorCorrupted
+from disputatio.runtime.errors import (
+    ControlPlaneTampered,
+    ReviewNotAccepted,
+    ReviewParseError,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотации, импорта нет
     from disputatio.runtime.steps import StepContext
@@ -82,6 +87,24 @@ SCHEMA_INVALID_ERRORS: tuple[type[Exception], ...] = (
 `FAILED` с причиной «агент вернул невалидный вывод», которой не было.
 `ReviewNotAccepted` здесь наравне со схемными ошибками: §4.4 — такое же
 требование к выводу, только протокольное ([DESIGN-005]).
+"""
+
+SESSION_CLOSING_ERRORS: tuple[type[Exception], ...] = (
+    *SCHEMA_INVALID_ERRORS,
+    ControlPlaneTampered,
+    AnchorCorrupted,
+)
+"""Исключения, с которыми шаг уходит из уже закрытой ядром сессии (#113).
+
+Два пути, оба пишут `FAILED` до того, как исключение покинет шаг:
+исчерпанный schema-retry поднимает ошибку последней попытки (один из
+`SCHEMA_INVALID_ERRORS`), отказ политики P9 — её собственное исключение
+(`_run_lifecycle_hook`). Драйверы (`disp run`/`resume`, драйвер ревизии
+пайплайна) признают исходом сессии только их, и только при терминальной
+фазе на диске: дефект оркестратора, поднятый после записи `FAILED`, иначе
+выглядел бы штатным исходом и был бы замолчан. Прочие исключения хука P9
+(например `OSError` чтения анкера) тоже оставляют `FAILED` на диске, но
+уходят наружу как сбой: исход сессии они не называют.
 """
 
 _RETRY_SECTION_TEMPLATE = (

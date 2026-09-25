@@ -114,6 +114,7 @@ from disputatio.runtime.pipeline_integrity import (
 )
 from disputatio.runtime.pipeline_resume import missing_manifest_message
 from disputatio.runtime.pipeline_runner import pipeline_dir_of
+from disputatio.runtime.retry import SESSION_CLOSING_ERRORS
 from disputatio.runtime.steps import StepContext
 from disputatio.verifier import (
     WiringInputError,
@@ -981,7 +982,9 @@ def _drive_to_terminal(
     Шаг, исчерпавший schema-повторы, поднимает ошибку последней попытки
     ([DESIGN-006]) — но `FAILED` к этому моменту уже записан в `session.json`
     ядром, то есть исход сессии определён, а исключение лишь называет его
-    причину. Любое другое исключение — не исход, а сбой, и оно уходит выше:
+    причину. Исходом признаются только `SESSION_CLOSING_ERRORS` при `FAILED`
+    на диске: дефект, поднятый уже после записи `FAILED`, по одной фазе от
+    исхода не отличить (#113). Любое другое исключение — сбой, и оно уходит выше:
     проглоти его CLI, и сломанный оркестратор отчитывался бы «сессия не
     сошлась» вместо падения.
 
@@ -993,7 +996,7 @@ def _drive_to_terminal(
     """
     try:
         return anyio.run(call)
-    except Exception:
+    except SESSION_CLOSING_ERRORS:
         state = outcome()
         if state is not None and state.state is SessionPhase.FAILED:
             return state
