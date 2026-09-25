@@ -462,8 +462,8 @@
   — issue #112 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] `except Exception` в `session_driver` различает исходы по фазе, а не по типу @id:session-driver-exception-discriminator @epic:eco.disputatio
   — issue #113 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
-  — issue #114 (остаток ревью PR #51, аудит 2026-09-25).
+- [x] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
+  — issue #114 закрыт «not planned» решением владельца 2026-09-25: P8 и §9 SPEC-002 требуют парного читателя с дедупликацией независимо от потребителя; читатель сохраняется, искусственный вызов не нужен.
 - [ ] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio
   — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio
@@ -704,7 +704,7 @@
   плана, поэтому не блокировал мерж; чинить — признать обе формы границей (и
   при желании fail-closed на них). Заодно выровнять правила отступа для
   fence (любой отступ) и заголовков (колонка 0).
-- [ ] Гейт wiring: хвосты после мержа PR #110 @id:wiring-gate-followups @epic:eco.disputatio
+- [x] Гейт wiring: хвосты после мержа PR #110 @id:wiring-gate-followups @epic:eco.disputatio
   — `minor` последнего терминального ревью PR #110: `--src ./src` даёт код 2 на
   существующем пути `allowed`, потому что `wiring_snapshot` только срезает
   завершающий `/` и оставляет ведущий `./`, а сверка `allowed` буквальная;
@@ -714,6 +714,13 @@
   метода в теле класса в `tests/verifier/test_wiring_enumerates.py` стоит
   `skip`, хотя локальная проверка получила на таком входе код 2, — включить
   или удалить, вечный `skip` в наборе не держать.
+  — **закрыт**: `--src` нормализуется один раз хелпером `normalize_src`
+  (`wiring_snapshot.py`), которым пользуются CLI-граница, `read_snapshot` и
+  `build_index` — второго написания правила нет; абсолютный путь, `.` и
+  выход за корень (`..`) дают `WiringInputError` (код 2). Тест `nonlocal` в
+  теле класса включён без изменения кода гейта: `ast.parse` (в отличие от
+  `compile`) не резолвит область видимости, поэтому синтаксически валиден и
+  уже даёт код 2 тем же путём, что и `global`, — вечный `skip` снят.
 - [x] Верифицированная фаза read-only командой @id:verified-phase-readonly-command @epic:eco.disputatio
   — принят inbox-запрос devtools (#68, `slug:` в теле issue совпадает).
   Верифицированного read-only источника фазы у нас нет: `disp pipeline status`
@@ -751,6 +758,7 @@
   накрыла бы собой `pre_turn`, ослабив fail-closed на втором `resume`.
 
 - [ ] Раунд без единого выполненного гейта не останавливает сессию @id:indeterminate-stop-reason @epic:eco.disputatio
+  — **Решение владельца 2026-09-25 (выбрано новое условие §5, не только поле):** проверка в конце первого же раунда с `overall == indeterminate`, кроме `analyze` с действительно пустым набором гейтов (набор из одних `skip` исключением не является); порядок §5: converged → budget → indeterminate → oscillation → max_rounds, предварительные проверки бюджета сохраняются; исход DEADLOCK → ESCALATED → EXPORTING(partial), причина `verification_indeterminate`, `converged: false`; последнее значение `verification.overall` дополнительно выводится в манифест; поведение одинаково для `run` и `resume`; запрет запуска без гейтов не возвращается. Порядок работ: сначала согласованная правка SPEC-001, затем реализация отдельным PR.
   — открытый хвост PR #97, поднятый терминальным ревью (confidence high, две
   находки одного класса). После §4.3 `overall == indeterminate` вне кармана
   §5.1 п.2 означает «сойтись нельзя ни при каком поведении агентов», но сам

@@ -119,6 +119,7 @@ from disputatio.verifier import (
     WiringInputError,
     check_wiring,
     dirty_src_paths,
+    normalize_src,
     read_snapshot,
     render_report,
 )
@@ -559,11 +560,14 @@ def cmd_gate_wiring(
     (см. `handler(args, now=clock, journal=journal)` выше).
 
     Порядок обязателен и повторяет design §2/§6: чтение `--spec`/`--plan`
-    как UTF-8 → `read_snapshot` → `dirty_src_paths` → `check_wiring` →
-    `render_report`. `WiringInputError` — не `DisputatioError` (`verifier`
-    не импортирует `runtime`, INV-10), и потому ловится ЗДЕСЬ, а не в
-    `main`: причина уходит одной строкой и в stdout (хвост вывода идёт в
-    отчёт gate — design §6), и в stderr (NFR-003), без traceback. Прочие
+    как UTF-8 → нормализация `--src` (`normalize_src`, design §2) →
+    `read_snapshot` → `dirty_src_paths` → `check_wiring` → `render_report`.
+    `--src` нормализуется ОДИН раз на границе CLI, и дальше везде идёт уже
+    нормализованное значение — `./src`, `src/` и `./src/` неотличимы от
+    `src` ниже по стеку. `WiringInputError` — не `DisputatioError`
+    (`verifier` не импортирует `runtime`, INV-10), и потому ловится ЗДЕСЬ, а
+    не в `main`: причина уходит одной строкой и в stdout (хвост вывода идёт
+    в отчёт gate — design §6), и в stderr (NFR-003), без traceback. Прочие
     исключения не перехватываются: это дефект гейта, а не отказ во вводе.
     """
     del now, journal
@@ -571,13 +575,14 @@ def cmd_gate_wiring(
     try:
         spec_text = _read_gate_document(root / args.spec, "--spec")
         plan_text = _read_gate_document(root / args.plan, "--plan")
-        snapshot = read_snapshot(root, args.src)
-        dirty = dirty_src_paths(root, args.src)
+        src = normalize_src(args.src)
+        snapshot = read_snapshot(root, src)
+        dirty = dirty_src_paths(root, src)
         report = check_wiring(
             spec_text=spec_text,
             plan_text=plan_text,
             snapshot=snapshot,
-            src=args.src,
+            src=src,
             dirty=dirty,
             reader=MarkdownPlanReader(),
         )

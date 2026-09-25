@@ -41,7 +41,11 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Protocol
 
-from disputatio.verifier.wiring_snapshot import Snapshot, WiringInputError
+from disputatio.verifier.wiring_snapshot import (
+    Snapshot,
+    WiringInputError,
+    normalize_src,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,9 +434,11 @@ def build_index(snapshot: Snapshot, src: str) -> ModuleIndex:
     Разбираются все `.py`-файлы под `src`; файлы вне него (например,
     `tests/`) не анализируются. Файл, который не декодируется или не
     разбирается, звёздочный импорт модуля снимка и относительный импорт
-    за корень `src` — `WiringInputError` с именем файла.
+    за корень `src` — `WiringInputError` с именем файла. `src` нормализуется
+    через `normalize_src` (design §2) — тем же написанием, что и
+    `read_snapshot`, чтобы ключи снимка совпадали с литералами `allowed`.
     """
-    prefix = src.rstrip("/") + "/"
+    prefix = normalize_src(src) + "/"
     paths = sorted(path for path in snapshot.files if path.startswith(prefix))
     trees = {path: _parse_source(path, snapshot.files[path]) for path in paths}
     names = {path: _module_name(path[len(prefix) :]) for path in paths}
