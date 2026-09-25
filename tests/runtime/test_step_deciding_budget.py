@@ -19,6 +19,7 @@ from typing import Any
 
 import anyio
 import pytest
+from pydantic import ValidationError
 
 from disputatio.contracts import (
     BudgetSnapshot,
@@ -237,7 +238,10 @@ def test_planted_prior_version_decision_is_refused(
     git = SpyGit()
     ctx = _context(tmp_path, git)
 
-    with pytest.raises(RoundImmutableError):
+    # Чужой `round` — повреждённый артефакт (SPEC-001 §4): отказ приходит
+    # ещё от загрузчика, `ValidationError`; прочие расхождения — от сверки.
+    expected = ValidationError if "round" in fields else RoundImmutableError
+    with pytest.raises(expected):
         decide_step(ctx)
 
     after = round_artifact(tmp_path, _ROUND, DECISION_NAME).read_text(encoding="utf-8")

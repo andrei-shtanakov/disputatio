@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from disputatio.contracts import (
     AgentRef,
@@ -432,7 +433,10 @@ def test_resume_refuses_a_snapshotless_decision_that_disagrees(
     assert before.budget_snapshot is None
     git = SpyGit()
 
-    with pytest.raises(RoundImmutableError):
+    # Чужой `round` — повреждённый артефакт (SPEC-001 §4): отказ приходит
+    # ещё от загрузчика, `ValidationError`; прочие расхождения — от сверки.
+    expected = ValidationError if "round" in fields else RoundImmutableError
+    with pytest.raises(expected):
         decide_step(_context(tmp_path, git))
 
     assert git.commits == []

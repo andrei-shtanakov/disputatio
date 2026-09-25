@@ -66,6 +66,7 @@ REQUIREMENT_COVERAGE: Final[tuple[tuple[str, str], ...]] = (
     ("REQ-007", "runtime/test_step_deciding.py"),
     ("REQ-007", "runtime/test_step_deciding_resume.py"),
     ("REQ-007", "runtime/test_step_deciding_budget.py"),
+    ("REQ-003", "runtime/test_history_round_integrity.py"),
     ("REQ-007", "runtime/test_decide_open_issues_cases.py"),
     ("REQ-007", "runtime/test_carry_chain.py"),
     ("REQ-008", "runtime/test_write_ahead.py"),
