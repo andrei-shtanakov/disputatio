@@ -42,6 +42,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from disputatio.contracts.verification import GateResult, GateStatus
 from disputatio.verifier.doc_refs import (
@@ -50,6 +51,23 @@ from disputatio.verifier.doc_refs import (
     iter_headings,
     parse_doc_refs,
     parse_document,
+)
+
+#: Имена пяти baseline doc-гейтов §6 — единственный источник: из этих
+#: констант гейты ниже берут `GateResult.name`, из них же собран
+#: `BASELINE_GATE_NAMES`, по которому конфиг пайплайна запрещает перекрывать
+#: baseline (SPEC-002 §6). Рукописной копии имён нет нигде.
+GATE_DOC_PATHS: Final = "doc-paths"
+GATE_DOC_LINKS: Final = "doc-links"
+GATE_DOC_ANCHORS: Final = "doc-anchors"
+GATE_DOC_LINE_REFS: Final = "doc-line-refs"
+GATE_DOC_SCOPE: Final = "doc-scope"
+BASELINE_GATE_NAMES: Final[tuple[str, ...]] = (
+    GATE_DOC_PATHS,
+    GATE_DOC_LINKS,
+    GATE_DOC_ANCHORS,
+    GATE_DOC_LINE_REFS,
+    GATE_DOC_SCOPE,
 )
 
 CODE_MISSING = "missing"
@@ -117,12 +135,14 @@ def gate_doc_paths(doc: Path, repo_root: Path) -> GateResult:
     `warning` на уже существующем `declared_planned` и на пропавшем
     `code_path`.
     """
-    text = _read_document("doc-paths", doc)
+    text = _read_document(GATE_DOC_PATHS, doc)
     if isinstance(text, GateResult):
         return text
     refs = parse_doc_refs(text)
     status, entries = _check_paths(refs, doc, repo_root)
-    return _build_result("doc-paths", f"internal:doc-paths:{doc}", status, entries)
+    return _build_result(
+        GATE_DOC_PATHS, f"internal:{GATE_DOC_PATHS}:{doc}", status, entries
+    )
 
 
 def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
@@ -138,7 +158,7 @@ def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
     видит те же формы, и вторая запись о той же ссылке выглядела бы второй
     находкой.
     """
-    text = _read_document("doc-links", doc)
+    text = _read_document(GATE_DOC_LINKS, doc)
     if isinstance(text, GateResult):
         return text
     parsed = parse_document(text)
@@ -147,7 +167,9 @@ def gate_doc_links(doc: Path, repo_root: Path) -> GateResult:
     entries += [
         _entry(CODE_UNRESOLVED_REF, item.label, item.line) for item in parsed.unresolved
     ]
-    return _build_result("doc-links", f"internal:doc-links:{doc}", status, entries)
+    return _build_result(
+        GATE_DOC_LINKS, f"internal:{GATE_DOC_LINKS}:{doc}", status, entries
+    )
 
 
 def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
@@ -157,7 +179,7 @@ def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
     `gate_doc_links`: здесь такой якорь молча пропускается, а не
     дублируется вторым `fail` за ту же причину.
     """
-    doc_text = _read_document("doc-anchors", doc)
+    doc_text = _read_document(GATE_DOC_ANCHORS, doc)
     if isinstance(doc_text, GateResult):
         return doc_text
     refs = [ref for ref in parse_doc_refs(doc_text) if ref.anchor]
@@ -191,7 +213,9 @@ def gate_doc_anchors(doc: Path, repo_root: Path) -> GateResult:
             entries.append(_entry(CODE_MISSING, target, ref.line))
 
     status = GateStatus.FAIL if has_fail else GateStatus.PASS
-    return _build_result("doc-anchors", f"internal:doc-anchors:{doc}", status, entries)
+    return _build_result(
+        GATE_DOC_ANCHORS, f"internal:{GATE_DOC_ANCHORS}:{doc}", status, entries
+    )
 
 
 def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
@@ -205,7 +229,7 @@ def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
     `repo_root` — `escape` (тот же словарь кодов, что и у прочих
     path-гейтов baseline).
     """
-    text = _read_document("doc-line-refs", doc)
+    text = _read_document(GATE_DOC_LINE_REFS, doc)
     if isinstance(text, GateResult):
         return text
     refs = [ref for ref in parse_doc_refs(text) if ref.kind == "code_line_ref"]
@@ -237,7 +261,7 @@ def gate_doc_line_refs(doc: Path, repo_root: Path) -> GateResult:
             entries.append(_entry(CODE_LINE_DRIFT, ref.target, ref.line))
     status = GateStatus.FAIL if has_fail else GateStatus.PASS
     return _build_result(
-        "doc-line-refs", f"internal:doc-line-refs:{doc}", status, entries
+        GATE_DOC_LINE_REFS, f"internal:{GATE_DOC_LINE_REFS}:{doc}", status, entries
     )
 
 
@@ -446,7 +470,7 @@ def gate_doc_scope(patch: str, allowed: tuple[str, ...]) -> GateResult:
         _entry(code, target, lineno) for lineno, code, target in sorted(findings)
     ]
     status = GateStatus.FAIL if entries else GateStatus.PASS
-    return _build_result("doc-scope", "internal:doc-scope", status, entries)
+    return _build_result(GATE_DOC_SCOPE, f"internal:{GATE_DOC_SCOPE}", status, entries)
 
 
 def _unparsed_patch(patch: str) -> tuple[int, str, str] | None:

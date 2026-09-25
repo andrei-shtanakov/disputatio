@@ -16,7 +16,7 @@ import pytest
 
 from disputatio.contracts.ports import Verifier
 from disputatio.contracts.verification import GateStatus, OverallStatus
-from disputatio.verifier import GateSpec
+from disputatio.verifier import BASELINE_GATE_NAMES, GateSpec
 from disputatio.verifier.doc_verifier import DocVerifier
 
 # Тот же герметичный набор, что и в conftest.py::_git_env — коммит внутри
@@ -49,13 +49,7 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
-_BASELINE_NAMES = {
-    "doc-paths",
-    "doc-links",
-    "doc-anchors",
-    "doc-line-refs",
-    "doc-scope",
-}
+_BASELINE_NAMES = set(BASELINE_GATE_NAMES)
 
 
 def _write(path: Path, text: str) -> Path:
