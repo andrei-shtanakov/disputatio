@@ -56,9 +56,11 @@ from disputatio.verifier.doc_refs import (
 #: Имена пяти baseline doc-гейтов §6 — единственный источник: из этих
 #: констант гейты ниже берут `GateResult.name`, из них же собран
 #: `BASELINE_GATE_NAMES`, по которому конфиг пайплайна запрещает перекрывать
-#: baseline (SPEC-002 §6). В `src/` рукописной копии имён нет; тесты
-#: verifier'а берут имена отсюда же. Литералы в прочих тестах — данные
-#: фикстур (ссылки evidence, текст промпта), а не перечень baseline.
+#: baseline (SPEC-002 §6). В `src/` рукописной копии имён нет. Значения —
+#: нормативные имена §6 (их видят `verification.json` и evidence ревью),
+#: поэтому тесты пинят их литералами ровно в одном месте —
+#: `tests/verifier/test_doc_verifier.py::test_baseline_gate_names_match_spec`;
+#: остальные тесты verifier'а берут имена отсюда.
 GATE_DOC_PATHS: Final = "doc-paths"
 GATE_DOC_LINKS: Final = "doc-links"
 GATE_DOC_ANCHORS: Final = "doc-anchors"

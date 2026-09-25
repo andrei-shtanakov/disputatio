@@ -53,6 +53,24 @@ def _git(cwd: Path, *args: str) -> None:
 _BASELINE_NAMES = set(BASELINE_GATE_NAMES)
 
 
+def test_baseline_gate_names_match_spec() -> None:
+    """Имена baseline-гейтов — нормативные имена SPEC-002 §6, в его порядке.
+
+    Единственный литеральный пин: остальные тесты берут имена из
+    `BASELINE_GATE_NAMES`, и без этой проверки переименование константы
+    съезжало бы синхронно с обеими сторонами их равенств. Имена видны
+    снаружи — в `verification.json` и в evidence ревью (`kind: gate`), так
+    что их смена — изменение контракта, а не рефакторинг.
+    """
+    assert BASELINE_GATE_NAMES == (
+        "doc-paths",
+        "doc-links",
+        "doc-anchors",
+        "doc-line-refs",
+        "doc-scope",
+    )
+
+
 def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
