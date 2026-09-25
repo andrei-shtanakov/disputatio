@@ -71,11 +71,27 @@ class Limits(ArtifactChild):
 
 
 class BudgetUsed(ArtifactChild):
-    """Израсходованный бюджет; все счётчики стартуют с нуля."""
+    """Израсходованный бюджет; все счётчики стартуют с нуля (§4.1).
+
+    `unreported_turns` — сколько вызовов агента не сообщили расход токенов:
+    без него «ход ничего не потратил» и «ход не отчитался» неразличимы.
+    `tracked_from_start` — счётчики ведутся по правилам §4.1 с создания
+    сессии. Умолчание `False` — это чтение `session.json` прежней версии,
+    чей учёт терял токены неудачных попыток; новую сессию помечает бутстрап
+    (`RuntimeConfig.to_session_state`).
+
+    Оба поля при значении по умолчанию не сериализуются (`exclude_if`), и
+    это не косметика: та же модель — агрегат `budget_used` манифеста
+    пайплайна, у которого по SPEC-002 §4.2 ровно три поля, и сохранённый
+    манифест обязан остаться байт-в-байт прежним. Чтение от этого не
+    меняется: отсутствующий ключ читается умолчанием (§5.2, совместимость).
+    """
 
     tokens: int = Field(default=0, ge=0)
     wall_seconds: float = 0.0
     cost_usd_est: float = 0.0
+    unreported_turns: int = Field(default=0, ge=0, exclude_if=lambda v: v == 0)
+    tracked_from_start: bool = Field(default=False, exclude_if=lambda v: not v)
 
 
 class SessionState(ArtifactBase):

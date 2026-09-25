@@ -11,7 +11,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
-from disputatio.contracts.base import ArtifactBase
+from disputatio.contracts.base import ArtifactBase, ArtifactChild
 
 
 class Outcome(StrEnum):
@@ -24,6 +24,19 @@ class Outcome(StrEnum):
     FAILED = "failed"
 
 
+class BudgetSnapshot(ArtifactChild):
+    """Накопленный `budget_used` на входе в `DECIDING` раунда (§4.5).
+
+    Накопленный итог, а не стоимость раунда: стоимость выводится разностью
+    соседних снимков (§5.2). `cost_usd_est` в снимок не входит — прогноз
+    его не читает.
+    """
+
+    tokens: int = Field(ge=0)
+    wall_seconds: float
+    unreported_turns: int = Field(ge=0)
+
+
 class Decision(ArtifactBase):
     """Корневой артефакт `decision.json` (§4.5 SPEC-001); пишет оркестратор.
 
@@ -32,6 +45,10 @@ class Decision(ArtifactBase):
     не схема. `next_round_directive` обязателен как ключ, но nullable:
     `None` при terminal-исходе; схемно `None` допустим и при `continue`
     (кросс-артефактный слой решает, требовать ли директиву).
+
+    `budget_snapshot` — расширение v1 (§4.5): новая версия пишет его в
+    каждое решение, решение прежней версии читается с `None` и наблюдением
+    стоимости раунда не служит.
     """
 
     round: int = Field(ge=1)
@@ -39,3 +56,4 @@ class Decision(ArtifactBase):
     reason: str
     open_issues_carried: list[str] = Field(default_factory=list)
     next_round_directive: str | None
+    budget_snapshot: BudgetSnapshot | None = None

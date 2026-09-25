@@ -26,7 +26,7 @@ from disputatio.contracts.checklists_catalog import (
     SPEC_CHECKLIST,
     ResolvedChecklist,
 )
-from disputatio.contracts.decision import Decision, Outcome
+from disputatio.contracts.decision import BudgetSnapshot, Decision, Outcome
 from disputatio.contracts.events import Event, EventSource, EventType
 from disputatio.contracts.pipeline import (
     ALLOWED_TRANSITIONS,
@@ -150,6 +150,7 @@ __all__ = [
     "ArtifactChild",
     "ArtifactEvidence",
     "BoundaryVerdict",
+    "BudgetSnapshot",
     "BudgetUsed",
     "ChecklistItem",
     "Decision",

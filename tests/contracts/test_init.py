@@ -54,7 +54,7 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "parse_proposal",
     ),
     "review": ("Verdict", "Severity", "Issue", "Review"),
-    "decision": ("Outcome", "Decision"),
+    "decision": ("Outcome", "BudgetSnapshot", "Decision"),
     "events": ("EventSource", "EventType", "Event"),
     "validation": (
         "REASON_NO_SUBSTANTIVE_ISSUES",
