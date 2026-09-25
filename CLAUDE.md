@@ -58,7 +58,7 @@ These constrain almost every implementation decision; violating them breaks resu
 
 - `verification.overall == fail` does **not** block the transition to `REVIEWING` — the reviewer weighs the failure itself. It *does* block `CONVERGED`.
 - `overall` has a third value, `indeterminate`: no gate actually ran (empty set or all `skip`). `pass` requires at least one executed `pass` — an unverified round is never green (§4.3). Outwardly `indeterminate` behaves like `fail` in two rules of three (blocks `CONVERGED`, not `REVIEWING`); the only path to convergence without an executed gate is the §5.1 п.2 carve-out for `analyze` with an empty gate set. The third rule differs: the §4.4 validation below rejects `approve` on `fail` **only** — extending it to `indeterminate` would send a legitimate empty-gate `analyze` review into schema-retry and drop the session into `FAILED`.
-- Anti-sycophancy: a round-1 `approve` is only accepted for `analyze` mode without code changes; otherwise the orchestrator forces one substantive review cycle.
+- Anti-sycophancy: a round-1 `approve` is only accepted for `analyze` mode without code changes; otherwise the orchestrator forces one substantive review cycle — unless a terminal condition (§5.2–5.4, incl. §5.2a) already fired; anti-sycophancy blocks `CONVERGED`, it does not override stopping.
 - Partial results are always exported, with `manifest.json` honestly recording `converged: false` plus open issues.
 
 ## Session layout on disk
