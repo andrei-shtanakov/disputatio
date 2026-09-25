@@ -13,16 +13,17 @@
 только последнюю попытку» живёт в шаге, и поймать её можно только там.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import anyio
+import pytest
 
 from disputatio.contracts import AgentTurn, BudgetUsed, SessionPhase
 from disputatio.core import SessionFsm
 from disputatio.events import write_round_artifact
-from disputatio.runtime import loop, steps
+from disputatio.runtime import ReviewParseError, loop, steps
 from disputatio.runtime.budget import accumulate
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, PROPOSAL_NAME
 
@@ -163,3 +164,69 @@ def test_accumulate_sums_reported_and_counts_unreported() -> None:
     assert after.budget_used.tokens == 5
     assert after.budget_used.unreported_turns == 1
     assert after.budget_used.wall_seconds == 1.0
+
+
+@pytest.mark.parametrize(
+    ("reported", "tokens", "unreported"),
+    [([100, 30, 20], 150, 0), ([100, None, 20], 120, 1)],
+    ids=["all-reported", "one-unreported"],
+)
+def test_exhausted_retries_are_charged_in_failed_state(
+    tmp_path: Path, reported: list[int | None], tokens: int, unreported: int
+) -> None:
+    """Упавший шаг тоже начисляет свои попытки и время (§4.1).
+
+    Три невалидных ответа при `schema_retries = 2`: ядро переводит сессию в
+    `FAILED`, шаг поднимает ошибку разбора. Исключение и переход — прежние;
+    меняется только сохранённый бюджет: последний `session.json` — всё ещё
+    `FAILED`, но с расходом всех трёх попыток и временем шага.
+    """
+    _seed_verification(tmp_path, 1)
+    write_round_artifact(tmp_path, 1, PROPOSAL_NAME, _proposal(1, body="тело"))
+    write_round_artifact(tmp_path, 1, CHANGES_PATCH_NAME, "ДИФФ\n")
+    reviewer = MeteredAdapter(replies=[(_UNPARSABLE_REVIEW, n) for n in reported])
+    ctx = _ctx(SessionPhase.REVIEWING, tmp_path, author=NoAgent(), reviewer=reviewer)
+    ticks = iter([100.0, 109.0])
+    ctx = replace(ctx, deps=replace(ctx.deps, monotonic=lambda: next(ticks)))
+
+    async def call() -> Any:
+        return await loop._run_step(steps.review, ctx)
+
+    with pytest.raises(ReviewParseError):
+        anyio.run(call)
+
+    saved = ctx.deps.store.saved
+    assert reviewer.calls == 3
+    assert [state.state for state in saved] == [
+        SessionPhase.FAILED,
+        SessionPhase.FAILED,
+    ], "начисление упавшего шага обязано сохранить текущую фазу, не иную"
+    used = saved[-1].budget_used
+    assert (used.tokens, used.unreported_turns, used.wall_seconds) == (
+        tokens,
+        unreported,
+        9.0,
+    )
+
+
+def test_step_crashed_in_a_live_phase_is_not_charged(tmp_path: Path) -> None:
+    """Обрыв в нетерминальной фазе `session.json` не переписывает.
+
+    Resume переиграет такой шаг целиком, а запись состояния посреди хода
+    автора сверка control plane P9 приняла бы за подмену (SPEC-002 §7.1).
+    """
+    ctx = _ctx(SessionPhase.VERIFYING, tmp_path, author=NoAgent(), reviewer=NoAgent())
+    ticks = iter([100.0, 109.0])
+    ctx = replace(ctx, deps=replace(ctx.deps, monotonic=lambda: next(ticks)))
+
+    def crashing_step(_ctx: Any) -> None:
+        raise RuntimeError("порт лёг")
+
+    async def call() -> Any:
+        return await loop._run_step(crashing_step, ctx)
+
+    with pytest.raises(RuntimeError, match="порт лёг"):
+        anyio.run(call)
+
+    assert ctx.deps.store.saved == []
+    assert ctx.fsm.state.state is SessionPhase.VERIFYING

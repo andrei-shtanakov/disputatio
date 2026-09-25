@@ -48,7 +48,7 @@ from disputatio.contracts import (
 )
 from disputatio.core import TERMINAL_PHASES, SessionFsm
 from disputatio.runtime import exporting, steps
-from disputatio.runtime.budget import charge_step
+from disputatio.runtime.budget import charge_failed_step, charge_step
 from disputatio.runtime.composition import build_runtime
 from disputatio.runtime.config import load_config
 from disputatio.runtime.errors import SessionNotFound
@@ -303,10 +303,22 @@ async def _run_step(step: StepFn, ctx: StepContext) -> StepContext:
     Начисление идёт ПОСЛЕ шага — то есть после `handle_step_success` внутри
     него: сюда управление приходит только у шага, дошедшего до конца, и
     обнулить лимит I4 посреди retry-петли эта граница не может по построению
-    (ADR-004). Упавший шаг бюджета не начисляет вовсе: исключение уходит
-    наружу мимо этой строки.
+    (ADR-004). Шаг, упавший в `FAILED`, начисляет расход тоже (§4.1): его
+    попытки собираются в `attempt_log`, их токены и время шага сохраняются
+    в состояние `FAILED` (`charge_failed_step`), и исключение уходит наружу
+    прежним. Сбой ловится `finally`, а не `except`: ни одна ошибка шага —
+    в том числе I3 — здесь не перехватывается и не переупаковывается.
     """
+    attempts: list[AgentTurn] = []
     started = ctx.deps.monotonic()
-    outcome = step(ctx)
-    turns = await outcome if isawaitable(outcome) else outcome
+    finished = False
+    try:
+        outcome = step(ctx.with_attempt_log(attempts))
+        turns = await outcome if isawaitable(outcome) else outcome
+        finished = True
+    finally:
+        if not finished:
+            charge_failed_step(
+                ctx, turns=attempts, elapsed_s=ctx.deps.monotonic() - started
+            )
     return charge_step(ctx, turns=turns or (), elapsed_s=ctx.deps.monotonic() - started)

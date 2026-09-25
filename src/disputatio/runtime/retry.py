@@ -133,6 +133,8 @@ async def run_with_schema_retry[T](
     элемент результата, по той же причине, что и `on_invalid`: попытки
     нужны шагу, чтобы отдать их границе шага на начисление, а считать
     бюджет сам хелпер не вправе — он внутри retry-петли (ADR-004).
+    Та же попытка ложится и в `ctx.attempt_log`, если граница шага его
+    завела: упавший шаг попыток не возвращает, а расход их потрачен.
     """
     detail: str | None = None
     attempt = 0
@@ -146,6 +148,8 @@ async def run_with_schema_retry[T](
         turn = await adapter.run(prompt, session_ref=session_ref)
         if on_attempt is not None:
             on_attempt(turn)
+        if ctx.attempt_log is not None:
+            ctx.attempt_log.append(turn)
         _run_lifecycle_hook(ctx, lifecycle, point=_AFTER_TURN)
         try:
             parsed = parse(turn.text)

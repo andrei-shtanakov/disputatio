@@ -168,6 +168,11 @@ class StepContext:
     (SPEC-002 §5.1, §5.3). Тоже от вызывающего и тоже с дефолтом `None`:
     `disp run` doc-сессий не заводит, и без него ни одна строка шага не
     меняется.
+
+    `attempt_log` — журнал вызовов агента текущего шага, который заводит
+    граница шага (`loop._run_step`), а пополняет `run_with_schema_retry`.
+    Нужен он ровно тогда, когда шаг упал и своих попыток не вернул: их
+    расход всё равно потрачен и начисляется (§4.1). `None` — журнала нет.
     """
 
     deps: RuntimeDeps
@@ -176,6 +181,7 @@ class StepContext:
     gates: tuple[GateSpec, ...] = field(default=())
     lifecycle: SessionLifecyclePolicy | None = None
     documents: DocSessionSpec | None = None
+    attempt_log: list[AgentTurn] | None = None
 
     @property
     def workspace_root(self) -> Path:
@@ -213,6 +219,7 @@ class StepContext:
             gates=self.gates,
             lifecycle=self.lifecycle,
             documents=self.documents,
+            attempt_log=self.attempt_log,
         )
 
     def with_lifecycle(self, lifecycle: "SessionLifecyclePolicy") -> "StepContext":
@@ -229,6 +236,23 @@ class StepContext:
             gates=self.gates,
             lifecycle=lifecycle,
             documents=self.documents,
+            attempt_log=self.attempt_log,
+        )
+
+    def with_attempt_log(self, attempt_log: list[AgentTurn]) -> "StepContext":
+        """Тот же контекст с журналом попыток шага — для начисления при сбое.
+
+        Копия по тому же списку полей, что и у `with_fsm`; FSM общий —
+        переходы шага видит и тот, кто завёл журнал.
+        """
+        return StepContext(
+            deps=self.deps,
+            fsm=self.fsm,
+            base_commit=self.base_commit,
+            gates=self.gates,
+            lifecycle=self.lifecycle,
+            documents=self.documents,
+            attempt_log=attempt_log,
         )
 
 
