@@ -43,6 +43,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from disputatio.contracts import (
     SCHEMA_V1,
@@ -50,11 +51,15 @@ from disputatio.contracts import (
     AgentTurn,
     BudgetUsed,
     Decision,
+    DiffStats,
     Event,
     EventType,
+    GateResult,
+    GateStatus,
     Limits,
     Mode,
     Outcome,
+    OverallStatus,
     Role,
     SessionPhase,
     SessionState,
@@ -387,11 +392,28 @@ def _decision(round_no: int, *, source: bool) -> Decision:
     )
 
 
+def _verification(round_no: int, *, source: bool) -> VerificationReport:
+    """Отчёт проверок: у раунда-источника зелёный, у прочих красный.
+
+    Разные значения `overall` нарочно: `verification_overall` манифеста
+    (§5.5) обязан браться у раунда-источника, и подмена раунда видна по
+    самому значению.
+    """
+    status = GateStatus.PASS if source else GateStatus.FAIL
+    return VerificationReport(
+        round=round_no,
+        gates=[GateResult(name="tests", cmd="uv run pytest -q", status=status)],
+        overall=OverallStatus.PASS if source else OverallStatus.FAIL,
+        diff_stats=DiffStats(files=1, insertions=1, deletions=1),
+    )
+
+
 def _seed(root: Path, *, round_no: int, write_patch: bool = True) -> None:
     """Кладёт на диск раунды `1…round_no` так, как их оставила бы сессия.
 
     Все раунды финализированы (I3): к моменту `EXPORTING` принятые раунды
-    закрыты от правок, и шаг обязан их читать, а не переписывать.
+    закрыты от правок, и шаг обязан их читать, а не переписывать. Отчёт
+    проверок есть у каждого раунда: `DECIDING` без него не проходит (§5.5).
     """
     bootstrap_session(root)
     for prior in range(1, round_no + 1):
@@ -399,6 +421,12 @@ def _seed(root: Path, *, round_no: int, write_patch: bool = True) -> None:
         write_round_artifact(root, prior, "proposal.md", _proposal_text(prior))
         if write_patch or not source:
             write_round_artifact(root, prior, "changes.patch", _patch_text(prior))
+        write_round_artifact(
+            root,
+            prior,
+            "verification.json",
+            _verification(prior, source=source).model_dump_json(by_alias=True),
+        )
         write_round_artifact(
             root,
             prior,
@@ -735,3 +763,61 @@ def test_missing_proposal_of_the_source_round_is_an_ordering_error(
     assert harness.calls == []
     assert not _result_path(tmp_path, _MANIFEST).exists()
     assert harness.fsm.state.state is SessionPhase.EXPORTING
+
+
+def test_manifest_records_verification_overall_of_the_source_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`verification_overall` — `overall` отчёта раунда-источника (§5.5).
+
+    У прошлых раундов отчёт красный, у источника — зелёный: значение
+    соседнего раунда видно по самому полю, а строка — значение того же
+    перечисления, что и в `verification.json`.
+    """
+    harness = _make_harness(tmp_path, monkeypatch)
+
+    _export(harness)
+
+    assert _manifest_on_disk(tmp_path)["verification_overall"] == (
+        OverallStatus.PASS.value
+    )
+
+
+def _source_round_dir(root: Path) -> Path:
+    """Каталог раунда-источника — чтобы испортить его отчёт проверок."""
+    return session_dir(root) / "rounds" / f"{_ROUND:03d}"
+
+
+def test_missing_verification_of_the_source_round_is_an_export_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Нет `verification.json` раунда-источника → ошибка, не `null` (§5.5).
+
+    `DECIDING` без отчёта не проходит, поэтому пустое место здесь — сломанный
+    порядок шагов, а манифест с `verification_overall: null` выдал бы
+    отсутствие свидетельства за его значение.
+    """
+    harness = _make_harness(tmp_path, monkeypatch)
+    (_source_round_dir(tmp_path) / "verification.json").unlink()
+
+    with pytest.raises(AssertionError):
+        _export(harness)
+
+    assert harness.calls == []
+    assert not _result_path(tmp_path, _MANIFEST).exists()
+    assert harness.fsm.state.state is SessionPhase.EXPORTING
+
+
+def test_invalid_verification_of_the_source_round_is_an_export_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отчёт, не проходящий схему, — ошибка экспорта, а не пропуск поля (§5.5)."""
+    harness = _make_harness(tmp_path, monkeypatch)
+    report = _source_round_dir(tmp_path) / "verification.json"
+    report.write_text('{"schema": "disputatio/v1", "overall": "green"}', "utf-8")
+
+    with pytest.raises(ValidationError):
+        _export(harness)
+
+    assert harness.calls == []
+    assert not _result_path(tmp_path, _MANIFEST).exists()

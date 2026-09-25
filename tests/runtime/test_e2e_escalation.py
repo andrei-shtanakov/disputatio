@@ -237,8 +237,10 @@ def _request_changes(round_no: int) -> str:
     ).model_dump_json(by_alias=True)
 
 
-def _profile(*, max_rounds: int) -> RuntimeConfig:
-    """Профиль запуска: оба агента — один адаптер, один зелёный гейт."""
+def _profile(
+    *, max_rounds: int, gates: tuple[GateSpec, ...] = (_GATE,)
+) -> RuntimeConfig:
+    """Профиль запуска: оба агента — один адаптер, по умолчанию зелёный гейт."""
     return RuntimeConfig(
         session_id=_PROFILE_ID,
         mode=Mode.ANALYZE,
@@ -252,7 +254,7 @@ def _profile(*, max_rounds: int) -> RuntimeConfig:
             max_wall_seconds=3600,
             schema_retries=1,
         ),
-        gates=(_GATE,),
+        gates=gates,
         attachments=(),
     )
 
@@ -311,6 +313,7 @@ def _run_session(
     *,
     max_rounds: int,
     rounds: int,
+    gates: tuple[GateSpec, ...] = (_GATE,),
 ) -> Session:
     """Гоняет `disp run` до терминала: `rounds` раундов, ни одного approve.
 
@@ -326,7 +329,8 @@ def _run_session(
     _register_adapter(monkeypatch, launcher=launcher)
 
     config_path = repo.parent / "profile.toml"
-    config_path.write_text(_profile(max_rounds=max_rounds).render_toml(), "utf-8")
+    profile = _profile(max_rounds=max_rounds, gates=gates)
+    config_path.write_text(profile.render_toml(), "utf-8")
 
     main: Callable[..., int] = import_module("disputatio.cli").main
     exit_code = main(
@@ -513,3 +517,33 @@ def test_every_accepted_round_gets_exactly_one_commit(
     assert _session_json(git_repo)["state"] == SessionPhase.DONE.value
     assert _manifest(git_repo)["converged"] is False
     assert _manifest(git_repo)["source_round"] == 3
+
+
+def test_session_whose_gates_all_skip_stops_after_round_one(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`develop`, все гейты `skip` → остановка §5.2a на раунде 1, не на лимите.
+
+    До `max_rounds` три раунда запаса, а очереди агентов рассчитаны ровно
+    на один: лишний раунд упал бы исчерпанием очереди. Причина остановки
+    называет саму беду, и манифест печатает `overall` раунда-источника.
+    """
+    disabled = GateSpec(name="head", cmd=_GATE.cmd, enabled=False)
+    session = _run_session(
+        git_repo, monkeypatch, max_rounds=4, rounds=1, gates=(disabled,)
+    )
+    capsys.readouterr()
+
+    assert session.exit_code == 0
+    assert session.launched == []
+    assert not round_dir(git_repo, 2).exists()
+    decision = _decision(git_repo, 1)
+    assert decision.outcome is Outcome.DEADLOCK
+    assert decision.reason == "verification_indeterminate"
+    assert _session_json(git_repo)["state"] == SessionPhase.DONE.value
+
+    manifest = _manifest(git_repo)
+    assert manifest["converged"] is False
+    assert manifest["stop_reason"] == "verification_indeterminate"
+    assert manifest["verification_overall"] == "indeterminate"
+    assert manifest["source_round"] == 1
