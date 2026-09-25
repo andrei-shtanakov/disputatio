@@ -509,3 +509,65 @@ def test_checklist_order_follows_declared_order_not_the_mapping() -> None:
 
     positions = [prompt.index(f"- {item_id}:") for item_id in SPEC_CHECKLIST]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize(
+    ("contour", "ids", "findings_item"),
+    [
+        ("spec", SPEC_CHECKLIST, "S1"),
+        ("pair", PAIR_CHECKLIST, None),
+    ],
+)
+def test_prompt_requires_verdict_and_checklist_consistency(
+    contour: str, ids: Sequence[str], findings_item: str | None
+) -> None:
+    """#117: промпт требует V3/V7/V8 рядом с §4.4 — оба набора, а не один.
+
+    Валидатор отвергает `approve` при `fail`-пункте (V3) и при живом
+    blocker/major (V7), а V8 для пунктов без машинной связи — требование
+    именно промпта. Промпт без этих правил учил бы выводу, который
+    валидатор отвергнет, и сессия тратила бы schema-повторы.
+    """
+    doc_reviewer = _module("doc_reviewer")
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour=contour,
+        doc_texts={"docs/specs/api.md": "текст"},
+        verification=_verification(),
+        checklist=_checklist(ids, findings_item=findings_item),
+    )
+
+    assert "V3, V7 §5.2" in prompt
+    assert "V8 §5.2" in prompt
+
+
+def test_prompt_names_the_findings_item_of_the_contour() -> None:
+    """V8 по роли: промпт называет пункт, который контур назначил findings-item."""
+    doc_reviewer = _module("doc_reviewer")
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour="doc",
+        doc_texts={"docs/charter.md": "текст"},
+        verification=_verification(),
+        checklist=_checklist(
+            ("B1", "B3"),
+            texts={"B1": "границы названы", "B3": "нет blocker/major-находок"},
+            findings_item="B3",
+        ),
+    )
+
+    assert "Пункт `B3` — findings-item контура" in prompt
+
+
+def test_pair_prompt_names_no_findings_item() -> None:
+    """У pair роли нет: промпт не выдумывает findings-item (работу делает V7)."""
+    doc_reviewer = _module("doc_reviewer")
+
+    prompt = doc_reviewer.build_doc_reviewer_prompt(
+        contour="pair",
+        doc_texts={"docs/plans/api.md": "текст"},
+        verification=_verification(),
+        checklist=_checklist(PAIR_CHECKLIST),
+    )
+
+    assert "findings-item контура" not in prompt
