@@ -488,7 +488,11 @@ def test_top_level_structural_defects_are_parse_error(tmp_path: Path) -> None:
     pipeline_dir = stand.pipeline_dir()
     before = _proof_bytes(stand, state)
 
-    not_a_mapping_state = _rewrite_proof_with_matching_digest(stand, state, [])  # type: ignore[arg-type]
+    not_a_mapping_state = _rewrite_proof_with_matching_digest(
+        stand,
+        state,
+        [],  # type: ignore[arg-type]
+    )
     with pytest.raises(UnprovableSemantics) as excinfo:
         load_semantic_proof(pipeline_dir, not_a_mapping_state)
     assert excinfo.value.reason == "parse_error"
