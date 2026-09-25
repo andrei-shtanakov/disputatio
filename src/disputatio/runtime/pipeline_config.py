@@ -352,8 +352,7 @@ def validate_anchor_path(anchor_path: Path, containment_root: Path) -> None:
     её без дублирования containment-логики. Сама функция не знает про git и
     про toplevel — она проверяет чистое containment одного пути в другом;
     ВЫБОР границы (toplevel репозитория, а не буквальный `workspace_root` —
-    см. докстринг `check_run_preconditions`, Important-3) остаётся на
-    вызывающем.
+    см. докстринг `check_run_preconditions`) остаётся на вызывающем.
 
     Канонизация — `expanduser` + `resolve`: без неё символическую ссылку,
     ведущую внутрь `containment_root`, либо `..`-путь, возвращающийся туда

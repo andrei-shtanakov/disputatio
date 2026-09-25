@@ -816,7 +816,7 @@
 
 ## Ждём от других проектов
 
-- [ ] Прогноз бюджета: хвосты после мержа PR #132 @id:budget-prediction-followups @epic:eco.disputatio
+- [x] Прогноз бюджета: хвосты после мержа PR #132 @id:budget-prediction-followups @epic:eco.disputatio — все три закрыты (2026-09-25)
   — три `minor` последнего терминального ревью PR #132 (approve, правки
   сдвинули бы голову при исчерпанном бюджете прогонов):
   1. ✅ **решено 2026-09-25** (ветка `fix/legacy-decision-prediction-bypass`):
@@ -830,10 +830,12 @@
      P9; в одиночной сессии автору и так доступен `session.json` — граница
      не расширена, но стоит сверять и с прогнозом или принимать решение без
      снимка только у уже финализированного раунда;
-  2. `runtime/history.py` импортирует `pydantic_core` напрямую, а
+  2. ✅ **решено 2026-09-25** — `pydantic-core` объявлен в `pyproject.toml`.
+     `runtime/history.py` импортирует `pydantic_core` напрямую, а
      `pyproject.toml` его не объявляет — объявить или строить ошибку через
      публичный `pydantic`;
-  3. докстринг `tests/runtime/test_budget.py::test_schema_retry_limit_is_not_reset_by_the_budget_charge`
+  3. ✅ **решено 2026-09-25** — докстринг называет действующее правило.
+     Докстринг `tests/runtime/test_budget.py::test_schema_retry_limit_is_not_reset_by_the_budget_charge`
      утверждает снятое правило («упавший шаг не начисляет») — теперь шаг,
      закрывший сессию в `FAILED`, расход начисляет, разведены начисление и
      пересадка FSM.
