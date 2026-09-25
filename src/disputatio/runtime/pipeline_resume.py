@@ -394,13 +394,14 @@ class PipelineResume:
             # `turn_completed` означает, что ход не прерван: штатные записи
             # runtime после успешного хода подменой не являются.
             return anchor
+        # Совместимость периметра — ДО файловой сверки и мимо обработки
+        # подмены (§8.1 шаг 0): снимок без `revisions` не сверяется ни по
+        # какому периметру, и `FAILED` за него не пишется.
         plane = ControlPlane(
             workspace_root=self._workspace_root,
             pipeline_dir=pipeline_dir_of(self._workspace_root, slug),
-            artifact_root=artifact_root_of(
-                self._workspace_root, slug, record.session_id
-            ),
-        )
+            revisions=(),
+        ).for_record(record)
         try:
             verify_or_raise(anchor, record, plane)
         except ControlPlaneTampered as tampered:

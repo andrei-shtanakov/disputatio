@@ -156,7 +156,7 @@ def test_tampered_plane_outranks_kind_check(tmp_path: Path) -> None:
     plane = ControlPlane(
         workspace_root=stand.workspace,
         pipeline_dir=stand.pipeline_dir(),
-        artifact_root=stand.artifact_root("doc-r1"),
+        revisions=("sessions/doc-r1",),
         append_only_paths=(
             stand.pipeline_dir() / "events.jsonl",
             stand.artifact_root("doc-r1") / ".disputatio" / "events.jsonl",

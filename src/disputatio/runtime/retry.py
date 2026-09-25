@@ -53,7 +53,7 @@ from disputatio.contracts import (
     SessionPhase,
 )
 from disputatio.core import RetryAction
-from disputatio.events import AnchorCorrupted
+from disputatio.events import AnchorCorrupted, RoundImmutableError
 from disputatio.runtime.errors import (
     ControlPlaneTampered,
     LifecyclePolicyFailed,
@@ -188,6 +188,16 @@ async def run_with_schema_retry[T](
         return parsed, turn
 
 
+#: Исключения хука P9, которые уходят из `_run_lifecycle_hook` без обёртки:
+#: отказ сверки называет причину сам, а I3 обёрткой превратился бы в член
+#: `SESSION_CLOSING_ERRORS` и был бы проглочен драйвером (ревью #139).
+_POLICY_PASSTHROUGH: Final = (
+    ControlPlaneTampered,
+    AnchorCorrupted,
+    RoundImmutableError,
+)
+
+
 def _run_lifecycle_hook(
     ctx: "StepContext", lifecycle: SessionLifecyclePolicy | None, *, point: str
 ) -> None:
@@ -206,7 +216,8 @@ def _run_lifecycle_hook(
     сбоя (та же причина, что у `_emit_error`). Переход — вторым: он несёт
     write-ahead `session.json` и собственное `state_change`. Исключение —
     третьим. Отказ сверки (`ControlPlaneTampered`/`AnchorCorrupted`) уходит
-    как есть: почему снапшот не сошёлся, знает политика, и переписывать её
+    как есть, как и I3 (`RoundImmutableError`) — его драйверы ловить не
+    вправе, а обёртка в `LifecyclePolicyFailed` сделала бы его исходом: почему снапшот не сошёлся, знает политика, и переписывать её
     причину значило бы завести второй источник правды о P9. Любое другое
     исключение политики — сбой, а не отказ, — уходит `LifecyclePolicyFailed`
     с исходным в `__cause__`: сессия уже закрыта, и драйверы обязаны узнать
@@ -224,7 +235,7 @@ def _run_lifecycle_hook(
     except Exception as exc:
         _emit_invariant_violation(ctx, point=point, detail=str(exc))
         ctx.fsm.transition(SessionPhase.FAILED)
-        if isinstance(exc, (ControlPlaneTampered, AnchorCorrupted)):
+        if isinstance(exc, _POLICY_PASSTHROUGH):
             raise
         raise LifecyclePolicyFailed(
             f"хук политики P9 ({point}) упал сбоем, сессия закрыта FAILED: {exc}"

@@ -46,9 +46,11 @@ from disputatio.runtime import StatusEntry
 from disputatio.runtime.errors import (
     ConfigError,
     ControlPlaneTampered,
+    DisputatioError,
     ExternalEditError,
     PipelineNotResumable,
     SemanticDrift,
+    SnapshotPerimeterIncompatible,
     UnprovableSemantics,
 )
 from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_dir
@@ -86,7 +88,13 @@ def _record_patch(stand: Stand, session_id: str, patch: str) -> None:
     (directory / CHANGES_PATCH_NAME).write_text(patch, encoding="utf-8")
 
 
-def _seed_pre_turn(stand: Stand, session_id: str) -> None:
+def _seed_pre_turn(
+    stand: Stand,
+    session_id: str,
+    *,
+    revisions: tuple[str, ...] | None = None,
+    legacy: bool = False,
+) -> None:
     """Пишет в анкер `pre_turn`-снапшот ревизии — ход, прерванный на середине.
 
     Пути журналов подаёт тест: `runtime` путь `events.jsonl` не вычисляет
@@ -95,15 +103,19 @@ def _seed_pre_turn(stand: Stand, session_id: str) -> None:
     plane = ControlPlane(
         workspace_root=stand.workspace,
         pipeline_dir=stand.pipeline_dir(),
-        artifact_root=stand.artifact_root(session_id),
+        revisions=revisions or (f"sessions/{session_id}",),
         append_only_paths=(
             stand.pipeline_dir() / "events.jsonl",
             stand.artifact_root(session_id) / ".disputatio" / "events.jsonl",
         ),
     )
-    stand.anchor().append_pre_turn(
-        plane.snapshot(session_id=session_id, round_no=1, operation_id="turn-seeded")
+    snapshot = plane.snapshot(
+        session_id=session_id, round_no=1, operation_id="turn-seeded"
     )
+    if legacy:
+        # Снимок версии до расширенного периметра: поля `revisions` нет.
+        snapshot = snapshot.model_copy(update={"revisions": None})
+    stand.anchor().append_pre_turn(snapshot)
 
 
 def test_resume_stops_before_any_mutation_on_an_unattributed_tree(
@@ -1043,3 +1055,56 @@ def test_manifest_kind_flip_is_a_proof_contradiction(tmp_path: Path) -> None:
     assert excinfo.value.reason == "contradiction"
     assert excinfo.value.artifact == "pipeline.json"
     assert len(stand.driver.calls) == calls_before
+
+
+def test_resume_checks_neighbours_named_by_the_record_perimeter(
+    tmp_path: Path,
+) -> None:
+    """#112: подмена соседней ревизии за прерванный ход ловится на resume.
+
+    Ход прерван в `pair-r1`, а подменено ревью завершённой `spec-r1`: её
+    файлы в периметре записи, и сверка шага 0 обязана их обойти.
+    """
+    stand = build_stand(tmp_path, parked_pair())
+    start(stand)
+    _seed_pre_turn(stand, "pair-r1", revisions=("sessions/spec-r1", "sessions/pair-r1"))
+    review = round_dir(stand.artifact_root("spec-r1"), 1) / "review.json"
+    review.write_text('{"verdict": "approve"}', encoding="utf-8")
+
+    with pytest.raises(ControlPlaneTampered) as excinfo:
+        stand.resume.resume(SLUG)
+
+    assert "sessions/spec-r1/.disputatio/rounds/001/review.json" in str(excinfo.value)
+    assert stand.manifest().phase is PipelinePhase.FAILED
+
+
+def test_legacy_pre_turn_is_a_perimeter_incompatibility_without_mutations(
+    tmp_path: Path,
+) -> None:
+    """#112: старый `pre_turn` без периметра — отказ кода 2 без единой записи.
+
+    Не подмена: `FAILED` не пишется, анкер не дописывается, манифест и
+    сессии не меняются. Повторный resume даёт тот же отказ — это граница
+    совместимости, а не временный сбой. Код `2` — потому что это
+    `DisputatioError`, который CLI печатает одной строкой (`EXIT_ERROR`).
+    """
+    stand = build_stand(tmp_path, parked_pair())
+    start(stand)
+    _seed_pre_turn(stand, "pair-r1", legacy=True)
+    manifest_before = (stand.pipeline_dir() / "pipeline.json").read_bytes()
+    anchor_before = stand.anchor().path.read_bytes()
+    session_before = (
+        stand.artifact_root("pair-r1") / ".disputatio" / "session.json"
+    ).read_bytes()
+
+    for _ in range(2):
+        with pytest.raises(SnapshotPerimeterIncompatible):
+            stand.resume.resume(SLUG)
+
+    assert issubclass(SnapshotPerimeterIncompatible, DisputatioError)
+    assert (stand.pipeline_dir() / "pipeline.json").read_bytes() == manifest_before
+    assert stand.anchor().path.read_bytes() == anchor_before
+    assert (
+        stand.artifact_root("pair-r1") / ".disputatio" / "session.json"
+    ).read_bytes() == session_before
+    assert stand.manifest().phase is not PipelinePhase.FAILED

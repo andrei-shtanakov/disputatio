@@ -133,7 +133,7 @@ def test_run_commits_versioned_proof_atomically(tmp_path: Path) -> None:
         )
 
     def _unreachable_driver(
-        artifact_root: Path, session_id: str, policy: object
+        artifact_root: Path, session_id: str, policy: object, revisions: object
     ) -> None:
         raise AssertionError("драйвер не вызывается раньше первой сессии")
 

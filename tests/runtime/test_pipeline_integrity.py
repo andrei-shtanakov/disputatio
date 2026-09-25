@@ -74,12 +74,17 @@ def _plane(workspace: Path) -> ControlPlane:
     return ControlPlane(
         workspace_root=workspace,
         pipeline_dir=pipeline_dir,
-        artifact_root=artifact_root,
+        revisions=(f"sessions/{SESSION_ID}",),
         append_only_paths=(
             pipeline_dir / "events.jsonl",
             artifact_root / ".disputatio" / "events.jsonl",
         ),
     )
+
+
+def _artifact_root(plane: ControlPlane) -> Path:
+    """`artifact_root` единственной ревизии периметра `_plane`."""
+    return plane.pipeline_dir / "sessions" / SESSION_ID
 
 
 def _seed(workspace: Path) -> ControlPlane:
@@ -94,7 +99,7 @@ def _seed(workspace: Path) -> ControlPlane:
         '{"type": "phase_change"}\n', encoding="utf-8"
     )
 
-    session = plane.artifact_root / ".disputatio"
+    session = _artifact_root(plane) / ".disputatio"
     (session / "rounds" / "001").mkdir(parents=True)
     (session / "session.json").write_text('{"state": "PROPOSING"}', encoding="utf-8")
     (session / "config.toml").write_text("[agents]\n", encoding="utf-8")
@@ -195,7 +200,7 @@ def test_round_artifact_substitution_is_caught(tmp_path: Path) -> None:
     policy = _policy(workspace, tmp_path / "anchors")
     policy.before_author_turn(_state())
 
-    review = plane.artifact_root / ".disputatio" / "rounds" / "001" / "review.json"
+    review = _artifact_root(plane) / ".disputatio" / "rounds" / "001" / "review.json"
     review.write_text('{"verdict": "approve"}', encoding="utf-8")
 
     with pytest.raises(ControlPlaneTampered) as excinfo:
@@ -214,7 +219,7 @@ def test_new_control_plane_file_is_caught(tmp_path: Path) -> None:
     policy = _policy(workspace, tmp_path / "anchors")
     policy.before_author_turn(_state())
 
-    forged = plane.artifact_root / ".disputatio" / "rounds" / "001" / "decision.json"
+    forged = _artifact_root(plane) / ".disputatio" / "rounds" / "001" / "decision.json"
     forged.write_text('{"outcome": "converged"}', encoding="utf-8")
 
     with pytest.raises(ControlPlaneTampered) as excinfo:
@@ -229,7 +234,7 @@ def test_event_log_truncation_is_caught(tmp_path: Path) -> None:
     policy = _policy(workspace, tmp_path / "anchors")
     policy.before_author_turn(_state())
 
-    (plane.artifact_root / ".disputatio" / "events.jsonl").write_text(
+    (_artifact_root(plane) / ".disputatio" / "events.jsonl").write_text(
         "", encoding="utf-8"
     )
 
@@ -247,7 +252,7 @@ def test_rewritten_log_prefix_is_caught(tmp_path: Path) -> None:
     policy = _policy(workspace, tmp_path / "anchors")
     policy.before_author_turn(_state())
 
-    log = plane.artifact_root / ".disputatio" / "events.jsonl"
+    log = _artifact_root(plane) / ".disputatio" / "events.jsonl"
     log.write_text('{"type": "state_chunge"}\n', encoding="utf-8")
 
     with pytest.raises(ControlPlaneTampered):
@@ -266,7 +271,7 @@ def test_legal_append_passes_and_marks_the_turn_completed(tmp_path: Path) -> Non
     policy = _policy(workspace, tmp_path / "anchors")
     policy.before_author_turn(_state())
 
-    log = plane.artifact_root / ".disputatio" / "events.jsonl"
+    log = _artifact_root(plane) / ".disputatio" / "events.jsonl"
     with log.open("a", encoding="utf-8") as handle:
         handle.write('{"type": "agent_text_delta"}\n')
 
@@ -314,7 +319,7 @@ def test_second_attempt_of_the_same_round_gets_its_own_record(tmp_path: Path) ->
     policy.after_author_turn(_state())
     # Между попытками runtime законно двигает `session.json`
     # (`handle_schema_invalid` пишет счётчик повторов).
-    (plane.artifact_root / ".disputatio" / "session.json").write_text(
+    (_artifact_root(plane) / ".disputatio" / "session.json").write_text(
         '{"state": "PROPOSING", "retries": 1}', encoding="utf-8"
     )
     policy.before_author_turn(_state())

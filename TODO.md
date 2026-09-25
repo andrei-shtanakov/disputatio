@@ -458,7 +458,7 @@
   `_checklists_snapshot`).
 
 - [x] Остаточные находки ревью PR #51 не заведены issue @id:pr51-residual-findings @epic:eco.disputatio — закрыт 2026-09-25: полный список восстановлен из финального ревью ветки PR #51 (8 мест + 9 расхождений + 2 решения строже текста), каждый пункт сверен с master `487419d` — аудит `docs/plans/2026-09-25-pr51-residuals-audit.md`. Закрыты до заведения: R2 (#65), R7 (1e71c11), R8 и X2 (решение владельца P11, #58). Живые заведены по одной issue: #112, #113, #114, #115, #116, #117, #118, #119, #120, #121, #122, #123, #124, #125, #126; пункты ниже.
-- [ ] P9 сторожит только текущую ревизию, а runner читает соседние @id:pipeline-p9-neighbour-revisions @epic:eco.disputatio
+- [x] P9 сторожит только текущую ревизию, а runner читает соседние @id:pipeline-p9-neighbour-revisions @epic:eco.disputatio — периметр P9 — все ревизии манифеста (SPEC-002 P9, #140), код — этот PR (2026-09-25)
   — issue #112 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] `except Exception` в `session_driver` различает исходы по фазе, а не по типу @id:session-driver-exception-discriminator @epic:eco.disputatio — ловятся только `SESSION_CLOSING_ERRORS`, заодно в CLI (2026-09-25)
   — issue #113 (остаток ревью PR #51, аудит 2026-09-25).
