@@ -466,7 +466,7 @@
   — issue #114 закрыт «not planned» решением владельца 2026-09-25: P8 и §9 SPEC-002 требуют парного читателя с дедупликацией независимо от потребителя; читатель сохраняется, искусственный вызов не нужен.
 - [ ] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio
   — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio
+- [x] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio — имена выводятся из констант `doc_gates` (2026-09-25)
   — issue #116 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] SPEC-002 §5.2 не говорит, что doc-ревью несёт контракт вывода §4.4 SPEC-001 @id:spec002-doc-review-carries-4-4 @epic:eco.disputatio
   — issue #117 (остаток ревью PR #51, аудит 2026-09-25).
