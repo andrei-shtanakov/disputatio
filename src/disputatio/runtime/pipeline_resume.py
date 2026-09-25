@@ -69,7 +69,13 @@ from disputatio.runtime.errors import (
     UnprovableSemantics,
 )
 from disputatio.runtime.git import GitOps, base_rev
-from disputatio.runtime.layout import CHANGES_PATCH_NAME, round_artifact
+from disputatio.runtime.layout import (
+    CHANGES_PATCH_NAME,
+    PIPELINE_MANIFEST_NAME,
+    artifact_root_of,
+    pipeline_dir_of,
+    round_artifact,
+)
 from disputatio.runtime.pipeline_adopt import OPERATOR_KINDS, OperatorIntents
 from disputatio.runtime.pipeline_config import (
     PipelineConfig,
@@ -80,9 +86,7 @@ from disputatio.runtime.pipeline_integrity import ControlPlane, verify_or_raise
 from disputatio.runtime.pipeline_runner import (
     PipelineRunner,
     active_session,
-    artifact_root_of,
     load_session_state,
-    pipeline_dir_of,
 )
 from disputatio.runtime.pipeline_semantic_proof import (
     build_projection,
@@ -574,7 +578,7 @@ class PipelineResume:
         if expected.get("kind") != state.kind.value:
             raise UnprovableSemantics(
                 "contradiction",
-                "pipeline.json",
+                PIPELINE_MANIFEST_NAME,
                 "вид пайплайна в манифесте расходится с удостоверенным "
                 "доказательством — вид неизменяем (P0)",
             )

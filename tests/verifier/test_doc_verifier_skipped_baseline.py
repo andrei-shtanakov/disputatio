@@ -18,10 +18,12 @@
 from pathlib import Path
 
 from disputatio.contracts.verification import GateStatus, OverallStatus
+from disputatio.verifier import BASELINE_GATE_NAMES
 from disputatio.verifier.config import GateSpec
+from disputatio.verifier.doc_gates import GATE_DOC_SCOPE
 from disputatio.verifier.doc_verifier import DocVerifier
 
-_CONTENT_GATES = ("doc-paths", "doc-links", "doc-anchors", "doc-line-refs")
+_CONTENT_GATES = tuple(name for name in BASELINE_GATE_NAMES if name != GATE_DOC_SCOPE)
 
 
 def test_missing_document_does_not_produce_a_green_report(tmp_git_repo: Path) -> None:
@@ -67,7 +69,7 @@ def test_deleting_the_document_under_review_is_not_a_green_round(
 
     report = verifier.verify(1)
 
-    scope = next(gate for gate in report.gates if gate.name == "doc-scope")
+    scope = next(gate for gate in report.gates if gate.name == GATE_DOC_SCOPE)
     assert scope.status is GateStatus.PASS, "граница контура не нарушена"
     assert report.overall is OverallStatus.FAIL
 

@@ -108,16 +108,21 @@ from disputatio.runtime.errors import (
     ControlPlaneTampered,
     PipelineAlreadyExists,
 )
-from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
+from disputatio.runtime.git import GitOps
 from disputatio.runtime.history import load_decision, load_review
-from disputatio.runtime.layout import REVIEW_NAME, round_dir
+from disputatio.runtime.layout import (
+    PIPELINE_MANIFEST_NAME,
+    PIPELINE_SESSIONS_DIR_NAME,
+    REVIEW_NAME,
+    artifact_root_of,
+    pipeline_dir_of,
+    round_dir,
+)
 from disputatio.runtime.pipeline_config import (
-    PIPELINES_DIR_NAME,
     PipelineConfig,
     check_run_preconditions,
 )
 from disputatio.runtime.pipeline_export import ExportFn
-from disputatio.runtime.pipeline_integrity import MANIFEST_NAME
 from disputatio.runtime.pipeline_semantic_proof import write_semantic_proof
 from disputatio.verifier import resolve_inside
 
@@ -126,9 +131,6 @@ from disputatio.verifier import resolve_inside
 CONTOUR_SPEC: Final = "spec"
 CONTOUR_PAIR: Final = "pair"
 CONTOUR_DOC: Final = "doc"
-
-#: Каталог ревизий внутри `pipelines/<slug>/` (§4.1).
-SESSIONS_DIR_NAME: Final = "sessions"
 
 #: Identity genesis-записи анкера (WS-disputatio-65 BEH-01, TASK-004): не
 #: описывает реальную ревизию — до первой сессии её нет, — а лишь заполняет
@@ -240,21 +242,6 @@ def architectural_findings(review: Review) -> tuple[Issue, ...]:
 def revision_id(contour: str, revision: int) -> str:
     """Детерминированное имя ревизии: `spec-r2`, `pair-r1` (§4.1, §7.3)."""
     return f"{contour}-r{revision}"
-
-
-def pipeline_dir_of(workspace_root: Path, slug: str) -> Path:
-    """`.disputatio/pipelines/<slug>` (§4.1) — раскладка, а не метод runner'а.
-
-    Модульная функция, потому что путь нужен и операторским решениям (§3.1),
-    и resume (§8.1), а собирать его там заново значило бы завести третью
-    копию знания о раскладке.
-    """
-    return workspace_root / SESSION_DIR_NAME / PIPELINES_DIR_NAME / slug
-
-
-def artifact_root_of(workspace_root: Path, slug: str, session_id: str) -> Path:
-    """`artifact_root` одной ревизии: `sessions/<revision>` (§4.1)."""
-    return pipeline_dir_of(workspace_root, slug) / SESSIONS_DIR_NAME / session_id
 
 
 def load_session_state(artifact_root: Path, session_id: str) -> SessionState | None:
@@ -640,7 +627,7 @@ class PipelineRunner:
                 SessionRecord(
                     revision=revision,
                     session_id=session_id,
-                    path=f"{SESSIONS_DIR_NAME}/{session_id}",
+                    path=f"{PIPELINE_SESSIONS_DIR_NAME}/{session_id}",
                     entry_hashes=self._entry_hashes(state),
                 )
             )
@@ -1285,7 +1272,7 @@ class PipelineRunner:
                 "отметка не записана, и `disp pipeline phase` эту фазу "
                 "подтвердить не сможет"
             )
-        manifest = self._pipeline_dir(state.pipeline_id) / MANIFEST_NAME
+        manifest = self._pipeline_dir(state.pipeline_id) / PIPELINE_MANIFEST_NAME
         try:
             anchor.append_terminal(
                 pipeline_id=state.pipeline_id,
@@ -1343,10 +1330,9 @@ class PipelineRunner:
     def _pipeline_dir(self, slug: str) -> Path:
         """`.disputatio/pipelines/<slug>` (§4.1).
 
-        Считается в `runtime`, а не импортируется из `events.pipeline_paths`:
-        тот модуль — внутренняя деталь раскладки и наружу пакетом не
-        экспортируется, а оба сегмента пути `runtime` уже знает (тот же приём
-        применён в `pipeline_export._result_dir`).
+        Берётся из `runtime.layout`, а не из `events.pipeline_paths`: тот
+        модуль — внутренняя деталь раскладки и наружу пакетом не
+        экспортируется; две копии сверяет `test_pipeline_layout_mirror`.
         """
         return pipeline_dir_of(self._workspace_root, slug)
 

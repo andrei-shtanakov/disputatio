@@ -464,7 +464,7 @@
   — issue #113 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
   — issue #114 закрыт «not planned» решением владельца 2026-09-25: P8 и §9 SPEC-002 требуют парного читателя с дедупликацией независимо от потребителя; читатель сохраняется, искусственный вызов не нужен.
-- [ ] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio
+- [x] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio — раскладка runtime собрана в `runtime/layout.py`, зеркало пинится тестом (2026-09-25)
   — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
 - [x] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio — имена выводятся из констант `doc_gates` (2026-09-25)
   — issue #116 (остаток ревью PR #51, аудит 2026-09-25).

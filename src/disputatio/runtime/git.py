@@ -30,15 +30,11 @@ from disputatio.runtime.errors import (
     GitCommandError,
     NotAGitRepository,
 )
+from disputatio.runtime.layout import SESSION_DIR_NAME
 
 GIT_USER_NAME: Final = "disputatio"
 GIT_USER_EMAIL: Final = "disputatio@localhost"
 
-# Имя служебного каталога сессии. Дублирует `events.paths.SESSION_DIR_NAME`
-# намеренно: `paths` объявлен внутренней деталью раскладки `.disputatio/` и
-# наружу пакетом `events` не экспортируется, а git-дисциплина обязана знать,
-# что из дерева исключить.
-SESSION_DIR_NAME: Final = ".disputatio"
 
 # Pathspec диффа: всё дерево репозитория минус каталог сессии. Исключающий
 # pathspec без положительного ничего не отбирает, поэтому пара неразделима.

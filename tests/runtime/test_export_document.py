@@ -21,7 +21,7 @@ from disputatio.contracts import (
     Transition,
     TransitionReason,
 )
-from disputatio.events.pipeline_paths import result_dir
+from disputatio.runtime.layout import result_dir_of
 from disputatio.runtime.pipeline_export import (
     PR_BODY_NAME,
     PR_TITLE_NAME,
@@ -99,7 +99,7 @@ def _export(tmp_path: Path, state: PipelineState) -> tuple[str, str]:
         branch="docs/charter",
         partial=False,
     )
-    directory = result_dir(tmp_path, _PIPELINE_ID)
+    directory = result_dir_of(tmp_path, _PIPELINE_ID)
     return (
         (directory / PR_TITLE_NAME).read_text(encoding="utf-8"),
         (directory / PR_BODY_NAME).read_text(encoding="utf-8"),
