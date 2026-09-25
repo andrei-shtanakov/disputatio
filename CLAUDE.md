@@ -54,7 +54,7 @@ These constrain almost every implementation decision; violating them breaks resu
 `IDLE → PROPOSING → VERIFYING → REVIEWING → DECIDING →` (revise loop back to `PROPOSING`) or terminal:
 `CONVERGED → EXPORTING → DONE`, or `DEADLOCK`/`BUDGET_HIT → ESCALATED → EXPORTING(partial) → DONE`, or `FAILED`.
 
-`DECIDING` checks stopping conditions **strictly top-down, first match is terminal** (§5): converged → budget hit → oscillation → max_rounds. Two rules that are easy to get wrong:
+`DECIDING` checks stopping conditions **strictly top-down, first match is terminal** (§5): converged → budget hit → no evidence (§5.2a: `overall == indeterminate` outside the `analyze`-with-empty-gate-set carve-out, reason `verification_indeterminate`) → oscillation → max_rounds. Two rules that are easy to get wrong:
 
 - `verification.overall == fail` does **not** block the transition to `REVIEWING` — the reviewer weighs the failure itself. It *does* block `CONVERGED`.
 - `overall` has a third value, `indeterminate`: no gate actually ran (empty set or all `skip`). `pass` requires at least one executed `pass` — an unverified round is never green (§4.3). Outwardly `indeterminate` behaves like `fail` in two rules of three (blocks `CONVERGED`, not `REVIEWING`); the only path to convergence without an executed gate is the §5.1 п.2 carve-out for `analyze` with an empty gate set. The third rule differs: the §4.4 validation below rejects `approve` on `fail` **only** — extending it to `indeterminate` would send a legitimate empty-gate `analyze` review into schema-retry and drop the session into `FAILED`.
