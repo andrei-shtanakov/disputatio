@@ -16,7 +16,8 @@ import pytest
 
 from disputatio.contracts.ports import Verifier
 from disputatio.contracts.verification import GateStatus, OverallStatus
-from disputatio.verifier import GateSpec
+from disputatio.verifier import BASELINE_GATE_NAMES, GateSpec
+from disputatio.verifier.doc_gates import GATE_DOC_SCOPE
 from disputatio.verifier.doc_verifier import DocVerifier
 
 # Тот же герметичный набор, что и в conftest.py::_git_env — коммит внутри
@@ -49,13 +50,25 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
-_BASELINE_NAMES = {
-    "doc-paths",
-    "doc-links",
-    "doc-anchors",
-    "doc-line-refs",
-    "doc-scope",
-}
+_BASELINE_NAMES = set(BASELINE_GATE_NAMES)
+
+
+def test_baseline_gate_names_match_spec() -> None:
+    """Имена baseline-гейтов — нормативные имена SPEC-002 §6, в его порядке.
+
+    Единственный литеральный пин: остальные тесты берут имена из
+    `BASELINE_GATE_NAMES`, и без этой проверки переименование константы
+    съезжало бы синхронно с обеими сторонами их равенств. Имена видны
+    снаружи — в `verification.json` и в evidence ревью (`kind: gate`), так
+    что их смена — изменение контракта, а не рефакторинг.
+    """
+    assert BASELINE_GATE_NAMES == (
+        "doc-paths",
+        "doc-links",
+        "doc-anchors",
+        "doc-line-refs",
+        "doc-scope",
+    )
 
 
 def _write(path: Path, text: str) -> Path:
@@ -169,7 +182,7 @@ def test_overall_fails_on_scope_escape(tmp_git_repo: Path) -> None:
     report = verifier.verify(1)
 
     assert report.overall is OverallStatus.FAIL
-    scope_gate = next(g for g in report.gates if g.name == "doc-scope")
+    scope_gate = next(g for g in report.gates if g.name == GATE_DOC_SCOPE)
     assert scope_gate.status is GateStatus.FAIL
 
 
@@ -243,7 +256,7 @@ def test_pure_rename_outside_allowed_fails_overall(tmp_git_repo: Path) -> None:
     report = verifier.verify(1)
 
     assert report.overall is OverallStatus.FAIL
-    scope_gate = next(g for g in report.gates if g.name == "doc-scope")
+    scope_gate = next(g for g in report.gates if g.name == GATE_DOC_SCOPE)
     assert scope_gate.status is GateStatus.FAIL
 
 

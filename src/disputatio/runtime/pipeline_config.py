@@ -46,11 +46,8 @@ from disputatio.runtime.errors import (
     ProtectedBranchError,
 )
 from disputatio.runtime.git import SESSION_DIR_NAME, GitOps
+from disputatio.runtime.layout import pipeline_dir_of
 from disputatio.verifier import BASELINE_GATE_NAMES, GateSpec
-
-#: Имя подкаталога пайплайнов внутри каталога сессии (§4.1 SPEC-002):
-#: `.disputatio/pipelines/<slug>/`.
-PIPELINES_DIR_NAME: Final = "pipelines"
 
 DEFAULT_PROTECTED_BRANCHES: Final[tuple[str, ...]] = ("master", "main")
 DEFAULT_MAX_ARCHITECTURAL_RETURNS: Final = 2
@@ -433,7 +430,7 @@ def _check_branch(git: GitOps, config: PipelineConfig, slug: str) -> None:
 
 def _check_pipeline_dir_absent(workspace_root: Path, slug: str) -> None:
     """`.disputatio/pipelines/<slug>/` не существует — иначе нужен `resume`."""
-    pipeline_dir = workspace_root / SESSION_DIR_NAME / PIPELINES_DIR_NAME / slug
+    pipeline_dir = pipeline_dir_of(workspace_root, slug)
     if pipeline_dir.is_dir():
         raise PipelineAlreadyExists(
             f"каталог пайплайна {pipeline_dir} уже существует — "

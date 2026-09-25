@@ -100,7 +100,11 @@ from disputatio.runtime import (
     preflight,
 )
 from disputatio.runtime.composition import PipelineDeps, build_pipeline
-from disputatio.runtime.layout import session_dir
+from disputatio.runtime.layout import (
+    PIPELINE_MANIFEST_NAME,
+    pipeline_dir_of,
+    session_dir,
+)
 from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.pipeline_config import (
     load_session_profile,
@@ -108,12 +112,8 @@ from disputatio.runtime.pipeline_config import (
     validate_anchor_path,
 )
 from disputatio.runtime.pipeline_export import export_pipeline
-from disputatio.runtime.pipeline_integrity import (
-    MANIFEST_NAME,
-    verify_terminal_mark,
-)
+from disputatio.runtime.pipeline_integrity import verify_terminal_mark
 from disputatio.runtime.pipeline_resume import missing_manifest_message
-from disputatio.runtime.pipeline_runner import pipeline_dir_of
 from disputatio.runtime.retry import SESSION_CLOSING_ERRORS
 from disputatio.runtime.steps import StepContext
 from disputatio.verifier import (
@@ -453,7 +453,7 @@ def cmd_pipeline_phase(
     verify_terminal_mark(
         record,
         pipeline_id=args.slug,
-        manifest_path=pipeline_dir_of(root, args.slug) / MANIFEST_NAME,
+        manifest_path=pipeline_dir_of(root, args.slug) / PIPELINE_MANIFEST_NAME,
     )
     print(record.phase, flush=True)
     return EXIT_OK

@@ -1,7 +1,12 @@
-"""Единая точка построения путей `.disputatio/pipelines/<slug>/` (SPEC-002 §4.1).
+"""Пути `.disputatio/pipelines/<slug>/`, которые пишет `events` (SPEC-002 §4.1).
 
-Тот же принцип, что и у `paths.py` для сессии: раскладка каталога пайплайна
-не дублируется по местам, а живёт здесь одна. Корень тут — `workspace_root`
+Здесь — ровно то, что пишет сам `events`: манифест (`pipeline_store`) и
+журнал (`pipeline_events`). Остальную раскладку пайплайна (ревизии сессий,
+`adoptions/`, `result/`) строит `runtime.layout`, он же держит зеркало
+корня; тот же приём, что для сессии (`paths` ↔ `runtime.layout`), а
+расхождение двух копий краснит `tests/runtime/test_pipeline_layout_mirror.py`.
+
+Корень тут — `workspace_root`
 (git-репозиторий), а не `artifact_root`: каталог пайплайна лежит в
 репозитории, а `artifact_root` каждой ревизии сессии — уже внутри него
 (`sessions/<revision>/`, §4.1).
@@ -55,28 +60,3 @@ def manifest_path(workspace_root: Path, slug: str) -> Path:
 def events_path(workspace_root: Path, slug: str) -> Path:
     """Путь к журналу событий пайплайна `events.jsonl` (§4.1)."""
     return pipeline_dir(workspace_root, slug) / "events.jsonl"
-
-
-def sessions_dir(workspace_root: Path, slug: str) -> Path:
-    """Каталог ревизий сессий `sessions/` — родитель `session_artifact_root`."""
-    return pipeline_dir(workspace_root, slug) / "sessions"
-
-
-def session_artifact_root(workspace_root: Path, slug: str, revision: str) -> Path:
-    """`artifact_root` одной ревизии: `sessions/<revision>` (§4.1).
-
-    Существует, чтобы вызывающий не склеивал имя ревизии с `sessions_dir`
-    руками: тогда знание о раскладке разъехалось бы по пакетам, и правило
-    «пути строятся только здесь» перестало бы держаться.
-    """
-    return sessions_dir(workspace_root, slug) / revision
-
-
-def adoptions_dir(workspace_root: Path, slug: str) -> Path:
-    """Каталог патчей принятых внешних правок `adoptions/` (§3.1)."""
-    return pipeline_dir(workspace_root, slug) / "adoptions"
-
-
-def result_dir(workspace_root: Path, slug: str) -> Path:
-    """Каталог экспорта пайплайна `result/` (§8.2)."""
-    return pipeline_dir(workspace_root, slug) / "result"

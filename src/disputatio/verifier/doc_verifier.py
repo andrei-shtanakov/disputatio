@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Final
 
 from disputatio.contracts.base import SCHEMA_V2
 from disputatio.contracts.verification import (
@@ -26,6 +25,8 @@ from disputatio.verifier.aggregate import compute_overall
 from disputatio.verifier.config import GateSpec
 from disputatio.verifier.diffstats import collect_diff_stats
 from disputatio.verifier.doc_gates import (
+    BASELINE_GATE_NAMES,
+    GATE_DOC_SCOPE,
     gate_doc_anchors,
     gate_doc_line_refs,
     gate_doc_links,
@@ -33,18 +34,6 @@ from disputatio.verifier.doc_gates import (
     gate_doc_scope,
 )
 from disputatio.verifier.runner import run_gate
-
-#: Имена пяти baseline doc-гейтов §6 — единственный источник истины для
-#: конфигурации пайплайна (SPEC-002 §6, задача 13): попытка объявить `extra`
-#: gate с любым из этих имён обязана быть отказом валидации конфига, а не
-#: тихим переопределением одного из пяти прогонов выше.
-BASELINE_GATE_NAMES: Final[tuple[str, ...]] = (
-    "doc-paths",
-    "doc-links",
-    "doc-anchors",
-    "doc-line-refs",
-    "doc-scope",
-)
 
 
 class DocVerifier:
@@ -88,9 +77,11 @@ class DocVerifier:
         верификатора.
         """
         if not doc_paths:
+            per_document = "/".join(
+                name for name in BASELINE_GATE_NAMES if name != GATE_DOC_SCOPE
+            )
             raise ValueError(
-                "doc_paths must not be empty: doc-paths/doc-links/"
-                "doc-anchors/doc-line-refs would never run"
+                f"doc_paths must not be empty: {per_document} would never run"
             )
         self._doc_paths = doc_paths
         self._allowed = allowed

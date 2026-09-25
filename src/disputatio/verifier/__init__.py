@@ -8,6 +8,7 @@ CLI ([REQ-010]).
 
 from disputatio.verifier.config import GateSpec
 from disputatio.verifier.doc_gates import (
+    BASELINE_GATE_NAMES,
     gate_doc_anchors,
     gate_doc_line_refs,
     gate_doc_links,
@@ -15,7 +16,7 @@ from disputatio.verifier.doc_gates import (
     gate_doc_scope,
     resolve_inside,
 )
-from disputatio.verifier.doc_verifier import BASELINE_GATE_NAMES, DocVerifier
+from disputatio.verifier.doc_verifier import DocVerifier
 from disputatio.verifier.runner_impl import VerifierRunner
 from disputatio.verifier.wiring import PlanReader, check_wiring, render_report
 from disputatio.verifier.wiring_snapshot import (

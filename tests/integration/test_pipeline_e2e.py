@@ -61,7 +61,7 @@ from disputatio.contracts import (
 )
 from disputatio.events import AnchorCorrupted
 from disputatio.runtime import composition
-from disputatio.runtime.pipeline_runner import artifact_root_of, pipeline_dir_of
+from disputatio.runtime.layout import artifact_root_of, pipeline_dir_of
 
 SLUG: Final = "pair-docs"
 SPEC_PATH: Final = "docs/spec.md"

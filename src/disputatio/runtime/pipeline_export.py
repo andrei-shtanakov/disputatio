@@ -69,8 +69,7 @@ from disputatio.contracts import (
     PipelineState,
 )
 from disputatio.events import atomic_write
-from disputatio.runtime.git import SESSION_DIR_NAME
-from disputatio.runtime.pipeline_config import PIPELINES_DIR_NAME
+from disputatio.runtime.layout import result_dir_of, result_dir_relative
 
 #: Сигнатура порта экспорта — ровно то, что runner (задача 15) получит
 #: инъекцией как `exporter`. Объявлен здесь, рядом с реализацией, которая
@@ -88,9 +87,6 @@ PUBLISH_NAME: Final = "publish.txt"
 #: первой перезаписи (см. `_clear_stale`).
 _CONTENT_FILE_NAMES: Final = (PR_TITLE_NAME, PR_BODY_NAME, PUBLISH_NAME)
 
-#: Имя каталога экспорта внутри `pipelines/<slug>/` (§4.1, §8.2).
-_RESULT_DIR_NAME: Final = "result"
-
 #: Фазы, приход в которые и есть остановка пайплайна (§2): их переход несёт
 #: причину, ради которой пишется честный частичный результат.
 _STOPPED_PHASES: Final = (PipelinePhase.ESCALATED, PipelinePhase.FAILED)
@@ -99,40 +95,6 @@ _STOPPED_PHASES: Final = (PipelinePhase.ESCALATED, PipelinePhase.FAILED)
 #: в экспорт внутри цикла, `DONE` — после него. `DONE` достижим и через
 #: эскалацию, поэтому одной фазы для вывода `converged` мало.
 _CONVERGED_PHASES: Final = (PipelinePhase.EXPORTING, PipelinePhase.DONE)
-
-
-def _result_dir(workspace_root: Path, pipeline_id: str) -> Path:
-    """`pipelines/<pipeline_id>/result` (§4.1) — считается, не импортируется.
-
-    `events.pipeline_paths` — внутренняя деталь раскладки `.disputatio/` и
-    наружу пакетом `events` не экспортируется (см. докстринг
-    `events/__init__.py`); `runtime` уже знает оба сегмента пути —
-    `SESSION_DIR_NAME` (`runtime/git.py`) и `PIPELINES_DIR_NAME`
-    (`runtime/pipeline_config.py`, тот же приём, что там применён к
-    `SESSION_DIR_NAME`), и досчитывает путь сам, а не заново дублирует
-    константу третьей копией.
-    """
-    return (
-        workspace_root
-        / SESSION_DIR_NAME
-        / PIPELINES_DIR_NAME
-        / pipeline_id
-        / _RESULT_DIR_NAME
-    )
-
-
-def _result_dir_relative(pipeline_id: str) -> str:
-    """`result/` относительно `workspace_root`, POSIX-строкой для `publish.txt`.
-
-    `git push`/`gh pr create` из `publish.txt` обязаны выполняться из корня
-    рабочего дерева (иначе `gh` не опознает репозиторий, а `git push` — не
-    ту ветку), а `pr_title.txt`/`pr_body.md` лежат внутри `result/` — без
-    этого префикса `--body-file pr_body.md` не находил бы файл, если человек
-    запускает скрипт, как и остальные git-команды, из корня. Строка, а не
-    `Path`: содержимое файла не должно зависеть от разделителя пути ОС,
-    на которой собирался экспорт.
-    """
-    return f"{SESSION_DIR_NAME}/{PIPELINES_DIR_NAME}/{pipeline_id}/{_RESULT_DIR_NAME}"
 
 
 def export_pipeline(
@@ -163,12 +125,12 @@ def export_pipeline(
     (`_is_converged`), поэтому забытый флаг на остановленном пайплайне
     больше не превращает частичный результат в полный.
     """
-    directory = _result_dir(workspace_root, state.pipeline_id)
+    directory = result_dir_of(workspace_root, state.pipeline_id)
     directory.mkdir(parents=True, exist_ok=True)
     _clear_stale(directory)
 
     converged = _is_converged(state) and not partial
-    result_relative = _result_dir_relative(state.pipeline_id)
+    result_relative = result_dir_relative(state.pipeline_id)
     contents = {
         PR_TITLE_NAME: _pr_title(state, converged=converged),
         PR_BODY_NAME: _pr_body(state, converged=converged),

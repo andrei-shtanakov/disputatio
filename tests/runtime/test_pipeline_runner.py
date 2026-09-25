@@ -84,7 +84,7 @@ from disputatio.events import (
     read_pipeline_events,
 )
 from disputatio.events.paths import SESSION_DIR_NAME
-from disputatio.events.pipeline_paths import pipeline_dir, session_artifact_root
+from disputatio.events.pipeline_paths import pipeline_dir
 from disputatio.runtime import (
     ConfigError,
     ControlPlaneTampered,
@@ -93,6 +93,7 @@ from disputatio.runtime import (
     PipelineConfig,
     StatusEntry,
 )
+from disputatio.runtime.layout import artifact_root_of
 from disputatio.runtime.pipeline_runner import (
     CONTOUR_PAIR,
     ArchitecturalDefectPolicy,
@@ -907,8 +908,8 @@ def test_session_artifact_roots_are_separate(tmp_path: Path) -> None:
     harness = build_harness(tmp_path, converged_pair())
     harness.runner.run(SLUG, "полировать пару")
     roots = {call[1]: call[0] for call in harness.driver.calls}
-    assert roots["spec-r1"] == session_artifact_root(harness.workspace, SLUG, "spec-r1")
-    assert roots["pair-r1"] == session_artifact_root(harness.workspace, SLUG, "pair-r1")
+    assert roots["spec-r1"] == artifact_root_of(harness.workspace, SLUG, "spec-r1")
+    assert roots["pair-r1"] == artifact_root_of(harness.workspace, SLUG, "pair-r1")
 
 
 def test_pair_contour_gets_boundary_policy_spec_does_not(tmp_path: Path) -> None:
@@ -1060,9 +1061,7 @@ def test_spec_r2_gets_findings_pair_r2_starts_clean(tmp_path: Path) -> None:
     pair_r2 = creations["pair-r2"]
     assert pair_r2.findings == ()
     assert pair_r2.revision == 2
-    assert pair_r2.artifact_root == session_artifact_root(
-        harness.workspace, SLUG, "pair-r2"
-    )
+    assert pair_r2.artifact_root == artifact_root_of(harness.workspace, SLUG, "pair-r2")
 
 
 def test_return_operation_id_is_deterministic_from_review(tmp_path: Path) -> None:
@@ -1083,7 +1082,7 @@ def test_return_operation_id_is_deterministic_from_review(tmp_path: Path) -> Non
     rebuild(harness).runner.advance(SLUG)
 
     review_bytes = (
-        session_artifact_root(harness.workspace, SLUG, "pair-r1")
+        artifact_root_of(harness.workspace, SLUG, "pair-r1")
         / ".disputatio"
         / "rounds"
         / "001"
@@ -1405,7 +1404,7 @@ def test_crash_1_intent_recorded_directory_missing(tmp_path: Path) -> None:
     harness.factory.raise_next = True
     with pytest.raises(_Boom):
         harness.runner.run(SLUG, "полировать пару")
-    shutil.rmtree(session_artifact_root(harness.workspace, SLUG, "spec-r1"))
+    shutil.rmtree(artifact_root_of(harness.workspace, SLUG, "spec-r1"))
 
     state = harness.manifest()
     assert state.next_action is not None
