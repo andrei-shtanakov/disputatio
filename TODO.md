@@ -462,8 +462,8 @@
   — issue #112 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] `except Exception` в `session_driver` различает исходы по фазе, а не по типу @id:session-driver-exception-discriminator @epic:eco.disputatio
   — issue #113 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
-  — issue #114 (остаток ревью PR #51, аудит 2026-09-25).
+- [x] У `read_pipeline_events` нет потребителя в продуктовом коде @id:pipeline-events-reader-consumer @epic:eco.disputatio
+  — issue #114 закрыт «not planned» решением владельца 2026-09-25: P8 и §9 SPEC-002 требуют парного читателя с дедупликацией независимо от потребителя; читатель сохраняется, искусственный вызов не нужен.
 - [ ] Мёртвые построители путей в `events` и параллельная раскладка в `runtime` @id:pipeline-paths-single-source @epic:eco.disputatio
   — issue #115 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] `BASELINE_GATE_NAMES` — рукописная копия имён гейтов @id:baseline-gate-names-single-source @epic:eco.disputatio
@@ -751,6 +751,7 @@
   накрыла бы собой `pre_turn`, ослабив fail-closed на втором `resume`.
 
 - [ ] Раунд без единого выполненного гейта не останавливает сессию @id:indeterminate-stop-reason @epic:eco.disputatio
+  — **Решение владельца 2026-09-25 (выбрано новое условие §5, не только поле):** проверка в конце первого же раунда с `overall == indeterminate`, кроме `analyze` с действительно пустым набором гейтов (набор из одних `skip` исключением не является); порядок §5: converged → budget → indeterminate → oscillation → max_rounds, предварительные проверки бюджета сохраняются; исход DEADLOCK → ESCALATED → EXPORTING(partial), причина `verification_indeterminate`, `converged: false`; последнее значение `verification.overall` дополнительно выводится в манифест; поведение одинаково для `run` и `resume`; запрет запуска без гейтов не возвращается. Порядок работ: сначала согласованная правка SPEC-001, затем реализация отдельным PR.
   — открытый хвост PR #97, поднятый терминальным ревью (confidence high, две
   находки одного класса). После §4.3 `overall == indeterminate` вне кармана
   §5.1 п.2 означает «сойтись нельзя ни при каком поведении агентов», но сам
