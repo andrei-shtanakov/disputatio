@@ -833,12 +833,23 @@ def test_global_in_class_body_is_input_error(source: str) -> None:
         enumerate_violations(index, _class_rule())
 
 
-@pytest.mark.skip(
-    reason=(
-        "`nonlocal` требует объемлющую функцию, а `Class.method` разрешает "
-        "только класс верхнего уровня модуля (§3.5) — класс, вложенный в "
-        "функцию, этим правилом не адресуется, воспроизвести случай без "
-        "нарушения самой адресации нельзя"
-    )
-)
-def test_nonlocal_in_class_body_is_input_error() -> None: ...
+CLASS_NONLOCAL = """\
+class Guard:
+    nonlocal check
+    def check(self, p):
+        _check(p.a)
+"""
+
+
+def test_nonlocal_in_class_body_is_input_error() -> None:
+    """`nonlocal check` в теле класса — тоже код `2`, как и `global` (§3.5).
+
+    `nonlocal` семантически требует объемлющую функцию (без неё `compile`
+    отказал бы с «no binding for nonlocal found»), но гейт разбирает исходник
+    только `ast.parse` (design §4), а не `compile`: символы не резолвятся, и
+    `ast.parse` этот класс верхнего уровня принимает как обычный узел
+    `ast.Nonlocal` в теле класса — ровно то, что видит `enumerate_violations`.
+    """
+    index = _index({MODULE_PATH: CLASS_NONLOCAL})
+    with pytest.raises(WiringInputError, match="check"):
+        enumerate_violations(index, _class_rule())
