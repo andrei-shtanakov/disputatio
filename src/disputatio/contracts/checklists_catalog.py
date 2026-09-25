@@ -15,6 +15,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
+#: Канонический текст пункта с ролью findings-item (§5.3): V8 судит этот
+#: пункт как «нет blocker/major-находок», поэтому и текст у него ровно этот.
+#: Переписать его конфигом нельзя ни у одного контура (#123): пункт с чужим
+#: текстом закрывался бы по правилу, которое к тексту не относится.
+FINDINGS_ITEM_TEXT: Final = "нет blocker/major-находок"
+
 SPEC_CHECKLIST: Final[tuple[str, ...]] = ("S1", "S2", "S3", "S4", "S5")
 PAIR_CHECKLIST: Final[tuple[str, ...]] = ("P1", "P2", "P3", "P4", "P5")
 
@@ -34,7 +40,7 @@ FINDINGS_ITEM_BY_CONTOUR: Final[dict[str, str | None]] = {
 }
 
 CHECKLIST_TEXT: Final[dict[str, str]] = {
-    "S1": "нет blocker/major-находок",
+    "S1": FINDINGS_ITEM_TEXT,
     "S2": "нет нерешённых архитектурных вопросов и TBD",
     "S3": "состояния ошибок и authority определены",
     "S4": "интерфейсы и не-цели согласованы",

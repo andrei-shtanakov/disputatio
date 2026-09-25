@@ -33,6 +33,7 @@ from disputatio.contracts import (
     CHECKLIST_BY_CONTOUR,
     CHECKLIST_TEXT,
     FINDINGS_ITEM_BY_CONTOUR,
+    FINDINGS_ITEM_TEXT,
     PipelineKind,
     ResolvedChecklist,
     validate_relative_path,
@@ -672,6 +673,7 @@ def _operator_checklist(table: Any) -> ResolvedChecklist:
             f"[pipeline.checklists.doc] findings_item = {role!r} не назван "
             f"среди items: {sorted(items)}"
         )
+    _require_findings_text("doc", role, items[role])
     texts: dict[str, str] = {}
     for item_id, text in items.items():
         if not isinstance(text, str):
@@ -680,6 +682,24 @@ def _operator_checklist(table: Any) -> ResolvedChecklist:
             )
         texts[item_id] = text
     return ResolvedChecklist(order=tuple(texts), texts=texts, findings_item=role)
+
+
+def _require_findings_text(contour: str, item_id: str, text: object) -> None:
+    """Текст пункта с ролью findings-item — только канонический (§5.3, #123).
+
+    Привязка к роли, а не к id: у `spec` это `S1`, у `doc` — пункт, который
+    назвал `findings_item` оператор. V8 судит этот пункт как «нет
+    blocker/major-находок»; пункт с другим текстом закрывался бы по правилу,
+    которое к тексту не относится. Неизменённый канонический текст
+    допустим, любой иной — `ConfigError` (код `2`).
+    """
+    if text != FINDINGS_ITEM_TEXT:
+        raise ConfigError(
+            f"[pipeline.checklists.{contour}] {item_id} — пункт с ролью "
+            f"findings-item (V8), его текст обязан быть ровно "
+            f"{FINDINGS_ITEM_TEXT!r}, а не {text!r}: правило V8 судит этот "
+            "пункт как «нет blocker/major-находок» (SPEC-002 §5.3)"
+        )
 
 
 def _builtin_checklists(value: Mapping[str, Any]) -> dict[str, ResolvedChecklist]:
@@ -717,6 +737,8 @@ def _builtin_checklists(value: Mapping[str, Any]) -> dict[str, ResolvedChecklist
                 raise TypeError(
                     f"pipeline.checklists.{contour}.{item_id} обязан быть строкой"
                 )
+            if item_id == defaults[contour].findings_item:
+                _require_findings_text(contour, item_id, text)
             texts[contour][item_id] = text
     return {
         contour: ResolvedChecklist(

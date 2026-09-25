@@ -251,7 +251,7 @@ def test_load_pipeline_config_accepts_extra_gate_with_new_name(
 def test_load_pipeline_config_checklist_override_merges_not_replaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`[pipeline.checklists.spec]` с одним `S1` не уносит остальные пункты
+    """`[pipeline.checklists.spec]` с одним пунктом не уносит остальные пункты
     `spec` и весь контур `pair` (фикс-раунд 1, Important-1).
 
     Прежняя реализация заменяла всю карту override'ом: `config.checklists`
@@ -263,14 +263,14 @@ def test_load_pipeline_config_checklist_override_merges_not_replaces(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
     text = (
         _MINIMAL_PIPELINE_TABLE
-        + '\n[pipeline.checklists.spec]\nS1 = "кастомная формулировка S1"\n'
+        + '\n[pipeline.checklists.spec]\nS2 = "кастомная формулировка S2"\n'
     )
     path = _write_config(tmp_path, text)
 
     config = load_pipeline_config(path)
 
-    assert config.checklists["spec"].texts["S1"] == "кастомная формулировка S1"
-    assert config.checklists["spec"].texts["S2"] == CHECKLIST_TEXT["S2"]
+    assert config.checklists["spec"].texts["S2"] == "кастомная формулировка S2"
+    assert config.checklists["spec"].texts["S1"] == CHECKLIST_TEXT["S1"]
     assert config.checklists["spec"].texts["S5"] == CHECKLIST_TEXT["S5"]
     assert config.checklists["pair"].texts["P1"] == CHECKLIST_TEXT["P1"]
     assert config.checklists["pair"].texts["P5"] == CHECKLIST_TEXT["P5"]
