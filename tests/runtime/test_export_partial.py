@@ -77,6 +77,7 @@ from disputatio.contracts import (
 from disputatio.core import (
     REASON_BUDGET_TOKENS,
     REASON_OSCILLATION_ISSUE,
+    REASON_VERIFICATION_INDETERMINATE,
     SessionFsm,
 )
 from disputatio.events import bootstrap_session, finalize_round, write_round_artifact
@@ -782,3 +783,61 @@ def test_export_has_no_separate_path_for_the_partial_outcome() -> None:
     assert not leaked_branches, (
         f"runtime/exporting.py ветвится по исходу сессии: {leaked_branches}"
     )
+
+
+def _escalate_without_evidence(root: Path) -> Harness:
+    """Раунд `_ROUND` без выполненного гейта: §5.2a → эскалация → `export`.
+
+    Отчёт раунда-источника переписан набором из одних `skip` до `DECIDING`:
+    `overall == indeterminate` вне кармана §5.1 п.2, и исход выносит
+    настоящий `decide` — раньше осцилляции, которую сулят замечания раунда.
+    """
+    harness = _make_harness(root, max_total_tokens=100_000)
+    _write(
+        root,
+        _ROUND,
+        "verification.json",
+        VerificationReport(
+            round=_ROUND,
+            gates=[
+                GateResult(name="tests", cmd="uv run pytest -q", status=GateStatus.SKIP)
+            ],
+            overall=OverallStatus.INDETERMINATE,
+            diff_stats=DiffStats(files=1, insertions=4, deletions=2),
+        ),
+    )
+    _steps_attr("decide_step")(harness.ctx)
+    _exporting_attr("export")(harness.ctx)
+    return harness
+
+
+@pytest.mark.parametrize(
+    ("escalate", "overall"),
+    [
+        pytest.param(
+            lambda root: _escalate(root, max_total_tokens=100_000),
+            OverallStatus.FAIL,
+            id="fail",
+        ),
+        pytest.param(
+            _escalate_without_evidence, OverallStatus.INDETERMINATE, id="indeterminate"
+        ),
+    ],
+)
+def test_partial_manifest_records_verification_overall(
+    tmp_path: Path, escalate: Any, overall: OverallStatus
+) -> None:
+    """`verification_overall` печатается и на частичном пути (§5.5).
+
+    Поле дополняет причину остановки, а не заменяет её: при
+    `indeterminate` рядом стоит `stop_reason` §5.2a.
+    """
+    harness = escalate(tmp_path)
+
+    manifest = _manifest_on_disk(tmp_path)
+    assert harness.fsm.state.state is SessionPhase.DONE
+    assert manifest["converged"] is False
+    assert manifest["verification_overall"] == overall.value
+    if overall is OverallStatus.INDETERMINATE:
+        assert manifest["outcome"] == Outcome.DEADLOCK.value
+        assert manifest["stop_reason"] == REASON_VERIFICATION_INDETERMINATE

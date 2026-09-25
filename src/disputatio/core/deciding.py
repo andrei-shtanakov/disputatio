@@ -5,8 +5,9 @@
 анти-сикофантию [REQ-008] в одном месте — по DESIGN-005 защита раунда 1
 живёт внутри критерия converged, не как отдельная ветка. `decide()`
 реализует строгий top-down порядок §5 [REQ-006]: converged → budget_hit
-[REQ-010] → осцилляция [REQ-011] → max_rounds [REQ-012] → иначе continue,
-линейной цепочкой ранних `return` без таблиц приоритетов.
+[REQ-010] → indeterminate (§5.2a) → осцилляция [REQ-011] → max_rounds
+[REQ-012] → иначе continue, линейной цепочкой ранних `return` без таблиц
+приоритетов.
 """
 
 from collections.abc import Mapping
@@ -38,6 +39,7 @@ REASON_BUDGET_WALL: Final = "budget_hit: wall_seconds"
 REASON_OSCILLATION_DIFF: Final = "oscillation: diff-similarity"
 REASON_OSCILLATION_ISSUE: Final = "oscillation: repeated issue"
 REASON_MAX_ROUNDS: Final = "max_rounds"
+REASON_VERIFICATION_INDETERMINATE: Final = "verification_indeterminate"
 REASON_CONTINUE: Final = "continue_revise_cycle"
 
 _OPEN_SEVERITIES: Final = frozenset({Severity.BLOCKER, Severity.MAJOR})
@@ -77,11 +79,34 @@ class DecisionDraft:
     forced_review: bool
 
 
+def _analyze_without_gates(inputs: DecidingInputs) -> bool:
+    """Карман §5.1 п.2: `analyze` с пустым набором гейтов.
+
+    «Пустой» — в отчёте нет ни одного гейта; набор из одних `skip` карманом
+    не является. Одно определение на двух читателей — `_gates_pass` и
+    условие §5.2a, — чтобы карман не разъехался между сходимостью и
+    остановкой.
+    """
+    return inputs.mode is Mode.ANALYZE and not inputs.verification.gates
+
+
 def _gates_pass(inputs: DecidingInputs) -> bool:
     """`overall == pass`, либо `analyze` без гейтов (§5.1)."""
     if inputs.verification.overall is OverallStatus.PASS:
         return True
-    return inputs.mode is Mode.ANALYZE and not inputs.verification.gates
+    return _analyze_without_gates(inputs)
+
+
+def _no_evidence(inputs: DecidingInputs) -> bool:
+    """Раунд без свидетельства вне кармана §5.1 п.2 (§5.2a).
+
+    Такой раунд не сходится ни при каком поведении агентов, поэтому сессия
+    встаёт на нём, а не на исходе `max_rounds`, — с причиной, которая
+    называет саму беду, а не её симптом.
+    """
+    if inputs.verification.overall is not OverallStatus.INDETERMINATE:
+        return False
+    return not _analyze_without_gates(inputs)
 
 
 def _no_carried_blocker(inputs: DecidingInputs) -> bool:
@@ -158,10 +183,15 @@ def _build_directive(review: Review) -> str:
 
 
 def decide(inputs: DecidingInputs) -> DecisionDraft:
-    """`DECIDING` §5: converged → budget_hit → осцилляция → max_rounds → continue.
+    """`DECIDING` §5: converged → budget_hit → indeterminate → осцилляция →
+    max_rounds → continue.
 
     Строгий top-down порядок [REQ-006] — линейная цепочка ранних `return`,
-    первое сработавшее условие терминально.
+    первое сработавшее условие терминально. Раунд без свидетельства (§5.2a)
+    стоит после бюджета и до осцилляции: исчерпанный бюджет — более сильная
+    причина, а осцилляция и `max_rounds` назвали бы симптом. Раньше
+    принудительного цикла анти-сикофантии он тоже стоит: тот терминальных
+    условий не отменяет (§5.1).
 
     `open_issues_carried` перечисляет открытое ПОСЛЕ раунда N, а не до него:
     §4.5 показывает у решения раунда 3 идентификатор `R3-2` — id его
@@ -216,6 +246,15 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
         return DecisionDraft(
             outcome=Outcome.BUDGET_HIT,
             reason=budget_reason,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+        )
+
+    if _no_evidence(inputs):
+        return DecisionDraft(
+            outcome=Outcome.DEADLOCK,
+            reason=REASON_VERIFICATION_INDETERMINATE,
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,

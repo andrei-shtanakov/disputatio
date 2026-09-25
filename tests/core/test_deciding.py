@@ -791,3 +791,171 @@ def test_reason_max_rounds_is_pinned() -> None:
     from disputatio.core.deciding import REASON_MAX_ROUNDS
 
     assert REASON_MAX_ROUNDS == "max_rounds"
+
+
+# --- §5.2a: раунд без свидетельства → DEADLOCK ---------------------------------
+
+_SKIPPED_GATES: tuple[GateResult, ...] = (
+    GateResult(name="tests", cmd="pytest -q", status=GateStatus.SKIP),
+    GateResult(name="types", cmd="pyrefly check", status=GateStatus.SKIP),
+)
+
+
+def make_indeterminate(*, gates: tuple[GateResult, ...] = ()) -> VerificationReport:
+    """Отчёт без выполненного гейта; `overall` считает настоящий агрегатор."""
+    from disputatio.verifier.aggregate import compute_overall
+
+    report = make_verification(overall=compute_overall(list(gates)), gates=list(gates))
+    assert report.overall is OverallStatus.INDETERMINATE
+    return report
+
+
+@pytest.mark.parametrize("gates", [(), _SKIPPED_GATES], ids=["empty", "all-skip"])
+@pytest.mark.parametrize("mode", [m for m in Mode if m is not Mode.ANALYZE])
+@pytest.mark.parametrize(
+    "review",
+    [make_review(verdict=Verdict.APPROVE), make_request_changes_review()],
+    ids=["approve", "request_changes"],
+)
+def test_decide_indeterminate_outside_carve_out_stops_in_round_one(
+    gates: tuple[GateResult, ...], mode: Mode, review: Review
+) -> None:
+    """Вне кармана §5.1 п.2 `indeterminate` останавливает раунд 1 (§5.2a).
+
+    До `max_rounds` далеко, а `approve` раунда 1 не превращается в
+    принудительный цикл анти-сикофантии: §5.1 говорит, что она терминальных
+    условий §5.2–5.4 не отменяет.
+    """
+    from disputatio.core.deciding import REASON_VERIFICATION_INDETERMINATE, decide
+
+    draft = decide(
+        make_inputs(
+            round=1,
+            mode=mode,
+            review=review,
+            verification=make_indeterminate(gates=gates),
+            patch_current="+line\n",
+            limits=make_limits(max_rounds=8),
+        )
+    )
+
+    assert draft.outcome is Outcome.DEADLOCK
+    assert draft.reason == REASON_VERIFICATION_INDETERMINATE
+    assert draft.forced_review is False
+    assert draft.next_round_directive is None
+
+
+def test_decide_indeterminate_analyze_empty_gates_converges_on_approve() -> None:
+    """Карман §5.1 п.2: `analyze` с пустым набором сходится, §5.2a молчит."""
+    from disputatio.core.deciding import REASON_CONVERGED, decide
+
+    draft = decide(
+        make_inputs(
+            round=2,
+            mode=Mode.ANALYZE,
+            review=make_review(verdict=Verdict.APPROVE),
+            verification=make_indeterminate(),
+        )
+    )
+
+    assert draft.outcome is Outcome.CONVERGED
+    assert draft.reason == REASON_CONVERGED
+
+
+def test_decide_indeterminate_analyze_empty_gates_continues_otherwise() -> None:
+    """Карман §5.1 п.2 без approve — обычный CONTINUE, а не §5.2a."""
+    from disputatio.core.deciding import REASON_CONTINUE, decide
+
+    draft = decide(
+        make_inputs(
+            round=1,
+            mode=Mode.ANALYZE,
+            review=make_request_changes_review(),
+            verification=make_indeterminate(),
+        )
+    )
+
+    assert draft.outcome is Outcome.CONTINUE
+    assert draft.reason == REASON_CONTINUE
+
+
+def test_decide_indeterminate_analyze_all_skip_is_stopped() -> None:
+    """`analyze` с набором из одних `skip` карманом не является (§5.2a)."""
+    from disputatio.core.deciding import REASON_VERIFICATION_INDETERMINATE, decide
+
+    draft = decide(
+        make_inputs(
+            round=1,
+            mode=Mode.ANALYZE,
+            review=make_review(verdict=Verdict.APPROVE),
+            verification=make_indeterminate(gates=_SKIPPED_GATES),
+        )
+    )
+
+    assert draft.outcome is Outcome.DEADLOCK
+    assert draft.reason == REASON_VERIFICATION_INDETERMINATE
+
+
+def test_decide_budget_hit_wins_over_indeterminate() -> None:
+    """Бюджет и §5.2a одновременно → BUDGET_HIT: он выше в порядке §5."""
+    from disputatio.core.deciding import REASON_BUDGET_TOKENS, decide
+
+    draft = decide(
+        make_inputs(
+            round=1,
+            review=make_request_changes_review(),
+            verification=make_indeterminate(),
+            budget_used=BudgetUsed(tokens=2_000_000, wall_seconds=1.0),
+        )
+    )
+
+    assert draft.outcome is Outcome.BUDGET_HIT
+    assert draft.reason == REASON_BUDGET_TOKENS
+
+
+def test_decide_indeterminate_wins_over_oscillation_and_max_rounds() -> None:
+    """§5.2a стоит до осцилляции и `max_rounds`: они назвали бы симптом."""
+    from disputatio.core.deciding import REASON_VERIFICATION_INDETERMINATE, decide
+
+    patch = "@@ -1,2 +1,2 @@\n+line one\n-line two\n"
+    draft = decide(
+        make_inputs(
+            round=4,
+            review=make_request_changes_review(),
+            verification=make_indeterminate(gates=_SKIPPED_GATES),
+            limits=make_limits(max_rounds=4),
+            patch_current=patch,
+            patch_two_back=patch,
+        )
+    )
+
+    assert draft.outcome is Outcome.DEADLOCK
+    assert draft.reason == REASON_VERIFICATION_INDETERMINATE
+
+
+@pytest.mark.parametrize("overall", [OverallStatus.PASS, OverallStatus.FAIL])
+@pytest.mark.parametrize("mode", list(Mode))
+def test_decide_indeterminate_rule_never_fires_on_pass_or_fail(
+    overall: OverallStatus, mode: Mode
+) -> None:
+    """При `pass`/`fail` условие §5.2a не срабатывает ни в одном режиме."""
+    from disputatio.core.deciding import REASON_CONTINUE, decide
+
+    draft = decide(
+        make_inputs(
+            round=2,
+            mode=mode,
+            review=make_request_changes_review(),
+            verification=make_verification(overall=overall),
+        )
+    )
+
+    assert draft.outcome is Outcome.CONTINUE
+    assert draft.reason == REASON_CONTINUE
+
+
+def test_reason_verification_indeterminate_is_pinned() -> None:
+    """`REASON_VERIFICATION_INDETERMINATE == "verification_indeterminate"` (§5.2a)."""
+    from disputatio.core.deciding import REASON_VERIFICATION_INDETERMINATE
+
+    assert REASON_VERIFICATION_INDETERMINATE == "verification_indeterminate"

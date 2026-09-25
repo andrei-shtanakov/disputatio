@@ -342,3 +342,43 @@ def test_resume_does_not_rewrite_a_decision_that_disagrees_with_the_round(
 
     assert git.commits == []
     assert _decision_on_disk(tmp_path).reason == "чужое решение"
+
+
+def test_replayed_deciding_without_evidence_reaches_the_same_stop(
+    tmp_path: Path,
+) -> None:
+    """§5.2a одинаков для `run` и `resume`: повтор DECIDING — тот же исход.
+
+    Отчёт раунда переписан набором из одних `skip`: `overall ==
+    indeterminate` вне кармана §5.1 п.2. Второй проход идёт на свежем FSM из
+    `DECIDING` — ровно то, что видит `resume` после обрыва до записи
+    перехода, — и обязан вынести то же решение из тех же артефактов.
+    """
+    _seed(tmp_path)
+    write_round_artifact(
+        tmp_path,
+        _ROUND,
+        "verification.json",
+        VerificationReport(
+            round=_ROUND,
+            gates=[
+                GateResult(name="gate", cmd="uv run pytest -q", status=GateStatus.SKIP)
+            ],
+            overall=OverallStatus.INDETERMINATE,
+            diff_stats=DiffStats(files=1, insertions=4, deletions=2),
+        ).model_dump_json(by_alias=True),
+    )
+    git = SpyGit()
+
+    first = _context(tmp_path, git)
+    decide_step(first)
+    written = _decision_on_disk(tmp_path)
+    replay = _context(tmp_path, git)
+    decide_step(replay)
+
+    assert written.outcome is Outcome.DEADLOCK
+    assert written.reason == "verification_indeterminate"
+    assert _decision_on_disk(tmp_path) == written
+    assert replay.fsm.state.state is first.fsm.state.state
+    assert replay.fsm.state.state is SessionPhase.EXPORTING
+    assert git.commits == []

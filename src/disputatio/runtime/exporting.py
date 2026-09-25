@@ -46,12 +46,18 @@ from disputatio.contracts import (
     SCHEMA_V1,
     Decision,
     Issue,
+    OverallStatus,
     SessionPhase,
     SessionState,
 )
 from disputatio.core import is_partial
 from disputatio.events import write_result
-from disputatio.runtime.history import carried_issues, load_decision, load_patch
+from disputatio.runtime.history import (
+    carried_issues,
+    load_decision,
+    load_patch,
+    load_verification,
+)
 from disputatio.runtime.layout import PROPOSAL_NAME, round_artifact
 from disputatio.runtime.steps import StepContext
 
@@ -74,6 +80,7 @@ def export(ctx: StepContext) -> None:
     round_no = ctx.round
 
     decision = _source_decision(artifacts, round_no)
+    overall = _source_overall(artifacts, round_no)
     write_result(
         artifacts,
         {
@@ -83,6 +90,7 @@ def export(ctx: StepContext) -> None:
         _manifest(
             ctx.fsm.state,
             decision,
+            overall,
             carried_issues(artifacts, round_no),
             round_no,
         ),
@@ -94,6 +102,7 @@ def export(ctx: StepContext) -> None:
 def _manifest(
     state: SessionState,
     decision: Decision,
+    overall: OverallStatus,
     open_issues: tuple[Issue, ...],
     round_no: int,
 ) -> dict[str, Any]:
@@ -103,6 +112,11 @@ def _manifest(
     выводятся из фазы: `stop_reason` — тот самый machine-readable код,
     который §5 записал в `decision.json`, и вторая его формулировка здесь
     разошлась бы с историей сессии.
+
+    `verification_overall` — `overall` отчёта проверок того же раунда
+    (§5.5), строкой того же перечисления: он дополняет причину остановки, а
+    не заменяет её, и печатается на обоих путях. Без него «упёрлись в
+    лимит» и «проверок не выполнено» читались бы одинаково.
 
     `rounds_total` равен `source_round` не по совпадению: счётчик раунда
     растёт только на `IDLE → PROPOSING` и на revise-петле, поэтому номер
@@ -124,6 +138,7 @@ def _manifest(
         "converged": not is_partial(decision.outcome),
         "outcome": decision.outcome.value,
         "stop_reason": decision.reason,
+        "verification_overall": overall.value,
         "source_round": round_no,
         "rounds_total": round_no,
         "budget_used": {
@@ -167,6 +182,23 @@ def _source_decision(artifact_root: Path, round_no: int) -> Decision:
             "чего"
         )
     return decision
+
+
+def _source_overall(artifact_root: Path, round_no: int) -> OverallStatus:
+    """`overall` отчёта проверок раунда-источника; отсутствие — ошибка порядка.
+
+    `AssertionError` по той же причине, что у решения: `DECIDING` без
+    отчёта не проходит (§5.5), а `verification_overall: null` выдал бы
+    отсутствие свидетельства за его значение. Отчёт, не проходящий схему,
+    поднимает `ValidationError` читателя и тоже останавливает экспорт.
+    """
+    report = load_verification(artifact_root, round_no)
+    if report is None:
+        raise AssertionError(
+            f"нет verification.json раунда {round_no:03d}: шаг EXPORTING вызван "
+            "до VERIFYING — назвать в манифесте итог проверок не из чего"
+        )
+    return report.overall
 
 
 def _source_proposal(artifact_root: Path, round_no: int) -> str:

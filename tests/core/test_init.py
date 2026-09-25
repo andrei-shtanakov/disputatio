@@ -36,6 +36,7 @@ EXPECTED_BY_MODULE: Final[dict[str, tuple[str, ...]]] = {
         "REASON_OSCILLATION_DIFF",
         "REASON_OSCILLATION_ISSUE",
         "REASON_MAX_ROUNDS",
+        "REASON_VERIFICATION_INDETERMINATE",
         "REASON_CONTINUE",
     ),
     "oscillation": (
