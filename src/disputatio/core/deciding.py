@@ -7,14 +7,18 @@
 реализует строгий top-down порядок §5 [REQ-006]: converged → budget_hit
 [REQ-010] → indeterminate (§5.2a) → осцилляция [REQ-011] → max_rounds
 [REQ-012] → иначе continue, линейной цепочкой ранних `return` без таблиц
-приоритетов.
+приоритетов; прогноз бюджета (§5.2) проверяется последним и заменяет только
+исход, который иначе был бы `CONTINUE`.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import pairwise
+from statistics import median
 from typing import Final
 
 from disputatio.contracts import (
+    BudgetSnapshot,
     BudgetUsed,
     Issue,
     Limits,
@@ -36,6 +40,7 @@ REASON_CONVERGED: Final = "approve_with_gates_pass"
 REASON_ANTI_SYCOPHANCY: Final = "anti_sycophancy_forced_review"
 REASON_BUDGET_TOKENS: Final = "budget_hit: tokens"
 REASON_BUDGET_WALL: Final = "budget_hit: wall_seconds"
+REASON_BUDGET_PREDICTED: Final = "budget_hit: predicted"
 REASON_OSCILLATION_DIFF: Final = "oscillation: diff-similarity"
 REASON_OSCILLATION_ISSUE: Final = "oscillation: repeated issue"
 REASON_MAX_ROUNDS: Final = "max_rounds"
@@ -54,7 +59,13 @@ _ANTI_SYCOPHANCY_DIRECTIVE: Final = (
 
 @dataclass(frozen=True, slots=True)
 class DecidingInputs:
-    """Снимок раунда N, собранный w-runtime из артефактов (DESIGN-004)."""
+    """Снимок раунда N, собранный w-runtime из артефактов (DESIGN-004).
+
+    `budget_snapshots` — `budget_snapshot` решений прошлых раундов, номер
+    раунда → снимок (§4.5). Раунда без снимка (решение прежней версии) в
+    отображении нет: отсутствие нулём не заменяется (§5.2). Снимок
+    текущего раунда — сам `budget_used`, расход на входе в `DECIDING`.
+    """
 
     round: int
     mode: Mode
@@ -66,17 +77,23 @@ class DecidingInputs:
     issue_history: Mapping[int, tuple[Issue, ...]]
     budget_used: BudgetUsed
     limits: Limits
+    budget_snapshots: Mapping[int, BudgetSnapshot] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class DecisionDraft:
-    """Исход `decide()` — чистое значение, до материализации `Decision`."""
+    """Исход `decide()` — чистое значение, до материализации `Decision`.
+
+    `budget_snapshot` — `budget_used` на входе в `DECIDING` (§4.5); `None`
+    только у черновика, восстановленного из решения прежней версии.
+    """
 
     outcome: Outcome
     reason: str
     open_issues_carried: tuple[str, ...]
     next_round_directive: str | None
     forced_review: bool
+    budget_snapshot: BudgetSnapshot | None = None
 
 
 def _analyze_without_gates(inputs: DecidingInputs) -> bool:
@@ -155,6 +172,63 @@ def _budget_hit_reason(inputs: DecidingInputs) -> str | None:
     return None
 
 
+def budget_snapshot(used: BudgetUsed) -> BudgetSnapshot:
+    """Снимок §4.5 из накопленного расхода: три поля, без стоимости."""
+    return BudgetSnapshot(
+        tokens=used.tokens,
+        wall_seconds=used.wall_seconds,
+        unreported_turns=used.unreported_turns,
+    )
+
+
+def _round_snapshots(inputs: DecidingInputs) -> list[BudgetSnapshot | None]:
+    """Снимки раундов 0…N; `None` — снимка нет.
+
+    Раунд 0 — начальный расход сессии: ноль по построению, но только при
+    `tracked_from_start` (§4.1), прежний учёт базы не даёт. Раунд N —
+    текущий `budget_used`.
+    """
+    zero = (
+        BudgetSnapshot(tokens=0, wall_seconds=0.0, unreported_turns=0)
+        if inputs.budget_used.tracked_from_start
+        else None
+    )
+    prior = [inputs.budget_snapshots.get(k) for k in range(1, inputs.round)]
+    return [zero, *prior, budget_snapshot(inputs.budget_used)]
+
+
+def _cost_observations(inputs: DecidingInputs) -> tuple[list[int], list[float]]:
+    """Пригодные наблюдения стоимости раундов — (токены, секунды) §5.2.
+
+    Интервал пригоден, только если оба соседних снимка существуют: через
+    пропуск разность не берётся. Токенный — ещё и только если
+    `unreported_turns` за раунд не вырос.
+    """
+    tokens: list[int] = []
+    wall: list[float] = []
+    for before, after in pairwise(_round_snapshots(inputs)):
+        if before is None or after is None:
+            continue
+        wall.append(after.wall_seconds - before.wall_seconds)
+        if after.unreported_turns <= before.unreported_turns:
+            tokens.append(after.tokens - before.tokens)
+    return tokens, wall
+
+
+def _budget_predicted(inputs: DecidingInputs) -> bool:
+    """Остаток меньше медианы пригодных наблюдений хоть по одному ресурсу.
+
+    Ресурсы раздельны; без наблюдений по ресурсу прогноз по нему не
+    применяется (§5.2). Лимиты заданы всегда — «без лимита» нет.
+    """
+    tokens, wall = _cost_observations(inputs)
+    used = inputs.budget_used
+    limits = inputs.limits
+    if tokens and limits.max_total_tokens - used.tokens < median(tokens):
+        return True
+    return bool(wall) and limits.max_wall_seconds - used.wall_seconds < median(wall)
+
+
 def _oscillation_reason(inputs: DecidingInputs) -> str | None:
     """Diff-similarity, затем repeated-issue, в этом порядке (DESIGN-006) [REQ-011].
 
@@ -184,7 +258,7 @@ def _build_directive(review: Review) -> str:
 
 def decide(inputs: DecidingInputs) -> DecisionDraft:
     """`DECIDING` §5: converged → budget_hit → indeterminate → осцилляция →
-    max_rounds → continue.
+    max_rounds → прогноз бюджета → continue.
 
     Строгий top-down порядок [REQ-006] — линейная цепочка ранних `return`,
     первое сработавшее условие терминально. Раунд без свидетельства (§5.2a)
@@ -220,7 +294,13 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
     раунда 1. Наружу это не протекало — оба потребителя пересекают список с
     `issues` ревью, — но `decision.json` читает человек, и в нём было
     написано неверное.
+
+    Прогноз бюджета (§5.2) стоит последним и заменяет только `CONTINUE` —
+    обычный и принудительный цикл анти-сикофантии: уже установленную
+    причину остановки он не отменяет. Каждый черновик, терминальный тоже,
+    несёт `budget_snapshot` — расход на входе в `DECIDING` (§4.5).
     """
+    snapshot = budget_snapshot(inputs.budget_used)
     named_now = {issue.id for issue in inputs.review.issues}
     carried_ids = tuple(
         issue.id for issue in inputs.carried_issues if issue.id in named_now
@@ -239,6 +319,7 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,
+            budget_snapshot=snapshot,
         )
 
     budget_reason = _budget_hit_reason(inputs)
@@ -249,6 +330,7 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,
+            budget_snapshot=snapshot,
         )
 
     if _no_evidence(inputs):
@@ -258,6 +340,7 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,
+            budget_snapshot=snapshot,
         )
 
     oscillation_reason = _oscillation_reason(inputs)
@@ -268,6 +351,7 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,
+            budget_snapshot=snapshot,
         )
 
     if inputs.round >= inputs.limits.max_rounds:
@@ -277,6 +361,17 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=None,
             forced_review=False,
+            budget_snapshot=snapshot,
+        )
+
+    if _budget_predicted(inputs):
+        return DecisionDraft(
+            outcome=Outcome.BUDGET_HIT,
+            reason=REASON_BUDGET_PREDICTED,
+            open_issues_carried=open_issues_carried,
+            next_round_directive=None,
+            forced_review=False,
+            budget_snapshot=snapshot,
         )
 
     if _anti_sycophancy_blocked(inputs):
@@ -286,6 +381,7 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
             open_issues_carried=open_issues_carried,
             next_round_directive=_ANTI_SYCOPHANCY_DIRECTIVE,
             forced_review=True,
+            budget_snapshot=snapshot,
         )
 
     return DecisionDraft(
@@ -294,4 +390,5 @@ def decide(inputs: DecidingInputs) -> DecisionDraft:
         open_issues_carried=open_issues_carried,
         next_round_directive=_build_directive(inputs.review),
         forced_review=False,
+        budget_snapshot=snapshot,
     )

@@ -15,7 +15,15 @@ from pathlib import Path
 import disputatio.core as _core_package
 
 ALLOWED_EXACT_MODULES: frozenset[str] = frozenset(
-    {"dataclasses", "enum", "typing", "difflib", "datetime"}
+    {
+        "dataclasses",
+        "enum",
+        "typing",
+        "difflib",
+        "datetime",
+        "itertools",
+        "statistics",
+    }
 )
 ALLOWED_MODULE_PREFIXES: frozenset[str] = frozenset(
     {"collections.abc", "disputatio.contracts", "disputatio.core"}

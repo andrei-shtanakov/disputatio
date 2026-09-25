@@ -479,6 +479,7 @@ def decide_step(ctx: StepContext) -> None:
         reason=draft.reason,
         open_issues_carried=list(draft.open_issues_carried),
         next_round_directive=draft.next_round_directive,
+        budget_snapshot=draft.budget_snapshot,
     )
     _write_decision(artifacts, round_no, decision)
 
