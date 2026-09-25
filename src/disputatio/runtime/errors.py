@@ -152,6 +152,19 @@ class ControlPlaneTampered(DisputatioError):
     """
 
 
+class LifecyclePolicyFailed(DisputatioError):
+    """Хук политики P9 упал не отказом сверки, а сбоем (§2 P9, #113).
+
+    Сессия к этому моменту уже `FAILED` — хук закрывает её fail-closed при
+    ЛЮБОМ исключении политики (`retry._run_lifecycle_hook`). Отказ сверки
+    уходит своим типом (`ControlPlaneTampered`/`AnchorCorrupted`), а всё
+    прочее (например `OSError` чтения файла или записи анкера) — этим, с
+    исходным исключением в `__cause__`. Без объявленного типа драйвер,
+    признающий исходом только названные исключения, принял бы закрытую
+    ядром сессию за обрыв.
+    """
+
+
 class ExternalEditError(DisputatioError):
     """Resume: происхождение состояния дерева не доказано (§8.1).
 
