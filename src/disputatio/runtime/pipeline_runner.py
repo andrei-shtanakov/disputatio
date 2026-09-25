@@ -192,8 +192,14 @@ class SessionCreation:
     base_commit: str | None = None
 
 
-SessionDriver = Callable[[Path, str, RoundBoundaryPolicy | None], SessionState]
-"""Прогон сессии до её собственной остановки: `(artifact_root, session_id, policy)`.
+SessionDriver = Callable[
+    [Path, str, RoundBoundaryPolicy | None, tuple[str, ...]], SessionState
+]
+"""Прогон сессии до её остановки: `(artifact_root, session_id, policy, revisions)`.
+
+`revisions` — периметр P9: корни всех ревизий манифеста относительно
+каталога пайплайна (§2 P9). Его передаёт runner, чьё состояние на запуске
+ревизии доверенное, и периметр фиксируется до первого хода автора.
 
 Инъекция, а не прямой вызов `drive`/`resume_session`: runner обязан быть
 проверяем на скриптованных артефактах, а настоящий цикл асинхронен и тянет за
@@ -673,7 +679,10 @@ class PipelineRunner:
         session = self._session_state(artifact_root, session_id)
         if session is None or not self._is_settled(artifact_root, session, contour):
             self._session_driver(
-                artifact_root, session_id, self._boundary_policies.get(contour)
+                artifact_root,
+                session_id,
+                self._boundary_policies.get(contour),
+                tuple(record.path for record in all_session_records(state)),
             )
         successor = NextAction(
             operation_id=f"finish-{session_id}",

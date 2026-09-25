@@ -42,7 +42,10 @@ from typing import Final
 
 from disputatio.contracts import AppendOnlyEntry, IntegritySnapshot, SessionState
 from disputatio.events import AnchorRecord, IntegrityAnchor
-from disputatio.runtime.errors import ControlPlaneTampered
+from disputatio.runtime.errors import (
+    ControlPlaneTampered,
+    SnapshotPerimeterIncompatible,
+)
 from disputatio.runtime.layout import (
     PIPELINE_MANIFEST_NAME,
     SESSION_DIR_NAME,
@@ -74,7 +77,14 @@ _SESSION_IMMUTABLE: Final = ("session.json", "config.toml")
 
 @dataclass(frozen=True, slots=True)
 class ControlPlane:
-    """Управляющие файлы одной ревизии: что именно охраняет P9.
+    """Управляющие файлы пайплайна и всех его ревизий: что охраняет P9.
+
+    **Периметр — все ревизии манифеста** (§2 P9, #112): runner читает не
+    только текущую — бюджет по `session.json` всех сессий, `review.json`
+    припаркованной pair при возврате. `revisions` — корни ревизий
+    относительно `pipeline_dir` (`sessions/<revision>`), зафиксированные до
+    хода; сверки строят периметр из записи анкера (`for_record`), а не из
+    манифеста, который за ход мог измениться.
 
     Область намеренно узкая и перечислимая, а не «всё под `.disputatio/`»:
     §10 называет ровно три вида (манифест, артефакт раунда, event log), а
@@ -97,7 +107,7 @@ class ControlPlane:
 
     workspace_root: Path
     pipeline_dir: Path
-    artifact_root: Path
+    revisions: tuple[str, ...]
     append_only_paths: tuple[Path, ...] = ()
 
     def snapshot(
@@ -110,6 +120,32 @@ class ControlPlane:
             operation_id=operation_id,
             immutable=self.immutable_hashes(),
             append_only=self.append_only_entries(),
+            revisions=list(self.revisions),
+        )
+
+    def for_record(self, record: AnchorRecord) -> "ControlPlane":
+        """Плоскость сверки с периметром, записанным в `pre_turn` (§2 P9).
+
+        Периметр берётся из записи, а не из манифеста на диске: подмена,
+        переписавшая манифест за ход, иначе сузила бы собственную проверку.
+        Запись без поля — снимок версии с узким периметром: сверять его ни
+        по старому, ни по новому периметру нельзя, и это не подмена, а
+        `SnapshotPerimeterIncompatible` (§8.1 шаг 0).
+        """
+        if record.revisions is None:
+            raise SnapshotPerimeterIncompatible(
+                f"незавершённый ход {record.session_id} раунда "
+                f"{record.round:03d} снят версией с узким периметром P9 (без "
+                "поля `revisions`): соседние ревизии этим снимком не охвачены, "
+                "и продолжить ход с новой гарантией нельзя. Продолжайте "
+                "пайплайн прежней версией, пока последней записью о ходе в "
+                "анкере не станет `turn_completed` (SPEC-002 §2 P9)"
+            )
+        return ControlPlane(
+            workspace_root=self.workspace_root,
+            pipeline_dir=self.pipeline_dir,
+            revisions=tuple(record.revisions),
+            append_only_paths=self.append_only_paths,
         )
 
     def immutable_hashes(self) -> dict[str, str]:
@@ -194,13 +230,20 @@ class ControlPlane:
         return tuple(problems)
 
     def _immutable_paths(self) -> tuple[Path, ...]:
-        """Существующие неизменяемые файлы: пайплайн, сессия, артефакты раундов."""
-        session = self.artifact_root / SESSION_DIR_NAME
+        """Существующие неизменяемые файлы: пайплайн и каждая ревизия периметра.
+
+        Ревизия, чей каталог ещё не создан, вносит ноль файлов, но остаётся в
+        периметре: файл, появившийся в ней за ход, ловится сравнением
+        наборов так же, как в существующей.
+        """
         candidates: list[Path] = [
-            *(self.pipeline_dir / name for name in _PIPELINE_IMMUTABLE),
-            *(session / name for name in _SESSION_IMMUTABLE),
-            *sorted(rounds_dir(self.artifact_root).rglob("*")),
+            self.pipeline_dir / name for name in _PIPELINE_IMMUTABLE
         ]
+        for revision in self.revisions:
+            artifact_root = self.pipeline_dir / revision
+            session = artifact_root / SESSION_DIR_NAME
+            candidates.extend(session / name for name in _SESSION_IMMUTABLE)
+            candidates.extend(sorted(rounds_dir(artifact_root).rglob("*")))
         return tuple(path for path in candidates if path.is_file())
 
     def _append_only_paths(self) -> tuple[Path, ...]:
@@ -269,7 +312,15 @@ class PipelineIntegrityPolicy:
                 f"раунда {state.current_round:03d}: журнал целостности ведёт "
                 "чужой пайплайн"
             )
-        problems = self._plane.violations(record)
+        if record.revisions is None:
+            # Этот же процесс только что записал `pre_turn` с периметром:
+            # запись без него здесь — чужая строка анкера, а не старый формат.
+            raise ControlPlaneTampered(
+                f"pre-turn снапшот хода {record.session_id} раунда "
+                f"{record.round:03d} в анкере {self._anchor.path} не несёт "
+                "периметра, хотя записан этим ходом"
+            )
+        problems = self._plane.for_record(record).violations(record)
         if problems:
             raise ControlPlaneTampered(_tamper_message(self._anchor, record, problems))
         self._anchor.append_completion(

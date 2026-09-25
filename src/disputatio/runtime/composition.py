@@ -466,7 +466,10 @@ def build_pipeline(
         return state
 
     def session_driver(
-        artifact_root: Path, session_id: str, policy: RoundBoundaryPolicy | None
+        artifact_root: Path,
+        session_id: str,
+        policy: RoundBoundaryPolicy | None,
+        revisions: tuple[str, ...],
     ) -> SessionState:
         """Гонит одну ревизию тем же циклом, что и `disp run` ([REQ-008]).
 
@@ -491,7 +494,9 @@ def build_pipeline(
             control_plane=ControlPlane(
                 workspace_root=workspace,
                 pipeline_dir=pipeline_dir_of(workspace, slug),
-                artifact_root=artifact_root,
+                # Периметр P9 — от runner'а, из его состояния на запуске
+                # ревизии (§2 P9), а не перечитанный здесь манифест.
+                revisions=revisions,
                 append_only_paths=(sink.path, session_sink.path),
             ),
         )

@@ -64,8 +64,10 @@ from disputatio.contracts import (
 )
 from disputatio.core import SessionFsm
 from disputatio.events import (
+    AnchorCorrupted,
     FileStateStore,
     JsonlEventSink,
+    RoundImmutableError,
     bootstrap_session,
     write_config_snapshot,
 )
@@ -77,6 +79,7 @@ from disputatio.runtime import (
     RuntimeConfig,
     RuntimeDeps,
 )
+from disputatio.runtime.errors import ControlPlaneTampered as RealControlPlaneTampered
 from disputatio.runtime.errors import LifecyclePolicyFailed
 from disputatio.runtime.loop import drive, resume_session
 from disputatio.runtime.steps import StepContext
@@ -144,6 +147,7 @@ class SpyLifecycle:
     log: list[str]
     raise_on: str | None = None
     phases: list[str] = field(default_factory=list)
+    error: type[Exception] = ControlPlaneTampered
 
     def before_author_turn(self, state: SessionState) -> None:
         """Снапшот перед ходом; журналирует фазу, в которой его позвали."""
@@ -158,9 +162,7 @@ class SpyLifecycle:
         self.log.append(point)
         self.phases.append(state.state.value)
         if self.raise_on == point:
-            raise ControlPlaneTampered(
-                f"снапшот control plane не сошёлся на {point}_author_turn"
-            )
+            raise self.error(f"снапшот control plane не сошёлся на {point}_author_turn")
 
     @property
     def pairs(self) -> int:
@@ -317,6 +319,38 @@ def test_lifecycle_error_fails_session(
     resumed = anyio.run(lambda: _resume(git_repo))
     assert resumed.state is SessionPhase.FAILED
     assert len(author.prompts) == seen_before_resume
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RealControlPlaneTampered, AnchorCorrupted, RoundImmutableError],
+    ids=["control-plane-tampered", "anchor-corrupted", "i3"],
+)
+def test_verification_refusal_and_i3_leave_the_hook_unwrapped(
+    git_repo: Path, error: type[Exception]
+) -> None:
+    """Отказ сверки P9 и I3 уходят из хука своим типом, без обёртки (#139).
+
+    Обёртка `LifecyclePolicyFailed` — только для прочих сбоев политики.
+    Отказ сверки сам называет причину, а обёрнутый I3 стал бы членом
+    `SESSION_CLOSING_ERRORS`, и драйвер ревизии проглотил бы его.
+    """
+    log: list[str] = []
+    author = ScriptedAgent(
+        role=Role.AUTHOR, root=git_repo, replies=[_proposal(1)], log=log
+    )
+    reviewer = ScriptedAgent(
+        role=Role.REVIEWER, root=git_repo, replies=[_request_changes(1)], log=log
+    )
+    policy = SpyLifecycle(log=log, raise_on="after", error=error)
+    ctx = _context(git_repo, author=author, reviewer=reviewer)
+    write_config_snapshot(git_repo, _config().render_toml())
+
+    with pytest.raises(error) as excinfo:
+        anyio.run(lambda: drive(ctx, lifecycle=policy))
+
+    assert type(excinfo.value) is error
+    assert _session_json(git_repo)["state"] == SessionPhase.FAILED.value
 
 
 def test_resume_forwards_the_lifecycle_policy(

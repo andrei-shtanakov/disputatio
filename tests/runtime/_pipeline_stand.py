@@ -160,7 +160,11 @@ class ScriptedDriver:
         self.calls: list[tuple[Path, str, object]] = []
 
     def __call__(
-        self, artifact_root: Path, session_id: str, policy: object
+        self,
+        artifact_root: Path,
+        session_id: str,
+        policy: object,
+        revisions: tuple[str, ...] = (),
     ) -> SessionState:
         self.calls.append((artifact_root, session_id, policy))
         script = self.scripts[session_id]

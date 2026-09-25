@@ -221,11 +221,17 @@ class _FakeDriver:
         self.scripts = scripts
         self.workspace = workspace
         self.calls: list[tuple[Path, str, object]] = []
+        self.perimeters: dict[str, tuple[str, ...]] = {}
 
     def __call__(
-        self, artifact_root: Path, session_id: str, policy: object
+        self,
+        artifact_root: Path,
+        session_id: str,
+        policy: object,
+        revisions: tuple[str, ...] = (),
     ) -> SessionState:
         self.calls.append((artifact_root, session_id, policy))
+        self.perimeters[session_id] = revisions
         script = self.scripts[session_id]
         if script.raise_before_write:
             raise _Boom(f"драйвер упал до записи артефактов {session_id}")
@@ -903,13 +909,42 @@ def test_entry_hashes_refuse_document_resolving_outside_the_repository(
     assert not manifest.is_file() or leaked not in manifest.read_text(encoding="utf-8")
 
 
+def _literal_root(harness: Any, session_id: str) -> Path:
+    """`artifact_root` ревизии, собранный литералами раскладки §4.1.
+
+    Независимый оракул: сравнение с `layout.artifact_root_of`, которой
+    пользуется сам runner, съезжало бы вместе с проверяемым (ревью #138).
+    """
+    return (
+        harness.workspace / ".disputatio" / "pipelines" / SLUG / "sessions" / session_id
+    )
+
+
 def test_session_artifact_roots_are_separate(tmp_path: Path) -> None:
     """Каждая ревизия получает свой `artifact_root` (§4.1)."""
     harness = build_harness(tmp_path, converged_pair())
     harness.runner.run(SLUG, "полировать пару")
     roots = {call[1]: call[0] for call in harness.driver.calls}
-    assert roots["spec-r1"] == artifact_root_of(harness.workspace, SLUG, "spec-r1")
-    assert roots["pair-r1"] == artifact_root_of(harness.workspace, SLUG, "pair-r1")
+    assert roots["spec-r1"] == _literal_root(harness, "spec-r1")
+    assert roots["pair-r1"] == _literal_root(harness, "pair-r1")
+
+
+def test_driver_gets_every_manifest_revision_as_the_p9_perimeter(
+    tmp_path: Path,
+) -> None:
+    """#112: периметр P9 — все ревизии манифеста на запуске, а не текущая.
+
+    `pair-r1` запускается, когда `spec-r1` уже завершена: её файлы runner
+    читает (бюджет), значит они в периметре хода `pair-r1`.
+    """
+    harness = build_harness(tmp_path, converged_pair())
+    harness.runner.run(SLUG, "полировать пару")
+
+    assert harness.driver.perimeters["spec-r1"] == ("sessions/spec-r1",)
+    assert harness.driver.perimeters["pair-r1"] == (
+        "sessions/spec-r1",
+        "sessions/pair-r1",
+    )
 
 
 def test_pair_contour_gets_boundary_policy_spec_does_not(tmp_path: Path) -> None:
@@ -1061,7 +1096,7 @@ def test_spec_r2_gets_findings_pair_r2_starts_clean(tmp_path: Path) -> None:
     pair_r2 = creations["pair-r2"]
     assert pair_r2.findings == ()
     assert pair_r2.revision == 2
-    assert pair_r2.artifact_root == artifact_root_of(harness.workspace, SLUG, "pair-r2")
+    assert pair_r2.artifact_root == _literal_root(harness, "pair-r2")
 
 
 def test_return_operation_id_is_deterministic_from_review(tmp_path: Path) -> None:
@@ -1082,7 +1117,7 @@ def test_return_operation_id_is_deterministic_from_review(tmp_path: Path) -> Non
     rebuild(harness).runner.advance(SLUG)
 
     review_bytes = (
-        artifact_root_of(harness.workspace, SLUG, "pair-r1")
+        _literal_root(harness, "pair-r1")
         / ".disputatio"
         / "rounds"
         / "001"

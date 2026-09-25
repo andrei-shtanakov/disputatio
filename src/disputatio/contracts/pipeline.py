@@ -520,6 +520,10 @@ class IntegritySnapshot(ArtifactChild):
     operation_id: str
     immutable: dict[str, str] = Field(default_factory=dict)
     append_only: dict[str, AppendOnlyEntry] = Field(default_factory=dict)
+    #: Периметр снапшота (§2 P9, §4.2): корни всех ревизий манифеста
+    #: относительно каталога пайплайна (`sessions/<revision>`). Несёт его
+    #: только `pre_turn`; `None` — «поля нет», а не пустой периметр.
+    revisions: list[str] | None = None
 
 
 class PipelineState(PipelineArtifactBase):

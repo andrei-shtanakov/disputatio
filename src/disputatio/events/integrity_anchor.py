@@ -100,6 +100,11 @@ class AnchorRecord(ArtifactChild):
     #: остановки описываются манифестом, а не анкером.
     pipeline_id: str | None = None
     phase: str | None = None
+    #: Периметр снапшота `pre_turn` (§2 P9, §4.2). `None` у `pre_turn` —
+    #: запись версии до расширенного периметра (несовместимость периметра),
+    #: у прочих видов — штатное отсутствие поля: в строку журнала `None` не
+    #: пишется вовсе (§4.2 — «записи других видов его не несут»).
+    revisions: list[str] | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @property
     def key(self) -> tuple[str, str, int, str]:
@@ -174,6 +179,9 @@ class IntegrityAnchor:
                 operation_id=snapshot.operation_id,
                 immutable=dict(snapshot.immutable),
                 append_only=dict(snapshot.append_only),
+                revisions=(
+                    None if snapshot.revisions is None else list(snapshot.revisions)
+                ),
             )
         )
 

@@ -64,7 +64,9 @@ def test_run_commits_versioned_semantic_proof(tmp_path: Path) -> None:
             "процесс убит до первой сессии — proof уже обязан быть на диске"
         )
 
-    def _driver(artifact_root: Path, session_id: str, policy: object) -> None:
+    def _driver(
+        artifact_root: Path, session_id: str, policy: object, revisions: object
+    ) -> None:
         raise AssertionError("драйвер не вызывается раньше первой сессии")
 
     def _exporter(*args: object, **kwargs: object) -> None:

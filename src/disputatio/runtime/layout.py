@@ -5,8 +5,9 @@
 и в публичный `__init__` не входит, а §4.2 запрещает импорт подмодулей чужих
 пакетов. Поэтому здесь — собственный, строго read-only набор функций путей.
 
-Корень тот же, что у писателя, — `artifact_root`, журнал сессии, а не рабочий
-git-репозиторий (SPEC-002 §4.1). Зеркало обязано отражать и это: read-side,
+Корень путей сессии тот же, что у писателя, — `artifact_root`, журнал
+сессии, а не рабочий git-репозиторий (SPEC-002 §4.1); пути каталога
+пайплайна (`pipeline_dir_of` и соседи) считаются от `workspace_root`. Зеркало обязано отражать и это: read-side,
 считающий пути от рабочего корня, читал бы историю чужой сессии там, где
 писатель уже разошёлся.
 
@@ -38,8 +39,9 @@ DECISION_NAME: Final = "decision.json"
 #: Раскладка каталога пайплайна `.disputatio/pipelines/<slug>/` (SPEC-002
 #: §4.1) — единственная копия в `runtime`. Писатель манифеста и журнала
 #: (`events.pipeline_paths`) держит свою, по тому же правилу, что и для
-#: сессии: подмодуль `events` наружу не экспортируется. Расхождение двух копий
-#: ловит `tests/runtime/test_pipeline_layout_mirror.py`.
+#: сессии: подмодуль `events` наружу не экспортируется. Общее у двух копий —
+#: корень и манифест, их сверяет `tests/runtime/test_pipeline_layout_mirror.py`;
+#: `sessions/`, `adoptions/`, `result/` живут только здесь.
 PIPELINES_DIR_NAME: Final = "pipelines"
 PIPELINE_MANIFEST_NAME: Final = "pipeline.json"
 PIPELINE_SESSIONS_DIR_NAME: Final = "sessions"
