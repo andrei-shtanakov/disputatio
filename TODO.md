@@ -474,20 +474,24 @@
   — issue #118 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] `superseded_by` (§7.3) разнороден и пишется однократно — допущение не записано @id:spec002-superseded-by-semantics @epic:eco.disputatio
   — issue #119 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] §7.2: считаются ли операторские возвраты в потолок `max_architectural_returns` @id:spec002-return-ceiling-by-edge @epic:eco.disputatio
+- [x] §7.2: считаются ли операторские возвраты в потолок `max_architectural_returns` @id:spec002-return-ceiling-by-edge @epic:eco.disputatio — записано в SPEC-002 §7.2 (2026-09-25)
   — issue #120 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] §8.1 «HEAD совпадает с записанным» — поля нет, значение вычисляется @id:spec002-head-anchorage-computed @epic:eco.disputatio
+- [x] §8.1 «HEAD совпадает с записанным» — поля нет, значение вычисляется @id:spec002-head-anchorage-computed @epic:eco.disputatio — записано в SPEC-002 §8.1 (2026-09-25)
   — issue #121 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] §8.2: правило честности `export` не записано @id:spec002-export-honesty-rule @epic:eco.disputatio
+- [x] §8.2: правило честности `export` не записано @id:spec002-export-honesty-rule @epic:eco.disputatio — записано в SPEC-002 §8.2 (2026-09-25)
   — issue #122 (остаток ревью PR #51, аудит 2026-09-25).
 - [ ] Текст `S1` переопределяем, а V8 продолжает требовать от него «нет blocker/major» @id:checklist-findings-role-text-override @epic:eco.disputatio
   — issue #123 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] SPEC-002 не называет авторитетный конфиг: снапшот или живой @id:spec002-authoritative-config @epic:eco.disputatio
+- [x] SPEC-002 не называет авторитетный конфиг: снапшот или живой @id:spec002-authoritative-config @epic:eco.disputatio — записано в SPEC-002 §3.2, §8.1 шаг 1 (2026-09-25)
   — issue #124 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] §3.1/§6: `--root` обязан быть toplevel, база `doc-scope` не названа @id:spec002-root-toplevel @epic:eco.disputatio
+- [x] §3.1/§6: `--root` обязан быть toplevel, база `doc-scope` не названа @id:spec002-root-toplevel @epic:eco.disputatio — записано в SPEC-002 §3.1 (предусловие `run`), §6 (2026-09-25)
   — issue #125 (остаток ревью PR #51, аудит 2026-09-25).
-- [ ] Анкер P9: вне toplevel репозитория, а не вне `workspace_root` — нормы расходятся @id:spec002-anchor-containment-toplevel @epic:eco.disputatio
+- [x] Анкер P9: вне toplevel репозитория, а не вне `workspace_root` — нормы расходятся @id:spec002-anchor-containment-toplevel @epic:eco.disputatio — записано в SPEC-002 P9, §3.1 `run` и `phase`, §3.2, §10 (2026-09-25)
   — issue #126 (остаток ревью PR #51, аудит 2026-09-25).
+- [ ] SPEC-002 §8.2: «экспорт FAILED только явным --partial» — код не отказывает @id:spec002-export-failed-without-partial @epic:eco.disputatio
+  — §8.2 пишет «`FAILED` — ненулевой, экспорт только явным `export --partial`»; `disp pipeline export`
+  без флага на FAILED-пайплайне не отказывает: экспортирует с `converged: false` (`runtime/pipeline_export.py:170`)
+  и ненулевым кодом (`cli.py:549` → `_pipeline_exit_code`, `cli.py:736`). Ждёт решения владельца спеки, какая сторона права.
 - [x] Control-plane не защищён в SSOT @id:control-plane-not-in-ssot @epic:eco.disputatio — закрыт 2026-09-24: `spec-runner.config.yaml` и `pyrefly.toml` внесены в `harness_files` `project.yaml` (сверено по коду spec-runner: guard хеширует файлы на диске, неотслеживаемый сгенерированный конфиг покрыт; maestro пишет его до запуска); расхождение doc §2 ↔ SSOT запинено `tests/test_project_harness.py`
   — `docs/workstream-setup.md` §2 и операторский эталон подают
   `spec-runner.config.yaml` и `pyrefly.toml` как harness-пути (обоснование —

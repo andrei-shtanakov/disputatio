@@ -314,9 +314,9 @@ def check_run_preconditions(
     предусловий, отдельным шагом (§3.1: «runner ветку не создаёт»).
 
     Граница для `anchor_path` — TOPLEVEL репозитория, не `workspace_root`
-    (фикс-раунд 1, Important-3, решение team-lead — шире буквы §3.1 в
-    защищаемую сторону): `runtime/git.py::clean` идёт по `_TREE_PATHSPEC =
-    (":/", …)`, то есть по ВСЕМУ репозиторию, а не по `workspace_root`, и
+    (P9 и предусловие `run` в §3.1 SPEC-002 так и записаны; пока `--root`
+    обязан быть toplevel, границы совпадают): `runtime/git.py::clean` идёт
+    по `_TREE_PATHSPEC = (":/", …)`, то есть по ВСЕМУ репозиторию, а не по `workspace_root`, и
     анкер, лежащий между корнем сессии и toplevel, прошёл бы containment по
     буквальному `workspace_root` и был бы снесён первым же `PROPOSING`.
     """
