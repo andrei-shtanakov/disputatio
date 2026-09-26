@@ -183,6 +183,8 @@ spec_runner:
         - tests/test_ws57_task_014_red.py
         - tests/test_ws57_task_015_red.py
         - tests/test_ws65_task_001_red.py
+        # Пин sha256 этих 11 файлов — второй, независимый от базы guard'а слой.
+        - tests/test_frozen_red_archive.py
 
 workstreams:
   # Один workstream: прогон-доказательство миграции. Задача выбрана из
@@ -242,8 +244,12 @@ workstreams:
       #
       # Две зависимости глоба:
       # - он захватывает и 11 RED-тестов закрытых волн в корне `tests/`; запрет
-      #   на их правку держит `harness_guard: strict` (они поимённо в
-      #   `harness_files` выше), а не scope;
+      #   на их правку держит не scope, а два слоя: `harness_guard: strict`
+      #   (файлы поимённо в `harness_files` выше; база одна на задачу в
+      #   пределах процесса spec-runner, но новый процесс — повтор maestro или
+      #   `--resume` — снимает её заново) и пин sha256
+      #   `tests/test_frozen_red_archive.py`, который краснит приёмочный
+      #   `uv run pytest -q` на любой их правке;
       # - `maestro validate --strict` зелёный только благодаря этим 11 файлам:
       #   без них глоб ничего не матчит, и preflight падает на
       #   `scope-no-match`. Штатное исключение (`expected_outputs` доменного
