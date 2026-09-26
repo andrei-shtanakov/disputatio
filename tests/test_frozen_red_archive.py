@@ -35,6 +35,7 @@ from frozen_red_archive import (
     FROZEN_RED_ARCHIVE,
     FROZEN_RED_ARCHIVE_SIZE,
     archive_violations,
+    covered_archive,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -89,3 +90,32 @@ def test_archive_violations_flags_skipped_file() -> None:
     assert archive_violations(outcomes) == [
         "tests/verifier/test_task_001_red.py: не собран или не исполнен"
     ]
+
+
+def test_archive_violations_checks_only_the_given_paths() -> None:
+    """Непокрытый прогоном файл нарушением не считается."""
+    outcomes: dict[str, list[str]] = {}
+
+    assert archive_violations(outcomes, paths=()) == []
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], set()),
+        (["."], set(FROZEN_RED_ARCHIVE)),
+        (["tests"], set(FROZEN_RED_ARCHIVE)),
+        (["tests/verifier"], {"tests/verifier/test_task_001_red.py"}),
+        (["tests/runtime"], set()),
+        (
+            ["tests/verifier/test_task_001_red.py::test_x"],
+            set(),
+        ),
+    ],
+    ids=["no-args", "root", "tests", "verifier", "unrelated", "node-id"],
+)
+def test_covered_archive_follows_the_run_selection(
+    args: list[str], expected: set[str]
+) -> None:
+    """Покрытие — по путям запуска, а не по «аргументы не заданы» (ревью #152)."""
+    assert covered_archive(_ROOT, _ROOT, args) == expected

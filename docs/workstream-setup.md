@@ -102,6 +102,7 @@ evidence. Ошибка типизации останавливает задач�
   - tests/verifier/test_task_001_red.py
   - tests/frozen_red_archive.py
   - tests/test_frozen_red_archive.py
+  - tests/conftest.py
 ```
 
 Сам TDD-гейт в этот список больше не входит и не может: он — код
@@ -185,9 +186,10 @@ guard'а после повтора maestro или `--resume` (§3). Так же 
 `tests/verifier/conftest.py` в scope и не заморожен (общие фикстуры verifier
 законно правятся), поэтому пин байтов снятие теста с коллекции или пропуск не
 видит. Это ловит третий слой: хук корневого `tests/conftest.py` (вне scope) при
-полном прогоне — без путей и фильтров, то есть в приёмочном `uv run pytest -q` —
-требует, чтобы каждый архивный RED-тест был собран и прошёл
-(`tests/frozen_red_archive.py::archive_violations`). Поимённо, а не глобом —
+любом прогоне, собирающем архивный файл целиком (`pytest -q`, `pytest -q tests`,
+`pytest -q tests/verifier`; без фильтров `-k`/`-m`/`--lf`/`--deselect`), требует,
+чтобы этот архивный RED-тест был собран и прошёл
+(`tests/frozen_red_archive.py`); сам conftest в `harness_files`. Поимённо, а не глобом —
 иначе под защиту попал бы и новый RED-тест волны, и RED-пас не смог бы его
 записать. Новые файлы по этому шаблону разрешены. Обратная зависимость:
 `maestro validate --strict` проходит только благодаря этим файлам — без них

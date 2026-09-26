@@ -195,6 +195,10 @@ spec_runner:
         # пины и правило «собран и прошёл» — в `tests/frozen_red_archive.py`.
         - tests/frozen_red_archive.py
         - tests/test_frozen_red_archive.py
+        # Носитель правила «архивный RED собран и прошёл» (хук, ревью #152):
+        # дефолтный `HARNESS_CANDIDATES` spec-runner'а берёт только корневой
+        # `conftest.py`, а не `tests/conftest.py`.
+        - tests/conftest.py
 
 workstreams:
   # Один workstream: прогон-доказательство миграции. Задача выбрана из

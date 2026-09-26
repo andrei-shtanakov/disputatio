@@ -7,7 +7,8 @@ workstream'ов (не под `tests/test_*_red.py` и не под `tests/verifie
 продуктовый пакет на импорте.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Final
 
 #: sha256 байтов каждого архивного RED-теста (ревью #149, #151).
@@ -33,16 +34,41 @@ FROZEN_RED_ARCHIVE: Final[dict[str, str]] = {
 FROZEN_RED_ARCHIVE_SIZE: Final = 12
 
 
-def archive_violations(outcomes: Mapping[str, Sequence[str]]) -> list[str]:
+def covered_archive(
+    rootdir: Path, invocation_dir: Path, args: Sequence[str]
+) -> set[str]:
+    """Архивные файлы, которые прогон с аргументами `args` собирает целиком.
+
+    Файл покрыт, если он лежит под одним из путей запуска (или сам им
+    является). Аргумент с `::` выбирает отдельные тесты, а не файл целиком,
+    поэтому покрытия не даёт. Критерий — фактическая выборка, а не «аргументы
+    не заданы»: `pytest -q tests` — такой же полный прогон, как `pytest -q`
+    (ревью #152). Фильтры `-k`/`-m`/`--lf`/`--deselect` проверяет вызывающий.
+    """
+    roots = [(invocation_dir / arg).resolve() for arg in args if "::" not in arg]
+    covered: set[str] = set()
+    for path in FROZEN_RED_ARCHIVE:
+        target = (rootdir / path).resolve()
+        if any(target == root or root in target.parents for root in roots):
+            covered.add(path)
+    return covered
+
+
+def archive_violations(
+    outcomes: Mapping[str, Sequence[str]],
+    paths: Collection[str] | None = None,
+) -> list[str]:
     """Архивные файлы, чьи тесты в полном прогоне не собраны или не прошли.
 
     `outcomes` — исходы отчётов pytest по пути файла (`passed`, `skipped`,
     `failed`). Нарушение — файл без единого `passed` (не собран: например
     `collect_ignore` соседнего conftest'а) либо с любым иным исходом (skip,
     провал). Байты файла сторожит пин, исполнение — это правило (ревью #151).
+    `paths` — файлы, которые прогон обязан был исполнить (`covered_archive`);
+    по умолчанию весь архив.
     """
     violations: list[str] = []
-    for path in sorted(FROZEN_RED_ARCHIVE):
+    for path in sorted(FROZEN_RED_ARCHIVE if paths is None else paths):
         seen = outcomes.get(path, ())
         if "passed" not in seen:
             violations.append(f"{path}: не собран или не исполнен")
