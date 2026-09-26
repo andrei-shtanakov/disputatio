@@ -63,6 +63,63 @@ _FIXTURE_USER_NAME = "disputatio-tests"
 _FIXTURE_USER_EMAIL = "tests@disputatio.local"
 
 
+# --- исполнение архивных RED-тестов (ревью #151) ---------------------------
+#
+# Пин (`test_frozen_red_archive.py`) сторожит байты архивных RED-тестов, но не
+# их исполнение: соседний `tests/verifier/conftest.py` в scope workstream'а и
+# мог бы снять `tests/verifier/test_task_001_red.py` с коллекции
+# (`collect_ignore`) или пропустить его. Этот conftest вне scope (и в
+# `harness_files`), поэтому проверка живёт здесь. Действует для архивных
+# файлов, которые прогон собирает целиком: лежащих под путями запуска
+# (`pytest -q`, `pytest -q tests`, `pytest -q tests/verifier`) и без фильтров
+# `-k`/`-m`/`--lf`/`--deselect` (ревью #152); прогон, архивный файл не
+# покрывающий, исполнять его и не обязан.
+
+_ARCHIVE_OUTCOMES: dict[str, list[str]] = {}
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Запоминает исходы отчётов по архивным файлам (фаза call и любой не-pass)."""
+    from frozen_red_archive import FROZEN_RED_ARCHIVE
+
+    path = report.nodeid.split("::", 1)[0]
+    if path in FROZEN_RED_ARCHIVE and (report.when == "call" or not report.passed):
+        _ARCHIVE_OUTCOMES.setdefault(path, []).append(report.outcome)
+
+
+def _is_filtered(config: pytest.Config) -> bool:
+    """Выборка сужена фильтром — покрытие путями ничего не гарантирует."""
+    option = config.option
+    return bool(
+        option.keyword
+        or option.markexpr
+        or getattr(option, "lf", False)
+        or getattr(option, "deselect", None)
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Прогон, покрывший архивный файл, но не исполнивший его, — провал."""
+    from frozen_red_archive import archive_violations, covered_archive
+
+    config = session.config
+    if _is_filtered(config):
+        return
+    covered = covered_archive(
+        config.rootpath, config.invocation_params.dir, config.args
+    )
+    violations = archive_violations(_ARCHIVE_OUTCOMES, covered)
+    if not violations:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write("\n")
+        reporter.write_line("архивные RED-тесты не исполнены (ревью #151):", red=True)
+        for line in violations:
+            reporter.write_line(f"  {line}", red=True)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture
 def git_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Отвязывает git от внешнего окружения и глобального конфига.

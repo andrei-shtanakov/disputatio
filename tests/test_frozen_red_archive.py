@@ -4,8 +4,7 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 кладёт RED-тест волны (`tdd_runners.py::evidential_file`), — и этот глоб
 захватывает 11 RED-тестов прошлых волн; двенадцатый архивный,
 `tests/verifier/test_task_001_red.py` прогона 2026-08-22, входит в scope через
-`tests/verifier/**`. Их защищают два независимых слоя (для двенадцатого — только
-байты, не исполнение: см. оговорку в конце):
+`tests/verifier/**`. Их защищают два независимых слоя:
 
 - `harness_guard: strict` (файлы поимённо в `harness_files`): в пределах одного
   процесса spec-runner база снимается один раз на задачу (`HarnessBaseline`,
@@ -20,43 +19,26 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 
 Легитимная правка архивного файла — только отдельным PR с обновлением пина.
 
-Оговорка для `tests/verifier/test_task_001_red.py`: оба слоя сторожат байты
-файла. Соседний `tests/verifier/conftest.py` входит в scope и не заморожен,
-поэтому снятие теста с коллекции или пропуск (`collect_ignore`, skip-фикстура)
-не поймает ни guard, ни этот пин. Для 11 корневых файлов такого пути нет:
-корневой `tests/conftest.py` вне scope.
+Исполнение сторожит третий слой (ревью #151): хук корневого `conftest.py` при
+полном прогоне требует, чтобы каждый архивный тест был собран и прошёл
+(`frozen_red_archive.archive_violations`). Иначе снятие теста с коллекции или
+пропуск через соседний `tests/verifier/conftest.py` — он в scope и не
+заморожен — не поймали бы ни guard, ни пин.
 """
 
 import hashlib
 from pathlib import Path
-from typing import Final
 
 import pytest
 import yaml
+from frozen_red_archive import (
+    FROZEN_RED_ARCHIVE,
+    FROZEN_RED_ARCHIVE_SIZE,
+    archive_violations,
+    covered_archive,
+)
 
 _ROOT = Path(__file__).resolve().parents[1]
-
-FROZEN_RED_ARCHIVE: Final[dict[str, str]] = {
-    "tests/test_task_002_red.py": "c0b60e84bf1c31f8dd4a1e4ad4dd108701a6d41ee12391bfcb2a2ae024c02ce0",
-    "tests/test_task_003_red.py": "085319123ce4ad5b8e6b495cf36e00cbe5c93f2db78691237e47f3ef296be51a",
-    "tests/test_task_004_red.py": "c2a1bfe6666ea7ccc2c2e5b65f4ff9d39e48b658de6e146ddafc58bc287e0038",
-    "tests/test_task_005_red.py": "7dcbc46cbb3c5a0bf593bfce8d3dcdd2e5f31dad2863915ea5c11a2292ef0431",
-    "tests/test_ws57_task_001_red.py": "cc69ad508b1be6ee5f701f82402f38ddbbdba928148a2e257416cbea3743be43",
-    "tests/test_ws57_task_002_red.py": "5a736a93c08d63eb04d5834a724409e2d9597e0366b1c9ebcc2690431534cc7a",
-    "tests/test_ws57_task_005_red.py": "c67986fce8e19414e8519b82c7828d1a14f91badc73e210ee88f62a6fa045699",
-    "tests/test_ws57_task_011_red.py": "931c74b9a239b49bcfb2e54442fa2c454d1d4c114b97e23779b39eef1aa707a8",
-    "tests/test_ws57_task_014_red.py": "4cf25a6f19a0d649dbec8b7f0da5b5dedb7c44c2405b5b1db49a744182265cc5",
-    "tests/test_ws57_task_015_red.py": "36bc6a991a7e8e27905bd58a2bcfc88a72d00a5471d1324c118cff2b85060bbc",
-    "tests/verifier/test_task_001_red.py": "124da5d0d633cfec3f79bd55c05cb572fba16c213fd0513a430a8509dbd2041e",
-    "tests/test_ws65_task_001_red.py": "1e6a927d004e0b957b7da437c307efa5f07e7dbe1c31b5ffe0d9e1edfd95726e",
-}
-
-
-#: Мощность пина — якорь, не выводимый из тех же списков (ревью #149): без
-#: него опустошение пина вместе со строками `harness_files` давало бы сверку
-#: пустых множеств, а `parametrize` по пустому набору — SKIPPED, не падение.
-#: Меняется только вместе с архивом, отдельным PR.
-FROZEN_RED_ARCHIVE_SIZE: Final = 12
 
 
 def test_archive_has_its_declared_size() -> None:
@@ -81,3 +63,59 @@ def test_archive_list_matches_harness_files() -> None:
     archived = {item for item in harness if item.endswith("_red.py")}
 
     assert archived == set(FROZEN_RED_ARCHIVE)
+
+
+def test_archive_violations_accepts_all_passed() -> None:
+    """Все архивные файлы прошли — нарушений нет."""
+    outcomes = {path: ["passed"] for path in FROZEN_RED_ARCHIVE}
+
+    assert archive_violations(outcomes) == []
+
+
+def test_archive_violations_flags_uncollected_file() -> None:
+    """Файл без отчётов (снят `collect_ignore`) — нарушение."""
+    outcomes = {path: ["passed"] for path in FROZEN_RED_ARCHIVE}
+    del outcomes["tests/verifier/test_task_001_red.py"]
+
+    assert archive_violations(outcomes) == [
+        "tests/verifier/test_task_001_red.py: не собран или не исполнен"
+    ]
+
+
+def test_archive_violations_flags_skipped_file() -> None:
+    """Пропуск skip-фикстурой — нарушение, даже без `passed`-соседей."""
+    outcomes = {path: ["passed"] for path in FROZEN_RED_ARCHIVE}
+    outcomes["tests/verifier/test_task_001_red.py"] = ["skipped"]
+
+    assert archive_violations(outcomes) == [
+        "tests/verifier/test_task_001_red.py: не собран или не исполнен"
+    ]
+
+
+def test_archive_violations_checks_only_the_given_paths() -> None:
+    """Непокрытый прогоном файл нарушением не считается."""
+    outcomes: dict[str, list[str]] = {}
+
+    assert archive_violations(outcomes, paths=()) == []
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], set()),
+        (["."], set(FROZEN_RED_ARCHIVE)),
+        (["tests"], set(FROZEN_RED_ARCHIVE)),
+        (["tests/verifier"], {"tests/verifier/test_task_001_red.py"}),
+        (["tests/runtime"], set()),
+        (
+            ["tests/verifier/test_task_001_red.py::test_x"],
+            set(),
+        ),
+    ],
+    ids=["no-args", "root", "tests", "verifier", "unrelated", "node-id"],
+)
+def test_covered_archive_follows_the_run_selection(
+    args: list[str], expected: set[str]
+) -> None:
+    """Покрытие — по путям запуска, а не по «аргументы не заданы» (ревью #152)."""
+    assert covered_archive(_ROOT, _ROOT, args) == expected

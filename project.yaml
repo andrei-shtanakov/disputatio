@@ -184,16 +184,21 @@ spec_runner:
         - tests/test_ws57_task_015_red.py
         - tests/test_ws65_task_001_red.py
         # RED-тест прогона-доказательства 2026-08-22: под scope он попадает не
-        # глобом `_red`, а через `tests/verifier/**`, и заморожен так же — но
-        # слабее корневых: заморожены его байты, а не исполнение. Соседний
-        # `tests/verifier/conftest.py` в scope и не заморожен (общие фикстуры
-        # verifier законно правятся), поэтому снять файл с коллекции или
-        # пропустить его (`collect_ignore`, skip-фикстура) ни guard, ни пин
-        # не поймают. У 11 корневых такого пути нет: `tests/conftest.py` вне
-        # scope.
+        # глобом `_red`, а через `tests/verifier/**`, и заморожен так же.
+        # Соседний `tests/verifier/conftest.py` в scope и не заморожен (общие
+        # фикстуры verifier законно правятся), поэтому снятие файла с коллекции
+        # или пропуск ловит третий слой: хук корневого `tests/conftest.py`
+        # (вне scope) при полном прогоне требует, чтобы каждый архивный тест
+        # был собран и прошёл.
         - tests/verifier/test_task_001_red.py
-        # Пин sha256 этих 12 файлов — второй, независимый от базы guard'а слой.
+        # Пин sha256 этих 12 файлов — второй, независимый от базы guard'а слой;
+        # пины и правило «собран и прошёл» — в `tests/frozen_red_archive.py`.
+        - tests/frozen_red_archive.py
         - tests/test_frozen_red_archive.py
+        # Носитель правила «архивный RED собран и прошёл» (хук, ревью #152):
+        # дефолтный `HARNESS_CANDIDATES` spec-runner'а берёт только корневой
+        # `conftest.py`, а не `tests/conftest.py`.
+        - tests/conftest.py
 
 workstreams:
   # Один workstream: прогон-доказательство миграции. Задача выбрана из
