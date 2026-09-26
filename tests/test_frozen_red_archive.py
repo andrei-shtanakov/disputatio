@@ -42,6 +42,18 @@ FROZEN_RED_ARCHIVE: Final[dict[str, str]] = {
 }
 
 
+#: Мощность пина — якорь, не выводимый из тех же списков (ревью #149): без
+#: него опустошение пина вместе со строками `harness_files` давало бы сверку
+#: пустых множеств, а `parametrize` по пустому набору — SKIPPED, не падение.
+#: Меняется только вместе с архивом, отдельным PR.
+FROZEN_RED_ARCHIVE_SIZE: Final = 11
+
+
+def test_archive_has_its_declared_size() -> None:
+    """Пин не опустошён и не сокращён молча: мощность — независимый якорь."""
+    assert len(FROZEN_RED_ARCHIVE) == FROZEN_RED_ARCHIVE_SIZE
+
+
 @pytest.mark.parametrize("path", sorted(FROZEN_RED_ARCHIVE))
 def test_frozen_red_test_is_unchanged(path: str) -> None:
     """Файл существует и его байты совпадают с пином."""
