@@ -63,6 +63,58 @@ _FIXTURE_USER_NAME = "disputatio-tests"
 _FIXTURE_USER_EMAIL = "tests@disputatio.local"
 
 
+# --- исполнение архивных RED-тестов (ревью #151) ---------------------------
+#
+# Пин (`test_frozen_red_archive.py`) сторожит байты архивных RED-тестов, но не
+# их исполнение: соседний `tests/verifier/conftest.py` в scope workstream'а и
+# мог бы снять `tests/verifier/test_task_001_red.py` с коллекции
+# (`collect_ignore`) или пропустить его. Этот conftest вне scope, поэтому
+# проверка живёт здесь. Действует только в полном прогоне — без путей, `-k`,
+# `-m`, `--lf`/`--deselect`: это приёмочный `uv run pytest -q`; прогон
+# подмножества архивных тестов и не обязан содержать.
+
+_ARCHIVE_OUTCOMES: dict[str, list[str]] = {}
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Запоминает исходы отчётов по архивным файлам (фаза call и любой не-pass)."""
+    from frozen_red_archive import FROZEN_RED_ARCHIVE
+
+    path = report.nodeid.split("::", 1)[0]
+    if path in FROZEN_RED_ARCHIVE and (report.when == "call" or not report.passed):
+        _ARCHIVE_OUTCOMES.setdefault(path, []).append(report.outcome)
+
+
+def _is_full_run(config: pytest.Config) -> bool:
+    """Полный прогон: аргументы не заданы и ничего не отфильтровано."""
+    option = config.option
+    return (
+        config.args_source is pytest.Config.ArgsSource.INVOCATION_DIR
+        and not option.keyword
+        and not option.markexpr
+        and not getattr(option, "lf", False)
+        and not getattr(option, "deselect", None)
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Полный прогон, в котором архивный тест не собран или не прошёл, — провал."""
+    from frozen_red_archive import archive_violations
+
+    if not _is_full_run(session.config):
+        return
+    violations = archive_violations(_ARCHIVE_OUTCOMES)
+    if not violations:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.ensure_newline()
+        reporter.write_line("архивные RED-тесты не исполнены (ревью #151):", red=True)
+        for line in violations:
+            reporter.write_line(f"  {line}", red=True)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture
 def git_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Отвязывает git от внешнего окружения и глобального конфига.
