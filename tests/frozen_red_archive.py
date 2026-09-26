@@ -8,6 +8,7 @@ workstream'ов (не под `tests/test_*_red.py` и не под `tests/verifie
 """
 
 import fnmatch
+import os
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Final
@@ -55,6 +56,11 @@ def covered_archive(
     """
     roots = [(invocation_dir / arg).resolve() for arg in args if "::" not in arg]
     ignored = [(invocation_dir / item).resolve() for item in ignore]
+    # pytest абсолютизирует шаблоны `--ignore-glob` от каталога запуска
+    # (`_pytest.main`: `absolutepath(x)` = `abspath`, с `normpath`: `..`
+    # схлопывается) до `fnmatch`; иначе относительный
+    # шаблон не совпал бы ни с одним абсолютным путём (ревью #153).
+    globs = [os.path.normpath(invocation_dir / pattern) for pattern in ignore_glob]
     covered: set[str] = set()
     for path in FROZEN_RED_ARCHIVE:
         target = (rootdir / path).resolve()
@@ -62,7 +68,7 @@ def covered_archive(
             continue
         if any(_under(target, root) for root in ignored):
             continue
-        if any(fnmatch.fnmatch(str(target), pattern) for pattern in ignore_glob):
+        if any(fnmatch.fnmatch(str(target), pattern) for pattern in globs):
             continue
         covered.add(path)
     return covered
