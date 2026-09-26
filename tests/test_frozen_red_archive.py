@@ -155,3 +155,12 @@ def test_relative_ignore_glob_is_anchored_at_the_invocation_dir() -> None:
     )
 
     assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}
+
+
+def test_ignore_glob_with_dotdot_is_normalised_like_pytest() -> None:
+    """`..` в шаблоне схлопывается, как у pytest (`abspath`, ревью #154)."""
+    covered = covered_archive(
+        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=["tests/../tests/test_ws57_*"]
+    )
+
+    assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}
