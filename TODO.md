@@ -286,7 +286,7 @@
   плагинов**, поэтому `pyrefly` исполняется перед `tdd-evidence` — цепочка
   RED → GREEN → review → pyrefly → evidence, и ошибка типизации останавливает
   задачу до фиксации evidence. Версия зафиксирована `uv.lock` (pyrefly 1.2.0).
-- [ ] Сквозной операторский remedy-путь под maestro @owner:repo:maestro @id:operator-remedy-path-under-maestro @trigger:"maestro выпущен с фиксом TASK_BLOCKED (maestro#212)" @epic:eco.disputatio
+- [x] Сквозной операторский remedy-путь под maestro @owner:repo:maestro @id:operator-remedy-path-under-maestro @trigger:"maestro выпущен с фиксом TASK_BLOCKED (maestro#212)" @epic:eco.disputatio — пройден 2026-09-26, транскрипт `docs/plans/2026-09-26-remedy-path-proof-transcript.md`
   — прогон 2 (2026-08-22) породил настоящий сценарий для `spec-runner tdd
   repair`: агент упёрся в залоченный тест с фактически неверным ассертом и сам
   назвал нужный remedy. Применить не удалось — автоповтор maestro стёр
@@ -304,6 +304,14 @@
   `maestro/retry_policy.py` есть остановка автоповтора по `TASK_BLOCKED`.
   До переустановки стояла сборка `6d93ca3` (2026-08-20) без фикса. Остаётся
   сам сквозной прогон remedy-пути под maestro.
+- [ ] RED-тест spec-runner ложится вне scope workstream'ов @id:red-test-path-outside-workstream-scope @epic:eco.disputatio
+  — находка прогона-доказательства 2026-09-26: spec-runner 4.x предписывает
+  RED-пасу путь `tests/test_<task>_<ns>_red.py` в корне `tests/`
+  (`tdd_runners.py::evidential_file`, TASK-009 / #366), а scope наших
+  workstream'ов (`project.yaml`) страховочный глоб `tests/test_*.py` снял по
+  опыту 2026-08-22, когда тест ложился в `tests/verifier/`. Под maestro это
+  scope escape → `FAILED → NEEDS_REVIEW` на исправной задаче. Ждёт решения
+  владельца, как расширять scope.
 - [x] Автоматизация полировки пары спека+план протоколом раундов @id:spec-pair-polish-automation
   — **влито PR #51 → master `dc61d60` (2026-08-30)**, suite на master **1911
   passed, 4 skipped** (прогон 2026-08-31). Inbox-issue #44 закрыт 2026-08-31:
