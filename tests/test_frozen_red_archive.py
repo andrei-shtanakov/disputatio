@@ -4,7 +4,8 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 кладёт RED-тест волны (`tdd_runners.py::evidential_file`), — и этот глоб
 захватывает 11 RED-тестов прошлых волн; двенадцатый архивный,
 `tests/verifier/test_task_001_red.py` прогона 2026-08-22, входит в scope через
-`tests/verifier/**`. Их защищают два независимых слоя:
+`tests/verifier/**`. Их защищают два независимых слоя (для двенадцатого — только
+байты, не исполнение: см. оговорку в конце):
 
 - `harness_guard: strict` (файлы поимённо в `harness_files`): в пределах одного
   процесса spec-runner база снимается один раз на задачу (`HarnessBaseline`,
@@ -18,6 +19,12 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 есть вне scope workstream'а, и тоже перечислен в `harness_files`.
 
 Легитимная правка архивного файла — только отдельным PR с обновлением пина.
+
+Оговорка для `tests/verifier/test_task_001_red.py`: оба слоя сторожат байты
+файла. Соседний `tests/verifier/conftest.py` входит в scope и не заморожен,
+поэтому снятие теста с коллекции или пропуск (`collect_ignore`, skip-фикстура)
+не поймает ни guard, ни этот пин. Для 11 корневых файлов такого пути нет:
+корневой `tests/conftest.py` вне scope.
 """
 
 import hashlib
