@@ -183,7 +183,16 @@ spec_runner:
         - tests/test_ws57_task_014_red.py
         - tests/test_ws57_task_015_red.py
         - tests/test_ws65_task_001_red.py
-        # Пин sha256 этих 11 файлов — второй, независимый от базы guard'а слой.
+        # RED-тест прогона-доказательства 2026-08-22: под scope он попадает не
+        # глобом `_red`, а через `tests/verifier/**`, и заморожен так же — но
+        # слабее корневых: заморожены его байты, а не исполнение. Соседний
+        # `tests/verifier/conftest.py` в scope и не заморожен (общие фикстуры
+        # verifier законно правятся), поэтому снять файл с коллекции или
+        # пропустить его (`collect_ignore`, skip-фикстура) ни guard, ни пин
+        # не поймают. У 11 корневых такого пути нет: `tests/conftest.py` вне
+        # scope.
+        - tests/verifier/test_task_001_red.py
+        # Пин sha256 этих 12 файлов — второй, независимый от базы guard'а слой.
         - tests/test_frozen_red_archive.py
 
 workstreams:
@@ -249,7 +258,9 @@ workstreams:
       #   пределах процесса spec-runner, но новый процесс — повтор maestro или
       #   `--resume` — снимает её заново) и пин sha256
       #   `tests/test_frozen_red_archive.py`, который краснит приёмочный
-      #   `uv run pytest -q` на любой их правке;
+      #   `uv run pytest -q` на любой их правке (тем же способом заморожен и
+      #   `tests/verifier/test_task_001_red.py`, входящий в scope через
+      #   `tests/verifier/**`);
       # - `maestro validate --strict` зелёный только благодаря этим 11 файлам:
       #   без них глоб ничего не матчит, и preflight падает на
       #   `scope-no-match`. Штатное исключение (`expected_outputs` доменного

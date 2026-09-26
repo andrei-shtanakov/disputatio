@@ -99,6 +99,7 @@ evidence. Ошибка типизации останавливает задач�
   - tests/test_ws57_task_014_red.py
   - tests/test_ws57_task_015_red.py
   - tests/test_ws65_task_001_red.py
+  - tests/verifier/test_task_001_red.py
   - tests/test_frozen_red_archive.py
 ```
 
@@ -177,7 +178,12 @@ scope-гейт maestro роняет исправную задачу в `FAILED �
 (§2), и их правку отвергает `harness_guard: strict` в пределах процесса
 spec-runner; а пин sha256 `tests/test_frozen_red_archive.py` краснит приёмочный
 `uv run pytest -q` на любой их правке, в том числе пропущенной новой базой
-guard'а после повтора maestro или `--resume` (§3). Поимённо, а не глобом —
+guard'а после повтора maestro или `--resume` (§3). Так же заморожен RED-тест
+прогона 2026-08-22 `tests/verifier/test_task_001_red.py`: под scope он попадает
+через `tests/verifier/**`, а не через этот глоб, — и защищён слабее корневых:
+заморожены его байты, а не исполнение. Соседний `tests/verifier/conftest.py` в
+scope и не заморожен (общие фикстуры verifier законно правятся), так что снять
+тест с коллекции или пропустить его не поймают ни guard, ни пин. Поимённо, а не глобом —
 иначе под защиту попал бы и новый RED-тест волны, и RED-пас не смог бы его
 записать. Новые файлы по этому шаблону разрешены. Обратная зависимость:
 `maestro validate --strict` проходит только благодаря этим файлам — без них

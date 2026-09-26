@@ -2,7 +2,10 @@
 
 Scope workstream'а пускает запись под `tests/test_*_red.py` — там spec-runner
 кладёт RED-тест волны (`tdd_runners.py::evidential_file`), — и этот глоб
-захватывает 11 RED-тестов прошлых волн. Их защищают два независимых слоя:
+захватывает 11 RED-тестов прошлых волн; двенадцатый архивный,
+`tests/verifier/test_task_001_red.py` прогона 2026-08-22, входит в scope через
+`tests/verifier/**`. Их защищают два независимых слоя (для двенадцатого — только
+байты, не исполнение: см. оговорку в конце):
 
 - `harness_guard: strict` (файлы поимённо в `harness_files`): в пределах одного
   процесса spec-runner база снимается один раз на задачу (`HarnessBaseline`,
@@ -16,6 +19,12 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 есть вне scope workstream'а, и тоже перечислен в `harness_files`.
 
 Легитимная правка архивного файла — только отдельным PR с обновлением пина.
+
+Оговорка для `tests/verifier/test_task_001_red.py`: оба слоя сторожат байты
+файла. Соседний `tests/verifier/conftest.py` входит в scope и не заморожен,
+поэтому снятие теста с коллекции или пропуск (`collect_ignore`, skip-фикстура)
+не поймает ни guard, ни этот пин. Для 11 корневых файлов такого пути нет:
+корневой `tests/conftest.py` вне scope.
 """
 
 import hashlib
@@ -38,6 +47,7 @@ FROZEN_RED_ARCHIVE: Final[dict[str, str]] = {
     "tests/test_ws57_task_011_red.py": "931c74b9a239b49bcfb2e54442fa2c454d1d4c114b97e23779b39eef1aa707a8",
     "tests/test_ws57_task_014_red.py": "4cf25a6f19a0d649dbec8b7f0da5b5dedb7c44c2405b5b1db49a744182265cc5",
     "tests/test_ws57_task_015_red.py": "36bc6a991a7e8e27905bd58a2bcfc88a72d00a5471d1324c118cff2b85060bbc",
+    "tests/verifier/test_task_001_red.py": "124da5d0d633cfec3f79bd55c05cb572fba16c213fd0513a430a8509dbd2041e",
     "tests/test_ws65_task_001_red.py": "1e6a927d004e0b957b7da437c307efa5f07e7dbe1c31b5ffe0d9e1edfd95726e",
 }
 
@@ -46,7 +56,7 @@ FROZEN_RED_ARCHIVE: Final[dict[str, str]] = {
 #: него опустошение пина вместе со строками `harness_files` давало бы сверку
 #: пустых множеств, а `parametrize` по пустому набору — SKIPPED, не падение.
 #: Меняется только вместе с архивом, отдельным PR.
-FROZEN_RED_ARCHIVE_SIZE: Final = 11
+FROZEN_RED_ARCHIVE_SIZE: Final = 12
 
 
 def test_archive_has_its_declared_size() -> None:
