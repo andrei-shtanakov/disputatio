@@ -15,3 +15,8 @@ wheels/
 
 .superpowers/
 spec-runner.config.yaml
+
+# Журналы прогонов spec-runner/maestro: пишутся в дерево при каждом прогоне и
+# не трекаются. Раньше жили только в локальном .git/info/exclude, и свежий
+# клон видел их неотслеживаемыми — scope-гейт maestro читал это как scope escape.
+logs/

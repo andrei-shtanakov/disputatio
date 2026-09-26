@@ -304,7 +304,7 @@
   `maestro/retry_policy.py` есть остановка автоповтора по `TASK_BLOCKED`.
   До переустановки стояла сборка `6d93ca3` (2026-08-20) без фикса. Остаётся
   сам сквозной прогон remedy-пути под maestro.
-- [ ] RED-тест spec-runner ложится вне scope workstream'ов @id:red-test-path-outside-workstream-scope @epic:eco.disputatio
+- [x] RED-тест spec-runner ложится вне scope workstream'ов @id:red-test-path-outside-workstream-scope @epic:eco.disputatio — scope дополнен узким глобом `tests/test_*_red.py`, противоречие в описании задачи снято, `logs/` в `.gitignore` (2026-09-26)
   — находка прогона-доказательства 2026-09-26: spec-runner 4.x предписывает
   RED-пасу путь `tests/test_<task>_<ns>_red.py` в корне `tests/`
   (`tdd_runners.py::evidential_file`, TASK-009 / #366), а scope наших
