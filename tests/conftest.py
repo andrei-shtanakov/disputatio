@@ -72,8 +72,14 @@ _FIXTURE_USER_EMAIL = "tests@disputatio.local"
 # `harness_files`), поэтому проверка живёт здесь. Действует для архивных
 # файлов, которые прогон собирает целиком: лежащих под путями запуска
 # (`pytest -q`, `pytest -q tests`, `pytest -q tests/verifier`) и без фильтров
-# `-k`/`-m`/`--lf`/`--deselect` (ревью #152); прогон, архивный файл не
-# покрывающий, исполнять его и не обязан.
+# `-k`/`-m`/`--lf`/`--deselect`/`--ignore`, не `--collect-only`, и только если
+# прогон иначе зелёный (ревью #152); прогон, архивный файл не покрывающий,
+# исполнять его и не обязан.
+#
+# Граница честная: это ловит **неумышленное** снятие теста с коллекции или
+# пропуск. Conftest в scope, умышленно выключающий проверку (выставив
+# `config.option.keyword` или переписав `exitstatus` своим хуком), её обойдёт
+# — как и пин, слой аварийная компенсация, а не граница доверия (§3 docs).
 
 _ARCHIVE_OUTCOMES: dict[str, list[str]] = {}
 
@@ -88,13 +94,21 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def _is_filtered(config: pytest.Config) -> bool:
-    """Выборка сужена фильтром — покрытие путями ничего не гарантирует."""
+    """Выборка сужена или тесты не исполняются — требовать исполнения нечего.
+
+    Фильтры `-k`/`-m`/`--lf`/`--deselect` и `--ignore`/`--ignore-glob` сужают
+    выборку, `--collect-only` не исполняет ничего (ревью #152: без этого
+    диагностический `pytest --collect-only` падал бы с ложным сообщением).
+    """
     option = config.option
     return bool(
         option.keyword
         or option.markexpr
         or getattr(option, "lf", False)
         or getattr(option, "deselect", None)
+        or getattr(option, "ignore", None)
+        or getattr(option, "ignore_glob", None)
+        or getattr(option, "collectonly", False)
     )
 
 
@@ -103,7 +117,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     from frozen_red_archive import archive_violations, covered_archive
 
     config = session.config
-    if _is_filtered(config):
+    # Прогон уже красный (падение, `-x`/`--maxfail` остановил раньше) —
+    # недошедшие архивные тесты ничего не доказывают, а строки о них были бы
+    # шумом поверх настоящей причины (ревью #152).
+    if exitstatus != pytest.ExitCode.OK or _is_filtered(config):
         return
     covered = covered_archive(
         config.rootpath, config.invocation_params.dir, config.args
