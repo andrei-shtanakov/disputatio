@@ -19,11 +19,13 @@ Scope workstream'а пускает запись под `tests/test_*_red.py` —
 
 Легитимная правка архивного файла — только отдельным PR с обновлением пина.
 
-Исполнение сторожит третий слой (ревью #151): хук корневого `conftest.py` при
-полном прогоне требует, чтобы каждый архивный тест был собран и прошёл
-(`frozen_red_archive.archive_violations`). Иначе снятие теста с коллекции или
-пропуск через соседний `tests/verifier/conftest.py` — он в scope и не
-заморожен — не поймали бы ни guard, ни пин.
+Исполнение сторожит третий слой (ревью #151, #152): хук корневого
+`conftest.py` в прогоне, собирающем архивный файл, требует, чтобы тест был
+собран и прошёл (`frozen_red_archive`). Он ловит **неумышленное** снятие теста
+с коллекции или пропуск через соседний `tests/verifier/conftest.py` (он в scope
+и не заморожен). Умышленное выключение из того же conftest'а (фильтр в
+`config.option`, переписанный `exitstatus`) слой обойдёт: как и пин, это
+аварийная компенсация, а не граница доверия.
 """
 
 import hashlib
@@ -102,7 +104,9 @@ def test_archive_violations_checks_only_the_given_paths() -> None:
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        ([], set()),
+        # Форма `config.args` полного `pytest -q` — абсолютный каталог запуска
+        # (pytest подставляет его сам, ArgsSource.INVOCATION_DIR).
+        ([str(_ROOT)], set(FROZEN_RED_ARCHIVE)),
         (["."], set(FROZEN_RED_ARCHIVE)),
         (["tests"], set(FROZEN_RED_ARCHIVE)),
         (["tests/verifier"], {"tests/verifier/test_task_001_red.py"}),
@@ -112,10 +116,33 @@ def test_archive_violations_checks_only_the_given_paths() -> None:
             set(),
         ),
     ],
-    ids=["no-args", "root", "tests", "verifier", "unrelated", "node-id"],
+    ids=["invocation-dir", "dot", "tests", "verifier", "unrelated", "node-id"],
 )
 def test_covered_archive_follows_the_run_selection(
     args: list[str], expected: set[str]
 ) -> None:
     """Покрытие — по путям запуска, а не по «аргументы не заданы» (ревью #152)."""
     assert covered_archive(_ROOT, _ROOT, args) == expected
+
+
+def test_ignore_subtracts_only_the_ignored_paths() -> None:
+    """`--ignore` чужого каталога не снимает покрытие архива (ревью #153)."""
+    covered = covered_archive(_ROOT, _ROOT, [str(_ROOT)], ignore=["tests/adapters"])
+
+    assert covered == set(FROZEN_RED_ARCHIVE)
+
+
+def test_ignore_of_the_archive_path_removes_it_from_coverage() -> None:
+    """Игнорированный архивный файл не требуется, остальные — да."""
+    covered = covered_archive(_ROOT, _ROOT, [str(_ROOT)], ignore=["tests/verifier"])
+
+    assert covered == set(FROZEN_RED_ARCHIVE) - {"tests/verifier/test_task_001_red.py"}
+
+
+def test_ignore_glob_removes_matching_archive_files() -> None:
+    """`--ignore-glob` вычитает совпавшие по шаблону файлы."""
+    covered = covered_archive(
+        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=["*/tests/test_ws57_*"]
+    )
+
+    assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}

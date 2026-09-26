@@ -72,8 +72,16 @@ _FIXTURE_USER_EMAIL = "tests@disputatio.local"
 # `harness_files`), поэтому проверка живёт здесь. Действует для архивных
 # файлов, которые прогон собирает целиком: лежащих под путями запуска
 # (`pytest -q`, `pytest -q tests`, `pytest -q tests/verifier`) и без фильтров
-# `-k`/`-m`/`--lf`/`--deselect` (ревью #152); прогон, архивный файл не
-# покрывающий, исполнять его и не обязан.
+# `-k`/`-m`/`--lf`/`--deselect`, вне `--ignore`, не в режимах без исполнения
+# (`--collect-only`, `--setup-*`, `--fixtures`) и только если прогон иначе
+# зелёный (ревью #152, #153); прогон, архивный файл не покрывающий, исполнять
+# его и не обязан. Прочие редкие режимы pytest не перечислены — известное
+# ограничение: ложный красный там возможен.
+#
+# Граница честная: это ловит **неумышленное** снятие теста с коллекции или
+# пропуск. Conftest в scope, умышленно выключающий проверку (выставив
+# `config.option.keyword` или переписав `exitstatus` своим хуком), её обойдёт
+# — как и пин, слой аварийная компенсация, а не граница доверия (§3 docs).
 
 _ARCHIVE_OUTCOMES: dict[str, list[str]] = {}
 
@@ -88,13 +96,26 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def _is_filtered(config: pytest.Config) -> bool:
-    """Выборка сужена фильтром — покрытие путями ничего не гарантирует."""
+    """Выборка сужена фильтром или тела тестов не исполняются.
+
+    Фильтры `-k`/`-m`/`--lf`/`--deselect` сужают выборку непредсказуемо для
+    правила. Режимы `--collect-only`, `--setup-only`, `--setup-plan`,
+    `--fixtures`, `--fixtures-per-test` тесты не исполняют — требовать от них
+    исполнения значит давать ложный красный (ревью #152, #153).
+    `--ignore`/`--ignore-glob` сюда не входят: они вычитаются из покрытия
+    (`covered_archive`), а не выключают правило.
+    """
     option = config.option
     return bool(
         option.keyword
         or option.markexpr
         or getattr(option, "lf", False)
         or getattr(option, "deselect", None)
+        or getattr(option, "collectonly", False)
+        or getattr(option, "setuponly", False)
+        or getattr(option, "setupplan", False)
+        or getattr(option, "showfixtures", False)
+        or getattr(option, "show_fixtures_per_test", False)
     )
 
 
@@ -103,10 +124,17 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     from frozen_red_archive import archive_violations, covered_archive
 
     config = session.config
-    if _is_filtered(config):
+    # Прогон уже красный (падение, `-x`/`--maxfail` остановил раньше) —
+    # недошедшие архивные тесты ничего не доказывают, а строки о них были бы
+    # шумом поверх настоящей причины (ревью #152).
+    if exitstatus != pytest.ExitCode.OK or _is_filtered(config):
         return
     covered = covered_archive(
-        config.rootpath, config.invocation_params.dir, config.args
+        config.rootpath,
+        config.invocation_params.dir,
+        config.args,
+        ignore=getattr(config.option, "ignore", None) or (),
+        ignore_glob=getattr(config.option, "ignore_glob", None) or (),
     )
     violations = archive_violations(_ARCHIVE_OUTCOMES, covered)
     if not violations:
