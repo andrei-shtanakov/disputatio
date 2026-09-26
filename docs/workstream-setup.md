@@ -87,6 +87,18 @@ evidence. Ошибка типизации останавливает задач�
   - spec/.tdd-evidence/abandoned
   - spec/.tdd-evidence/repairs
   - spec/maestro-constitution.md
+  # RED-тесты закрытых волн: заморожены поимённо (см. §5)
+  - tests/test_task_002_red.py
+  - tests/test_task_003_red.py
+  - tests/test_task_004_red.py
+  - tests/test_task_005_red.py
+  - tests/test_ws57_task_001_red.py
+  - tests/test_ws57_task_002_red.py
+  - tests/test_ws57_task_005_red.py
+  - tests/test_ws57_task_011_red.py
+  - tests/test_ws57_task_014_red.py
+  - tests/test_ws57_task_015_red.py
+  - tests/test_ws65_task_001_red.py
 ```
 
 Сам TDD-гейт в этот список больше не входит и не может: он — код
@@ -142,10 +154,20 @@ evidence. Ошибка типизации останавливает задач�
 выбирает не описание задачи, а spec-runner 4.x: evidential-тест всегда ложится в
 `tests/test_<task>_<ns>_red.py` в корне `tests/`
 (`spec_runner/tdd_runners.py::evidential_file`), и каталог фиксирован намеренно.
-`ns` — хеш-неймспейс, заранее не известный, поэтому узкий глоб — самое узкое,
-что его пропускает. Указывать в описании задачи другой каталог для RED-теста
-нельзя: агент получил бы две несовместимые инструкции. Без глоба scope-гейт
-maestro роняет исправную задачу в `FAILED → NEEDS_REVIEW` (прогон 2026-09-26).
+Глоб повторяет ровно то, что сосед гарантирует (корень `tests/`, префикс
+`test_`, суффикс `_red.py`); шаблон уже этого держался бы на формате task-id,
+которого `task_slug` не обещает. Указывать в описании задачи другой каталог
+для RED-теста нельзя: агент получил бы две несовместимые инструкции. Без глоба
+scope-гейт maestro роняет исправную задачу в `FAILED → NEEDS_REVIEW` (прогон
+2026-09-26).
+
+Глоб захватывает и RED-тесты закрытых волн, уже лежащие в корне `tests/`. Они
+**заморожены через harness**: перечислены поимённо в `harness_files` (§2), и их
+правку отвергает `harness_guard: strict`, а не scope. Поимённо, а не глобом —
+иначе под защиту попал бы и новый RED-тест волны, и RED-пас не смог бы его
+записать. Новые файлы по этому шаблону разрешены. Обратная зависимость:
+`maestro validate --strict` проходит только благодаря этим файлам — без них
+глоб ничего не матчит, и preflight падает на `scope-no-match`.
 
 ## 6. Приёмка не должна переживать свой workstream
 

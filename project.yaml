@@ -167,6 +167,22 @@ spec_runner:
         # regression против «автор не правит свой оракул» (агент, которому
         # неудобна TDD-дисциплина, мог бы просто отредактировать п.1-5).
         - spec/maestro-constitution.md
+        # RED-тесты закрытых волн в корне `tests/` — заморожены поимённо, без
+        # глоба: scope workstream'а пускает под `tests/test_*_red.py` (там
+        # spec-runner кладёт RED-тест волны), а этот глоб захватывает и их.
+        # Запрет на их правку держит этот список, а не scope; глоб здесь
+        # закрыл бы и новый RED-тест волны, и RED-пас не смог бы его записать.
+        - tests/test_task_002_red.py
+        - tests/test_task_003_red.py
+        - tests/test_task_004_red.py
+        - tests/test_task_005_red.py
+        - tests/test_ws57_task_001_red.py
+        - tests/test_ws57_task_002_red.py
+        - tests/test_ws57_task_005_red.py
+        - tests/test_ws57_task_011_red.py
+        - tests/test_ws57_task_014_red.py
+        - tests/test_ws57_task_015_red.py
+        - tests/test_ws65_task_001_red.py
 
 workstreams:
   # Один workstream: прогон-доказательство миграции. Задача выбрана из
@@ -214,16 +230,25 @@ workstreams:
       - "src/disputatio/verifier/diffstats.py"
       - "tests/verifier/**"
       # RED-тест задачи: его путь предписывает сосед, а не описание задачи.
-      # spec-runner 4.x кладёт evidential-тест ровно в
-      # `tests/test_<task>_<ns>_red.py` в корне `tests/`
-      # (`spec_runner/tdd_runners.py::evidential_file`, TASK-009 / #366), и
-      # каталог фиксирован намеренно: так evidence всегда знает, какой файл —
-      # тест. `ns` — хеш-неймспейс, заранее не известен, поэтому узкий глоб
-      # `tests/test_*_red.py` — самое узкое, что пропускает ровно этот файл.
-      # Широкий `tests/test_*.py`, снятый 2026-08-22, не возвращается: тогда
-      # RED-тест ложился в `tests/verifier/`, а без этого глоба прогон
-      # 2026-09-26 упал в scope escape на исправной задаче
-      # (`docs/plans/2026-09-26-remedy-path-proof-transcript.md`).
+      # spec-runner 4.x кладёт evidential-тест в `tests/test_<task>_<ns>_red.py`
+      # в корне `tests/` (`spec_runner/tdd_runners.py::evidential_file`,
+      # TASK-009 / #366); каталог фиксирован намеренно — так evidence всегда
+      # знает, какой файл тест. Глоб `tests/test_*_red.py` повторяет ровно то,
+      # что сосед гарантирует (корень `tests/`, префикс `test_`, суффикс
+      # `_red.py`); шаблон уже этого держался бы на формате task-id, которого
+      # `task_slug` не обещает. Без глоба прогон 2026-09-26 упал в scope escape
+      # на исправной задаче (`docs/plans/2026-09-26-remedy-path-proof-transcript.md`);
+      # широкий `tests/test_*.py`, снятый 2026-08-22, не возвращается.
+      #
+      # Две зависимости глоба:
+      # - он захватывает и 11 RED-тестов закрытых волн в корне `tests/`; запрет
+      #   на их правку держит `harness_guard: strict` (они поимённо в
+      #   `harness_files` выше), а не scope;
+      # - `maestro validate --strict` зелёный только благодаря этим 11 файлам:
+      #   без них глоб ничего не матчит, и preflight падает на
+      #   `scope-no-match`. Штатное исключение (`expected_outputs` доменного
+      #   профиля, `maestro/preflight.py::_is_expected_output`) рассмотрено и
+      #   не взято: доменного профиля ради одного предупреждения не заводим.
       - "tests/test_*_red.py"
       # Артефакт экспортёра едет в том же PR, а orchestrator-managed для
       # scope-гейта — только `spec/maestro-*`, `spec/.maestro-*` и
