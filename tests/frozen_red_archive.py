@@ -7,6 +7,7 @@ workstream'ов (не под `tests/test_*_red.py` и не под `tests/verifie
 продуктовый пакет на импорте.
 """
 
+import fnmatch
 from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Final
@@ -35,7 +36,12 @@ FROZEN_RED_ARCHIVE_SIZE: Final = 12
 
 
 def covered_archive(
-    rootdir: Path, invocation_dir: Path, args: Sequence[str]
+    rootdir: Path,
+    invocation_dir: Path,
+    args: Sequence[str],
+    *,
+    ignore: Sequence[str] = (),
+    ignore_glob: Sequence[str] = (),
 ) -> set[str]:
     """Архивные файлы, которые прогон с аргументами `args` собирает целиком.
 
@@ -43,15 +49,28 @@ def covered_archive(
     является). Аргумент с `::` выбирает отдельные тесты, а не файл целиком,
     поэтому покрытия не даёт. Критерий — фактическая выборка, а не «аргументы
     не заданы»: `pytest -q tests` — такой же полный прогон, как `pytest -q`
-    (ревью #152). Фильтры `-k`/`-m`/`--lf`/`--deselect` проверяет вызывающий.
+    (ревью #152). `--ignore`/`--ignore-glob` вычитают из покрытия ровно
+    игнорируемые пути, а не выключают правило (ревью #153). Фильтры
+    `-k`/`-m`/`--lf`/`--deselect` проверяет вызывающий.
     """
     roots = [(invocation_dir / arg).resolve() for arg in args if "::" not in arg]
+    ignored = [(invocation_dir / item).resolve() for item in ignore]
     covered: set[str] = set()
     for path in FROZEN_RED_ARCHIVE:
         target = (rootdir / path).resolve()
-        if any(target == root or root in target.parents for root in roots):
-            covered.add(path)
+        if not any(_under(target, root) for root in roots):
+            continue
+        if any(_under(target, root) for root in ignored):
+            continue
+        if any(fnmatch.fnmatch(str(target), pattern) for pattern in ignore_glob):
+            continue
+        covered.add(path)
     return covered
+
+
+def _under(target: Path, root: Path) -> bool:
+    """`target` — это `root` или лежит под ним."""
+    return target == root or root in target.parents
 
 
 def archive_violations(

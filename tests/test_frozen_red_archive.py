@@ -123,3 +123,26 @@ def test_covered_archive_follows_the_run_selection(
 ) -> None:
     """Покрытие — по путям запуска, а не по «аргументы не заданы» (ревью #152)."""
     assert covered_archive(_ROOT, _ROOT, args) == expected
+
+
+def test_ignore_subtracts_only_the_ignored_paths() -> None:
+    """`--ignore` чужого каталога не снимает покрытие архива (ревью #153)."""
+    covered = covered_archive(_ROOT, _ROOT, [str(_ROOT)], ignore=["tests/adapters"])
+
+    assert covered == set(FROZEN_RED_ARCHIVE)
+
+
+def test_ignore_of_the_archive_path_removes_it_from_coverage() -> None:
+    """Игнорированный архивный файл не требуется, остальные — да."""
+    covered = covered_archive(_ROOT, _ROOT, [str(_ROOT)], ignore=["tests/verifier"])
+
+    assert covered == set(FROZEN_RED_ARCHIVE) - {"tests/verifier/test_task_001_red.py"}
+
+
+def test_ignore_glob_removes_matching_archive_files() -> None:
+    """`--ignore-glob` вычитает совпавшие по шаблону файлы."""
+    covered = covered_archive(
+        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=["*/tests/test_ws57_*"]
+    )
+
+    assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}
