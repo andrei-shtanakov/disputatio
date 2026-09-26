@@ -139,10 +139,19 @@ def test_ignore_of_the_archive_path_removes_it_from_coverage() -> None:
     assert covered == set(FROZEN_RED_ARCHIVE) - {"tests/verifier/test_task_001_red.py"}
 
 
-def test_ignore_glob_removes_matching_archive_files() -> None:
-    """`--ignore-glob` вычитает совпавшие по шаблону файлы."""
+def test_absolute_ignore_glob_removes_matching_archive_files() -> None:
+    """Абсолютный `--ignore-glob` вычитает совпавшие файлы как есть."""
     covered = covered_archive(
-        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=["*/tests/test_ws57_*"]
+        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=[str(_ROOT / "tests/test_ws57_*")]
+    )
+
+    assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}
+
+
+def test_relative_ignore_glob_is_anchored_at_the_invocation_dir() -> None:
+    """Относительный `--ignore-glob` вычитает файлы, как это делает pytest."""
+    covered = covered_archive(
+        _ROOT, _ROOT, [str(_ROOT)], ignore_glob=["tests/test_ws57_*"]
     )
 
     assert covered == {path for path in FROZEN_RED_ARCHIVE if "test_ws57_" not in path}
