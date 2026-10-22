@@ -33,7 +33,8 @@ def _normalize(name: str) -> str:
 
 def _declared_runtime_dists() -> set[str]:
     """Нормализованные имена из `[project] dependencies`."""
-    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project = tomllib.loads(pyproject)["project"]
     return {
         _normalize(re.split(r"[\s<>=!~;\[(]", spec, maxsplit=1)[0])
         for spec in project["dependencies"]
@@ -55,7 +56,7 @@ def _third_party_imports() -> dict[str, set[Path]]:
     """Сторонние корневые импорты пакета → файлы, где они встречаются."""
     found: dict[str, set[Path]] = {}
     for path in sorted(PACKAGE_DIR.rglob("*.py")):
-        for name in _top_level_imports(path.read_text()):
+        for name in _top_level_imports(path.read_text(encoding="utf-8")):
             if name == OWN_PACKAGE or name in sys.stdlib_module_names:
                 continue
             found.setdefault(name, set()).add(path.relative_to(REPO_ROOT))
