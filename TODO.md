@@ -829,6 +829,16 @@
   `_run_step` → `charge_step`); в цикле `drive` бюджет сверяет лишь `decide`.
   Замечено локальным ревью PR #129; долг существовал до §5.2a и ею не вызван.
 
+- [x] `anyio` — runtime-зависимость, а не dev @id:anyio-runtime-dependency @epic:eco.disputatio
+  — принят inbox-запрос devtools (#159, `slug:` в теле issue совпадает).
+  `cli.py` и `runtime/composition.py` импортируют `anyio`, а объявлен он был
+  только в `[dependency-groups] dev`: установка без dev-групп падала на
+  `disp --help` с `ModuleNotFoundError`, что блокировало приёмку `core` в
+  инсталляторе DarkFactory. `anyio` перенесён в `[project] dependencies`,
+  пин в `uv.lock` сохранён (4.14.2). Регрессия —
+  `tests/test_runtime_dependencies.py`: каждый сторонний импорт `src/` обязан
+  быть покрыт runtime-зависимостью, а не только `anyio`.
+
 ## Ждём от других проектов
 
 - [x] Прогноз бюджета: хвосты после мержа PR #132 @id:budget-prediction-followups @epic:eco.disputatio — все три закрыты (2026-09-25)
